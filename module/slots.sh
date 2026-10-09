@@ -61,42 +61,66 @@ slot_xml_files() {
 }
 
 # 某个 <family> 是否属于"主文字族"（无语言 / 拉丁 / 中文），排除衬线、等宽、Emoji 等
-# 入参必须已是小写（批量转换，避免为每个 family 单独启动进程）
-_xml_family_ok_l() {
+# 纯 shell 大小写不敏感匹配，不启动任何外部进程（性能关键）
+_xml_family_ok() {
   case "$1" in
-    *emoji*|*symbol*|*mono*|*cursive*|*casual*|*math*|*music*|*clock*) return 1 ;;
-    sans-serif*) : ;;
-    *serif*) return 1 ;;
+    *[Ee][Mm][Oo][Jj][Ii]*|*[Ss][Yy][Mm][Bb][Oo][Ll]*|*[Mm][Oo][Nn][Oo]*|*[Cc][Uu][Rr][Ss][Ii][Vv][Ee]*|\
+    *[Cc][Aa][Ss][Uu][Aa][Ll]*|*[Mm][Aa][Tt][Hh]*|*[Mm][Uu][Ss][Ii][Cc]*|*[Cc][Ll][Oo][Cc][Kk]*)
+      return 1 ;;
+  esac
+  case "$1" in
+    *[Ss][Aa][Nn][Ss]-[Ss][Ee][Rr][Ii][Ff]*|*[Ss][Aa][Nn][Ss][Ss][Ee][Rr][Ii][Ff]*) : ;;
+    *[Ss][Ee][Rr][Ii][Ff]*) return 1 ;;
   esac
   if [ -n "$2" ]; then
     case "$2" in
-      *zh*|*und-latn*|en|en-*) : ;;
+      *[Zz][Hh]*|*[Uu][Nn][Dd]-[Ll][Aa][Tt][Nn]*|[Ee][Nn]|[Ee][Nn]-*) : ;;
       *) return 1 ;;
     esac
   fi
   return 0
 }
 
+# 去掉字符串首尾空格（纯 shell，结果写入 TRIM_OUT，不启动进程）
+_trim() {
+  local s="$1"
+  while case "$s" in ' '*) true ;; *) false ;; esac; do s=${s# }; done
+  while case "$s" in *' ') true ;; *) false ;; esac; do s=${s% }; done
+  TRIM_OUT="$s"
+}
+
 # 从 XML 里取主文字族引用的字体文件名
+# 性能：整份 XML 只起 2 个进程（tr + sed），family/文件名都用 shell 内建解析；
+# 旧写法是"每个 family 起 4~6 个进程"，500 个 family 会 fork 上千次，手机上要卡好几秒。
 slot_xml_names() {
-  local x raw low fam lfam a n l t
-  t="${TMPDIR:-/data/local/tmp}"
+  local x fam hdr body rest name n l
   for x in $(slot_xml_files); do
-    raw="$t/.xml.raw.$$"; low="$raw.l"
     tr '\n\r\t' '   ' 2>/dev/null < "$x" \
-      | sed 's/<family/\n<family/g; s#</family>#\n#g' | grep '^<family' > "$raw"
-    tr '[:upper:]' '[:lower:]' < "$raw" > "$low"
-    exec 3< "$raw"; exec 4< "$low"
-    while IFS= read -r fam <&3 && IFS= read -r lfam <&4; do
-      a=${lfam%%>*}
-      n=""; l=""
-      case "$a" in *' name="'*) n=${a#*' name="'}; n=${n%%\"*} ;; esac
-      case "$a" in *' lang="'*) l=${a#*' lang="'}; l=${l%%\"*} ;; esac
-      _xml_family_ok_l "$n" "$l" || continue
-      printf '%s' "$fam" | grep -o '>[^<>]*\.[oOtT][tT][fF] *<' | sed 's/^> *//; s/ *<$//'
-    done
-    exec 3<&- 4<&-
-    rm -f "$raw" "$low"
+      | sed 's/<family/\n<family/g' \
+      | while IFS= read -r fam; do
+          case "$fam" in '<family'*) ;; *) continue ;; esac
+          hdr=${fam%%>*}
+          n=""; l=""
+          case "$hdr" in *' name="'*) n=${hdr#*' name="'}; n=${n%%\"*} ;; esac
+          case "$hdr" in *' lang="'*) l=${hdr#*' lang="'}; l=${l%%\"*} ;; esac
+          _xml_family_ok "$n" "$l" || continue
+          # family 头之后的部分里，逐个取出 >名字< 形式的内容
+          body=${fam#*>}
+          rest=$body
+          while :; do
+            case "$rest" in
+              *'>'*'<'*) ;;
+              *) break ;;
+            esac
+            rest=${rest#*>}
+            name=${rest%%<*}
+            rest=${rest#*<}
+            _trim "$name"; name="$TRIM_OUT"
+            case "$name" in
+              *.[Tt][Tt][Ff]|*.[Oo][Tt][Ff]) printf '%s\n' "$name" ;;
+            esac
+          done
+        done
   done | sed 's#.*/##' | sort -u
 }
 

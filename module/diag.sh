@@ -43,6 +43,10 @@ PM=/system/bin/pm;          [ -x "$PM" ] || PM=pm
 SETBIN=/system/bin/settings; [ -x "$SETBIN" ] || SETBIN=settings
 
 MODE=${1:-full}
+# 是否给「所有」系统字体算 sha256：安装时只算必要的那部分（快很多），
+# WebUI 点「保存到 Download」时才算全量（ROM 指纹）
+HASH_ALL=${HASH_ALL:-1}
+[ "$MODE" = install ] && HASH_ALL=0
 DL=/data/media/0/Download
 OUTFILE="$DL/字体体检报告.txt"
 OUTFILE2="$DL/font_diag.txt"
@@ -65,6 +69,11 @@ since_txt() {
   else printf '?'; fi
 }
 hr() { printf '  ------------------------------------------------------------\n'; }
+# 给可能卡住的系统命令加超时（没有 timeout 就直接跑），避免体检/安装被某个命令挂住
+tmo() {
+  local t="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"; else "$@"; fi
+}
 tag() { sed -n 's/^version=//p' "$1/module.prop" 2>/dev/null | head -n1 | tr -d '\r'; }
 # XML 规范化：把标签拆成一行一个，方便 grep 上下文
 xmlnorm() { tr '\n\r\t' ' ' < "$1" 2>/dev/null | sed 's/></>\n</g'; }
@@ -183,10 +192,10 @@ for x in $XMLFOUND; do
 done
 
 # 三星：字体包 / flipfont / 字体设置 / /data/fonts
-PKG_FONT=$("$PM" list packages -f 2>/dev/null | grep -iE 'monotype|flipfont|font' | head -n 20)
+PKG_FONT=$(tmo 15 "$PM" list packages -f 2>/dev/null | grep -iE 'monotype|flipfont|font' | head -n 20)
 G_FLIP=0
 [ -n "$PKG_FONT" ] && printf '%s\n' "$PKG_FONT" | grep -q '/data/app' && G_FLIP=1
-S_FONT=$( { "$SETBIN" list secure 2>/dev/null; "$SETBIN" list system 2>/dev/null; "$SETBIN" list global 2>/dev/null; } \
+S_FONT=$( { tmo 10 "$SETBIN" list secure 2>/dev/null; tmo 10 "$SETBIN" list system 2>/dev/null; tmo 10 "$SETBIN" list global 2>/dev/null; } \
   | grep -iE 'font|typeface' | grep -viE 'scale|size' | head -n 10 )
 [ -n "$S_FONT" ] && G_FLIP=1
 DFONT_LIST=""
@@ -660,9 +669,9 @@ sec6() {
     fi
   done
   echo "  运行时字体列表（部分机型支持 cmd font dump）:"
-  "$CMD" font dump sans-serif 2>/dev/null | head -n 30 | while IFS= read -r L; do echo "      $L"; done
-  "$CMD" font dump 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dump] $L"; done
-  dumpsys font 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dumpsys] $L"; done
+  tmo 8 "$CMD" font dump sans-serif 2>/dev/null | head -n 30 | while IFS= read -r L; do echo "      $L"; done
+  tmo 8 "$CMD" font dump 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dump] $L"; done
+  tmo 8 dumpsys font 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dumpsys] $L"; done
 }
 
 # ---------------------------------------------------------------------------
@@ -788,7 +797,7 @@ sec10() {
   echo "  关键行（skip / safe mode / Magisk / post-fs-data / post-mount / exec）:"
   grep -a -E 'skip|safe mode|Magisk detected|post-fs-data|post-mount|exec /data/adb/modules' /data/adb/ksu/log/*.log 2>/dev/null | tail -n 30 | while IFS= read -r L; do echo "      $L"; done
   echo "  dmesg 中的 KernelSU 信息:"
-  dmesg 2>/dev/null | grep -i -E 'kernelsu|ksud|ksu_' | tail -n 10 | while IFS= read -r L; do echo "      $L"; done
+  tmo 10 dmesg 2>/dev/null | grep -i -E 'kernelsu|ksud|ksu_' | tail -n 10 | while IFS= read -r L; do echo "      $L"; done
   echo "  电池/内存/存储:"
   echo "      MemTotal=$(sed -n 's/^MemTotal: *//p' /proc/meminfo 2>/dev/null)  MemAvailable=$(sed -n 's/^MemAvailable: *//p' /proc/meminfo 2>/dev/null)"
   df -k /data /cache /metadata 2>/dev/null | while IFS= read -r L; do echo "      $L"; done
@@ -836,11 +845,23 @@ pack_extra() {
   echo "# 名字|框架解析路径|真实路径|是否存在|同名副本"
   printf '%s\n' "$NAMEMAP"
   echo "@@SECTION:FONTS_SHA256"
+  XMLNAMES_STR=" $(printf '%s' "$XMLNAMES" | tr '\n' ' ')"
   for d in $FONTDIRS; do
     for f in "$d"/*; do
       [ -f "$f" ] || continue
-      s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
-      [ -n "$s" ] || s=$(md5sum "$f" 2>/dev/null | cut -d' ' -f1)
+      b=${f##*/}
+      do_hash=1
+      if [ "$HASH_ALL" = 0 ]; then
+        do_hash=0
+        case "$b" in *.ttc|*.TTC) do_hash=1 ;; esac
+        case "$XMLNAMES_STR" in *" $b "*) do_hash=1 ;; esac
+      fi
+      if [ "$do_hash" = 1 ]; then
+        s=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+        [ -n "$s" ] || s=$(md5sum "$f" 2>/dev/null | cut -d' ' -f1)
+      else
+        s="-"
+      fi
       printf '%s  %s  %s\n' "$s" "$(stat -c %s "$f" 2>/dev/null)" "$f"
     done
   done
@@ -976,11 +997,33 @@ write_kit() {
   return 0
 }
 
+# 进度提示：既打印出来（安装界面 / 「操作」控制台可见），
+# 在后台生成时（BG_STATE=1）还会写进状态文件，WebUI 就能显示"正在做哪一步、已用多少秒"
+dphase() {
+  printf '  体检进度：%s\n' "$1"
+  if [ "$BG_STATE" = 1 ]; then
+    printf 'state=running\nphase=%s\n' "$1" > "$LIB/.diag.state" 2>/dev/null
+  fi
+  return 0
+}
+
 # 生成完整报告包（体检 + 原始配置 + 哈希清单）
 kit_report() {
   local tmpf="/data/local/tmp/.font_diag.$$"
-  report_full > "$tmpf" 2>&1
+  : > "$tmpf"
+  dphase '1/6 结论与门禁检查'
+  { conclusion; sec1; } >> "$tmpf" 2>&1
+  dphase '2/6 开机痕迹与挂载实测'
+  { sec2; sec3; } >> "$tmpf" 2>&1
+  dphase '3/6 槽位与字体目录映射'
+  { sec4; sec5; } >> "$tmpf" 2>&1
+  dphase '4/6 字体配置与字体来源'
+  { sec6; sec7; } >> "$tmpf" 2>&1
+  dphase '5/6 清单 / 冲突 / 日志'
+  { sec8; sec9; sec10; } >> "$tmpf" 2>&1
+  dphase '6/6 打包原始配置与哈希清单'
   pack_extra >> "$tmpf" 2>&1
+  printf '== 报告结束 ==\n' >> "$tmpf"
   write_kit "$tmpf"
   rm -f "$tmpf" 2>/dev/null
   return 0
@@ -989,6 +1032,29 @@ kit_report() {
 case "$MODE" in
   brief)
     conclusion
+    ;;
+  bg)
+    # 后台生成（立刻返回，WebUI 的 JS 不会被长命令卡住；生成期间弹窗可随时关闭）
+    mkdir -p "$LIB" 2>/dev/null
+    printf 'state=running\n' > "$LIB/.diag.state" 2>/dev/null
+    if command -v setsid >/dev/null 2>&1; then
+      setsid sh "$MODDIR/diag.sh" build >/dev/null 2>&1 &
+    else
+      sh "$MODDIR/diag.sh" build >/dev/null 2>&1 &
+    fi
+    echo "OK:running"
+    ;;
+  build)
+    BG_STATE=1
+    kit_report
+    printf 'state=done\nphase=完成\nsize=%s\nsaved=%s\n' \
+      "$(wc -c < "$LIB/font_diag.txt" 2>/dev/null | tr -d ' ')" "${SAVED:-}" > "$LIB/.diag.state" 2>/dev/null
+    ;;
+  state)
+    cat "$LIB/.diag.state" 2>/dev/null || echo "state=none"
+    ;;
+  text)
+    cat "$LIB/font_diag.txt" 2>/dev/null
     ;;
   save)
     kit_report

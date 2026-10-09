@@ -33,9 +33,12 @@ case "$MO" in
   *)  echo "本次开机自带挂载：成功 $(echo "$MO" | cut -d, -f1) / 失败 $(echo "$MO" | cut -d, -f2)" ;;
 esac
 echo " "
-# 一键体检：结论会写进 Download/字体体检报告.txt，方便直接发给作者
+# 诊断报告：手动触发，结论打印在这里，完整报告写入 Download/字体体检报告.txt
 if [ -f "$MODDIR/diag.sh" ]; then
-  sh "$MODDIR/diag.sh" install 2>/dev/null
+  echo "正在生成诊断报告（一般几秒到十几秒，请稍等）..."
+  echo "报告会保存到 Download/字体体检报告.txt"
+  echo " "
+  sh "$MODDIR/diag.sh" install 2>&1
   echo " "
 fi
 echo "正在检查更新..."

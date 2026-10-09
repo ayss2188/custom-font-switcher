@@ -473,6 +473,7 @@ case "${1:-}" in
     echo "V=$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null)"
     echo "MO=$(mount_result | tr ' ' ',')"
     if [ -f "$MODDIR/mount_missed" ]; then echo "MM=1"; else echo "MM=0"; fi
+    echo "CF=$(list_conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')"
     ;;
   ack)
     rm -f "$MODDIR/rescued"

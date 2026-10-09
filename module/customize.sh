@@ -89,29 +89,24 @@ ui_print "若选字体后没能开机，下次开机会自动"
 ui_print "恢复为「无字体」。"
 
 # ---------------------------------------------------------------------------
-# 一键体检：安装时立刻执行（不依赖开机脚本是否被执行），
-# 结论直接打印在这里，完整报告写入 Download/字体体检报告.txt
+# 安装阶段不做任何耗时收集（避免刷入卡住）
+#   这里只做几个文件判断 + getprop，毫秒级完成；完整诊断报告由用户手动触发：
+#     · WebUI 里点「查看诊断报告」或「保存到 Download」（后台生成，界面不卡）
+#     · 或点模块卡片的「操作」按钮
 # ---------------------------------------------------------------------------
+GD="无"; [ -f "$OLD/disable" ] && GD="有"
+GU="无"; [ -f "$OLD/update" ] && GU="有（上一次安装没被激活）"
+GS="无"; case "$(getprop persist.sys.safemode)$(getprop ro.sys.safemode)" in *1*) GS="有" ;; esac
+GM="无"; { command -v magisk >/dev/null 2>&1 || [ -e /data/adb/magisk ]; } && GM="有"
 ui_print " "
-ui_print "===================================="
-ui_print "  正在体检：收集字体配置 / 槽位 /"
-ui_print "  挂载 / 日志数据，需要十几秒，请稍等"
-ui_print "===================================="
+ui_print "- 设备：$(getprop ro.product.brand) $(getprop ro.product.model) / Android $(getprop ro.build.version.release)"
+ui_print "- 门禁速查：已禁用=$GD  待激活=$GU  安全模式=$GS  Magisk共存=$GM"
+ui_print "- 需要诊断报告时（一分钟内出结果）：在 WebUI 里点「查看诊断报告」"
+ui_print "  或「保存到 Download」，也可以点模块卡片上的「操作」按钮；"
+ui_print "  报告会写到 Download/字体体检报告.txt"
 if [ -f "$MODPATH/diag.sh" ]; then
-  DIAG_OUT=$(sh "$MODPATH/diag.sh" install 2>&1) || true
-  ui_print " "
-  ui_print "===================================="
-  ui_print "  一键体检结果（这段请发给作者）"
-  ui_print "===================================="
-  if [ -n "$DIAG_OUT" ]; then
-    printf '%s\n' "$DIAG_OUT" | head -n 45 | while IFS= read -r L; do ui_print "$L"; done
-  else
-    ui_print "  体检脚本没有输出，请把上面内容截图发给作者"
-  fi
   cp -f "$MODPATH/diag.sh" /data/local/tmp/font_diag.sh 2>/dev/null
   chmod 755 /data/local/tmp/font_diag.sh 2>/dev/null
-else
-  ui_print "  未找到 diag.sh，请把上面内容截图发给作者"
 fi
 ui_print "===================================="
 ui_print "- 完成"

@@ -132,7 +132,7 @@
   }
   .g-btn.primary { background: var(--accent); color: #fff; border: none; }
   .g-btn.primary-blue { background: var(--pending-blue); color: #fff; border: none; }
-  .g-btn.urgent { background: var(--danger); color: #fff; border: none; animation: urgentPulse 1.6s ease-in-out infinite; }
+  .g-btn.urgent { background: var(--danger); color: #fff; border: none; animation: urgentPulse 1.6s ease-in-out 8; }
   .g-btn.urgent:disabled { opacity: 1; }
   @keyframes urgentPulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
   .g-btn:active { transform: scale(.96); opacity: .85; }
@@ -168,7 +168,7 @@
     transition: transform .15s ease, opacity .15s ease;
   }
   .reboot-btn:active { transform: scale(.98); opacity: .9; }
-  .reboot-btn.urgent { background: var(--danger); animation: urgentPulse 1.6s ease-in-out infinite; }
+  .reboot-btn.urgent { background: var(--danger); animation: urgentPulse 1.6s ease-in-out 8; }
   .hint { text-align: center; color: var(--text-dim); font-size: 12px; margin-top: 10px; }
 
   .toast {
@@ -396,7 +396,7 @@ try {
     </div>
   </div>
   <div class="btn-row fade">
-    <button class="g-btn" onclick="googleAction('status')">重新检测</button>
+    <button class="g-btn" onclick="googleAction('status fresh')">重新检测</button>
     <button class="g-btn" id="enableBtn" onclick="googleAction('enable')">开启兼容</button>
     <button class="g-btn" id="restoreBtn" onclick="googleAction('restore')">关闭兼容</button>
   </div>
@@ -455,9 +455,9 @@ try {
   <div class="modal-mask" id="reportMask">
     <div class="modal">
       <h3>诊断报告</h3>
-      <div class="loading-box" id="reportLoading"><span class="spin"></span><span>正在生成诊断报告…</span></div>
+      <div class="loading-box" id="reportLoading"><span class="spin"></span><span id="reportLoadingText">正在生成诊断报告…</span></div>
       <textarea class="report" id="reportText" readonly style="display:none"></textarea>
-      <div class="g-hint">发反馈时请点「保存到 Download」：报告是一个 txt，里面除了上面这些，还包含系统字体配置原文、每个字体的 sha256 与表信息、实际字体目录映射、TTC 合集信息、模块与挂载快照，作者拿到就能定位问题。</div>
+      <div class="g-hint">报告会保存到 <b>Download/字体体检报告.txt</b>。里面除了上面这些，还包含系统字体配置原文、每个字体的 sha256 与表信息、实际字体目录映射、TTC 合集信息、模块与挂载快照，作者拿到就能定位问题。</div>
       <div class="btn-row">
         <button class="g-btn" onclick="saveReport()">保存到 Download</button>
         <button class="g-btn primary-blue" onclick="document.getElementById('reportMask').classList.remove('show')">关闭</button>
@@ -602,7 +602,11 @@ function labelOf(id) {
 
 async function refreshAll() {
   try {
-    const listOut = await ksuExec(`sh ${MODDIR}/fontctl.sh list`);
+    // 两个调用并行发，少等一个来回
+    const [listOut, st] = await Promise.all([
+      ksuExec(`sh ${MODDIR}/fontctl.sh list`),
+      ksuExec(`sh ${MODDIR}/fontctl.sh status`)
+    ]);
     fonts = listOut.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
       const p = l.split("|");
       const id = p.shift();
@@ -612,7 +616,19 @@ async function refreshAll() {
       (metaStr || "").split(",").forEach(kv => { const i = kv.indexOf("="); if (i > 0) meta[kv.slice(0, i)] = kv.slice(i + 1); });
       return {id, name: p.join("|") || id, size, meta};
     });
-    const st = await ksuExec(`sh ${MODDIR}/fontctl.sh status`);
+    applyStatus(st);
+  } catch (e) {
+    setValue("activeLabel", "无法读取（请在支持WebUI的模块管理器中打开）");
+    setValue("romLabel", "无法读取");
+  }
+}
+
+// 只刷新顶部状态（不重新拉字体列表），开关类操作后用它，避免连发多个 shell 调用把界面卡住
+async function refreshStatusOnly() {
+  try { applyStatus(await ksuExec(`sh ${MODDIR}/fontctl.sh status`)); } catch (e) {}
+}
+
+function applyStatus(st) {
     const g = k => (st.match(new RegExp("^" + k + "=(.*)$", "m")) || [])[1] || "";
     activeId = g("A").trim() || "none";
     pendingId = g("P").trim() || activeId;
@@ -633,20 +649,18 @@ async function refreshAll() {
       setValue("mountLabel", "自带挂载 成功 " + mo[0] + (+mo[1] ? " / 失败 " + mo[1] : ""));
       ml.classList.add(+mo[1] ? "warn" : "ok");
     } else { setValue("mountLabel", "本次开机未挂载"); ml.classList.add("warn"); }
+    // 冲突模块（现在由 status 一起返回，不再单独发一次 shell）
+    const cf = g("CF").trim();
+    const cfNames = cf ? cf.split(/\s+/).filter(Boolean) : [];
+    document.getElementById("conflictNames").textContent = cfNames.join("、");
+    document.getElementById("conflictBanner").classList.toggle("show", cfNames.length > 0);
     render();
-  } catch (e) {
-    setValue("activeLabel", "无法读取（请在支持WebUI的模块管理器中打开）");
-    setValue("romLabel", "无法读取");
-  }
-  refreshConflicts();
 }
 
 async function refreshConflicts() {
   try {
-    const out = (await ksuExec(`sh ${MODDIR}/fontctl.sh conflicts`)).trim();
-    const names = out ? out.split("\n").map(l => l.split("|")[1] || l.split("|")[0]) : [];
-    document.getElementById("conflictNames").textContent = names.join("、");
-    document.getElementById("conflictBanner").classList.toggle("show", names.length > 0);
+    const st = await ksuExec(`sh ${MODDIR}/fontctl.sh status`);
+    applyStatus(st);
   } catch (e) {}
 }
 
@@ -1241,26 +1255,65 @@ async function toggleSetting(key) {
   if (!success && sw) sw.classList.toggle("on"); // 回滚
   if (row) { row.classList.remove("loading"); const ov = row.querySelector(".overlay"); if (ov) ov.remove(); }
   busy = false;
-  await loadSettings();
-  await refreshAll();
+  // 只刷一次顶部状态：以前这里会 loadSettings + refreshAll（连发 4~5 个 shell 调用），
+  // 那一下界面会卡住划不动
+  await refreshStatusOnly();
 }
+// 等后台报告生成完；期间只发很短的 cat 调用，弹窗随时能关
+// mode = "quiet" 时不管弹窗状态（保存按钮用）；onTick(阶段信息, 已用秒数) 用来刷新提示
+async function waitDiagDone(maxMs, mode, onTick) {
+  const t0 = Date.now();
+  const deadline = t0 + (maxMs || 120000);
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 500));
+    if (mode !== "quiet" && !document.getElementById("reportMask").classList.contains("show")) return {state: "closed"};
+    let s = "";
+    try { s = await ksuExec(`cat ${LIB}/.diag.state 2>/dev/null`); } catch (e) { s = ""; }
+    const kv = {};
+    String(s || "").split("\n").forEach(l => { const m = l.match(/^(\w+)=(.*)$/); if (m) kv[m[1]] = m[2]; });
+    if (onTick && kv.state === "running") onTick(kv, Math.round((Date.now() - t0) / 1000));
+    if (kv.state === "done" || kv.state === "error") return kv;
+  }
+  return {state: "timeout"};
+}
+
 async function showReport() {
   const ta = document.getElementById("reportText"), ld = document.getElementById("reportLoading");
-  ta.style.display = "none"; ta.classList.remove("pop"); ld.style.display = "flex";
+  const lt = document.getElementById("reportLoadingText");
+  ta.value = ""; ta.style.display = "none"; ta.classList.remove("pop"); ld.style.display = "flex";
+  lt.textContent = "正在生成诊断报告（一般几秒到十几秒；可以随时关掉这个弹窗，生成完再点一次就能看到）…";
   document.getElementById("reportMask").classList.add("show");
   await nextPaint();
-  try { ta.value = (await ksuExec(`sh ${MODDIR}/fontctl.sh diag full`)).trim(); }
-  catch (e) { ta.value = "生成失败：" + errText(e); }
+  try {
+    await ksuExec(`sh ${MODDIR}/fontctl.sh diag bg`);   // 立刻返回，报告在后台生成
+    const kv = await waitDiagDone(120000, "", (st, secs) => {
+      lt.textContent = "正在生成诊断报告：" + (st.phase || "准备中") +
+        "（已用 " + secs + " 秒，一般十几秒内完成；可以关掉弹窗，生成完再点一次）…";
+    });
+    if (kv.state === "closed") return;
+    if (kv.state === "done") {
+      const txt = await ksuExec(`cat ${LIB}/font_diag.txt 2>/dev/null`);
+      ta.value = String(txt || "").trim() || "（报告为空）";
+      showToast("报告已生成，同时保存在 Download/字体体检报告.txt");
+    } else if (kv.state === "error") {
+      ta.value = "生成失败：" + (kv.msg || "未知错误");
+    } else {
+      ta.value = "生成超时（任务还在后台跑），可以关掉弹窗稍后再点一次；报告完成后也会出现在 Download/字体体检报告.txt。";
+    }
+  } catch (e) { ta.value = "生成失败：" + errText(e); }
   ld.style.display = "none"; ta.style.display = "block"; ta.scrollTop = 0;
   void ta.offsetWidth; ta.classList.add("pop");
 }
 async function saveReport() {
   try {
-    showToast("正在生成完整报告...", true);
-    const out = (await ksuExec(`sh ${MODDIR}/fontctl.sh diag save`)).trim();
-    const last = out.split("\n").pop() || "";
-    if (last.indexOf("OK:") === 0) showToast("已保存到 " + last.slice(3));
-    else showToast("保存失败：" + last.replace(/^ERROR:/, ""));
+    showToast("正在生成完整报告（一般几秒到十几秒）...", true);
+    await ksuExec(`sh ${MODDIR}/fontctl.sh diag bg`);
+    const kv = await waitDiagDone(120000, "quiet", (st, secs) => {
+      showToast("正在生成完整报告：" + (st.phase || "准备中") + "（已用 " + secs + " 秒）...", true);
+    });
+    if (kv.state === "done") showToast("已保存到 " + (kv.saved || "Download/字体体检报告.txt"));
+    else if (kv.state === "error") showToast("保存失败：无法写入 Download");
+    else showToast("生成超时，稍后到 Download/字体体检报告.txt 看看");
   } catch (e) { showToast("保存失败：" + errText(e)); }
 }
 
