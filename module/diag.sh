@@ -955,7 +955,8 @@ report_full() {
   echo "== 报告结束 =="
 }
 
-# 把完整报告（含原始配置与哈希清单）写到 Download，成功时 SAVED=路径
+# 把完整报告（结论 + 10 节 + 原始配置与哈希清单）写到 Download，成功时 SAVED=路径
+# 只产出一个 txt（另有一份同内容的 font_diag.txt 备用名），不再生成附件文件夹
 write_kit() {
   local tmpf="$1"
   SAVED=""
@@ -972,43 +973,6 @@ write_kit() {
   mkdir -p "$LIB" 2>/dev/null
   cp -f "$tmpf" "$LIB/font_diag.txt" 2>/dev/null
   cp -f "$tmpf" /data/local/tmp/font_diag.txt 2>/dev/null
-  # 附件：原始字体配置与完整清单（作者离线分析用）
-  ATTD="$DL/字体体检附件"
-  mkdir -p "$ATTD" 2>/dev/null
-  for x in $XMLFOUND; do
-    cp -f "$x" "$ATTD/${x##*/}" 2>/dev/null
-    chmod 666 "$ATTD/${x##*/}" 2>/dev/null
-  done
-  [ -f /data/fonts/config/config.xml ] && cp -f /data/fonts/config/config.xml "$ATTD/data_fonts_config.xml" 2>/dev/null
-  {
-    echo "# /system/fonts 完整清单  $(date '+%Y-%m-%d %H:%M' 2>/dev/null)"
-    echo "# 设备: $($GP ro.product.brand 2>/dev/null) $($GP ro.product.model 2>/dev/null)  Android $($GP ro.build.version.release 2>/dev/null)"
-    echo "# 构建号: $($GP ro.build.display.id 2>/dev/null)"
-    echo
-    echo "## ls -l"
-    ls -l /system/fonts 2>/dev/null
-    echo
-    echo "## 文件名 + 大小 + md5"
-    md5sum /system/fonts/* 2>/dev/null
-    echo
-    echo "## 其它字体目录"
-    for d in $FONTDIRS; do
-      echo "--- $d"
-      ls -l "$d" 2>/dev/null
-    done
-    echo
-    echo "## slots.applied（当前实际替换的槽位）"
-    printf '%s\n' "$APPLIED_LIST"
-    echo
-    echo "## 当前设置下的计划 PLAN_NOW"
-    printf '%s\n' "$PLAN_NOW"
-    echo
-    echo "## PLAN_MAX（关闭所有保留后）"
-    printf '%s\n' "$PLAN_MAX"
-  } > "$ATTD/system_fonts_清单.txt" 2>/dev/null
-  chmod 666 "$ATTD/system_fonts_清单.txt" 2>/dev/null
-  chown media_rw:media_rw "$ATTD" 2>/dev/null
-  chown media_rw:media_rw "$ATTD"/* 2>/dev/null
   return 0
 }
 
@@ -1039,9 +1003,9 @@ case "$MODE" in
     conclusion
     echo
     if [ -n "$SAVED" ]; then
-      echo "完整报告已保存到: Download/字体体检报告.txt（同时有 font_diag.txt）"
-      echo "原始字体配置和系统字体清单在: Download/字体体检附件/"
-      echo "（文件管理 → 内部存储 → Download → 把这个 txt 和「字体体检附件」文件夹一起发回给作者）"
+      echo "完整报告已保存到: Download/字体体检报告.txt（另有一份同内容的 font_diag.txt）"
+      echo "（文件管理 → 内部存储 → Download → 把这一个 txt 发回给作者即可，"
+      echo "  里面已经包含结论、槽位、系统字体配置原文、每个字体的 sha256 与目录映射）"
     else
       echo "完整报告保存失败，请把上面这段截图发回给作者。"
     fi

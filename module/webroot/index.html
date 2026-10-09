@@ -420,6 +420,10 @@ try {
     <button class="g-btn" onclick="showChangelog()">更新日志</button>
     <button class="g-btn" id="installBtn" onclick="installUpdate()" disabled>下载并安装</button>
   </div>
+  <div class="progress" id="updProgress">
+    <div class="t" id="updProgressText">准备中...</div>
+    <div class="bar"><i id="updProgressBar"></i></div>
+  </div>
   <div class="g-hint fade">每次打开这个页面都会自动检查一次更新。下载并安装完成后，按钮会变成红色的「立即重启生效」，点它即可重启。</div>
 
   <div class="divider"></div>
@@ -453,7 +457,7 @@ try {
       <h3>诊断报告</h3>
       <div class="loading-box" id="reportLoading"><span class="spin"></span><span>正在生成诊断报告…</span></div>
       <textarea class="report" id="reportText" readonly style="display:none"></textarea>
-      <div class="g-hint">发反馈时请点「保存到 Download」：文件里除了上面这些，还包含系统字体配置原文、每个字体的 sha256 与表信息、TTC 合集信息、模块与挂载快照，作者拿到就能定位问题。</div>
+      <div class="g-hint">发反馈时请点「保存到 Download」：报告是一个 txt，里面除了上面这些，还包含系统字体配置原文、每个字体的 sha256 与表信息、实际字体目录映射、TTC 合集信息、模块与挂载快照，作者拿到就能定位问题。</div>
       <div class="btn-row">
         <button class="g-btn" onclick="saveReport()">保存到 Download</button>
         <button class="g-btn primary-blue" onclick="document.getElementById('reportMask').classList.remove('show')">关闭</button>
@@ -1368,6 +1372,63 @@ function resetInstallButton(has) {
   if (rb) rb.classList.remove("urgent");
 }
 
+/* ---------- 更新下载进度条 ---------- */
+function updProg(text, ratio) {
+  const box = document.getElementById("updProgress");
+  if (!box) return;
+  box.classList.add("show");
+  setValue("updProgressText", text);
+  document.getElementById("updProgressBar").style.width = Math.round(Math.max(0, Math.min(1, ratio || 0)) * 100) + "%";
+}
+function hideUpdProg() {
+  const box = document.getElementById("updProgress");
+  if (box) box.classList.remove("show");
+}
+// 轮询 update.sh 写的状态文件（/data/adb/custom_font_lib/.update/state），直到下载安装结束
+function startUpdateProgress() {
+  let stop = false;
+  const STAGE_TEXT = {
+    download: "正在下载刷机包",
+    verify: "正在校验刷机包",
+    install: "正在安装（管理器解包中）",
+    finished: "安装完成",
+    error: "安装失败"
+  };
+  (async function loop() {
+    while (!stop) {
+      let s = "";
+      try { s = await ksuExec(`cat ${LIB}/.update/state 2>/dev/null`); } catch (e) { s = ""; }
+      const kv = {};
+      String(s || "").split("\n").forEach(l => { const m = l.match(/^(\w+)=(.*)$/); if (m) kv[m[1]] = m[2]; });
+      const stage = kv.stage || "";
+      const cur = +kv.cur || 0, total = +kv.total || 0;
+      if (stop) break;
+      if (stage === "download") {
+        if (total > 0) {
+          const r = Math.min(1, cur / total);
+          updProg("正在下载刷机包 " + fmtSize(cur) + " / " + fmtSize(total) + "（" + Math.round(r * 100) + "%）", r);
+        } else {
+          updProg("正在下载刷机包 " + fmtSize(cur), Math.min(0.9, cur / (8 * 1048576)));
+        }
+      } else if (stage === "verify") {
+        updProg("正在校验刷机包（sha256 / 模块 ID）…", 0.96);
+      } else if (stage === "install") {
+        updProg("正在安装（管理器解包中，请稍等）…", 0.98);
+      } else if (stage === "finished") {
+        updProg("安装完成，重启后生效", 1);
+        break;
+      } else if (stage === "error") {
+        updProg("安装失败" + (kv.msg ? "：" + kv.msg : ""), 0);
+        break;
+      } else {
+        updProg("正在准备…", 0.03);
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+  })();
+  return () => { stop = true; };
+}
+
 function renderUpdate(u) {
   const lbl = document.getElementById("newVerLabel");
   updateInfo = u;
@@ -1406,21 +1467,31 @@ async function installUpdate() {
   const btn = document.getElementById("installBtn");
   btn.disabled = true;
   showToast("正在下载并安装，请勿离开页面...", true);
+  const stopPoll = startUpdateProgress();
   await nextPaint();
   try {
     const out = (await ksuExec(`sh ${MODDIR}/update.sh install`)).trim();
     const last = out.split("\n").pop();
     if (last.indexOf("OK:") === 0) {
       const ver = last.slice(3) || updateInfo.NEW_VER;
+      updProg("安装完成：" + ver + "，点红色按钮重启生效", 1);
       setUpdateDone(updateInfo.NEW_CODE);
       applyRebootButton(ver);
       document.getElementById("updateBanner").classList.remove("show");
       showToast("已安装 " + ver + "，点红色按钮重启生效");
-    } else showToast("更新失败：" + last.replace(/^ERROR:/, ""));
+      setTimeout(hideUpdProg, 6000);
+    } else {
+      const msg = last.replace(/^ERROR:/, "");
+      updProg("更新失败：" + msg, 0);
+      showToast("更新失败：" + msg);
+      setTimeout(hideUpdProg, 8000);
+    }
   } catch (e) {
+    updProg("更新失败：" + errText(e), 0);
     showToast("更新失败：" + errText(e));
     btn.disabled = false;
-  } finally { busy = false; }
+    setTimeout(hideUpdProg, 8000);
+  } finally { stopPoll(); busy = false; }
 }
 
 /* ---------- 初始化 ---------- */

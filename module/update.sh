@@ -12,8 +12,22 @@ MODDIR=$(cd "$(dirname "$0")" && pwd)
 . "$MODDIR/common.sh"
 TMP="$LIB/.update"
 mkdir -p "$TMP" 2>/dev/null
+STATE="$TMP/state"      # 进度状态文件，WebUI 会轮询它画进度条
 
 prop() { sed -n "s/^$1=//p" "$MODDIR/module.prop" 2>/dev/null | head -n1 | tr -d '\r'; }
+
+# 写进度：prog <阶段> <已下载字节> <总字节> <提示>
+prog() { printf 'stage=%s\ncur=%s\ntotal=%s\nmsg=%s\n' "$1" "${2:-0}" "${3:-0}" "${4:-}" > "$STATE" 2>/dev/null; }
+
+# 试探下载地址的总字节数（拿不到就返回 0，WebUI 会退化成"已下载 xx MB"）
+http_size() {
+  local n=""
+  if command -v curl >/dev/null 2>&1; then
+    n=$(curl -sIL --connect-timeout 10 -m 30 "$1" 2>/dev/null | tr -d '\r' \
+        | grep -i '^content-length:' | tail -n1 | tr -dc '0-9')
+  fi
+  echo "${n:-0}"
+}
 
 # fetch <地址> <输出文件>：curl 优先，其次管理器自带 busybox 的 wget
 fetch() {
@@ -79,30 +93,49 @@ case "${1:-check}" in
     load_json || { echo "ERROR:$ERR"; exit 1; }
     [ "$NEW_CODE" -gt "${CUR_CODE:-0}" ] 2>/dev/null || [ "$2" = force ] || { echo "ERROR:已是最新版本"; exit 1; }
     ZIP="$TMP/module.zip"
-    fetch "$ZIP_URL" "$ZIP" || { echo "ERROR:下载刷机包失败，请检查网络后重试"; exit 1; }
+    rm -f "$ZIP" "$STATE" 2>/dev/null
+    TOTAL=$(http_size "$ZIP_URL")
+    prog download 0 "$TOTAL" "正在下载刷机包"
+    # 后台下载 + 每秒刷新进度（WebUI 读 $STATE 画进度条）
+    fetch "$ZIP_URL" "$ZIP" &
+    DLPID=$!
+    while kill -0 "$DLPID" 2>/dev/null; do
+      cur=$(wc -c < "$ZIP" 2>/dev/null | tr -d ' \n')
+      prog download "${cur:-0}" "$TOTAL" "正在下载刷机包"
+      sleep 1
+    done
+    wait "$DLPID" 2>/dev/null
+    if [ ! -s "$ZIP" ]; then
+      prog error 0 "$TOTAL" "下载失败"
+      echo "ERROR:下载刷机包失败，请检查网络后重试"; exit 1
+    fi
+    prog verify 0 0 "正在校验刷机包"
 
     # 校验：是 zip、体积合理、sha256 一致、模块 id 一致
-    [ "$(head -c 2 "$ZIP")" = PK ] || { rm -f "$ZIP"; echo "ERROR:下载的文件不是 zip（网络可能返回了错误页面）"; exit 1; }
-    [ "$(wc -c < "$ZIP")" -gt 10240 ] || { rm -f "$ZIP"; echo "ERROR:下载的文件不完整"; exit 1; }
+    [ "$(head -c 2 "$ZIP")" = PK ] || { rm -f "$ZIP"; prog error 0 0 "不是 zip"; echo "ERROR:下载的文件不是 zip（网络可能返回了错误页面）"; exit 1; }
+    [ "$(wc -c < "$ZIP")" -gt 10240 ] || { rm -f "$ZIP"; prog error 0 0 "文件不完整"; echo "ERROR:下载的文件不完整"; exit 1; }
     if [ -n "$SHA" ] && command -v sha256sum >/dev/null 2>&1; then
-      [ "$(sha256sum "$ZIP" | cut -d' ' -f1)" = "$SHA" ] || { rm -f "$ZIP"; echo "ERROR:校验失败（sha256 不一致），已取消安装"; exit 1; }
+      [ "$(sha256sum "$ZIP" | cut -d' ' -f1)" = "$SHA" ] || { rm -f "$ZIP"; prog error 0 0 "sha256 不一致"; echo "ERROR:校验失败（sha256 不一致），已取消安装"; exit 1; }
     fi
     if command -v unzip >/dev/null 2>&1; then
       NID=$(unzip -p "$ZIP" module.prop 2>/dev/null | sed -n 's/^id=//p' | head -n1 | tr -d '\r')
-      [ -z "$NID" ] || [ "$NID" = "$(prop id)" ] || { rm -f "$ZIP"; echo "ERROR:刷机包的模块 ID 不一致（$NID），已取消安装"; exit 1; }
+      [ -z "$NID" ] || [ "$NID" = "$(prop id)" ] || { rm -f "$ZIP"; prog error 0 0 "模块 ID 不一致"; echo "ERROR:刷机包的模块 ID 不一致（$NID），已取消安装"; exit 1; }
     fi
 
+    prog install 0 0 "正在安装（管理器解包中）"
     case "$(root_manager)" in
       magisk) magisk --install-module "$ZIP" > "$TMP/install.log" 2>&1 ;;
       ksu)    /data/adb/ksud module install "$ZIP" > "$TMP/install.log" 2>&1 ;;
       apatch) /data/adb/apd module install "$ZIP" > "$TMP/install.log" 2>&1 ;;
-      *) echo "ERROR:无法识别 Root 管理器，请手动安装：$ZIP"; exit 1 ;;
+      *) prog error 0 0 "未识别的管理器"; echo "ERROR:无法识别 Root 管理器，请手动安装：$ZIP"; exit 1 ;;
     esac
     rc=$?
     if [ "$rc" -eq 0 ]; then
       rm -f "$ZIP"
+      prog finished 0 0 "安装完成，重启后生效"
       echo "OK:$NEW_VER"
     else
+      prog error 0 0 "安装失败"
       echo "ERROR:安装失败（$(tail -n 3 "$TMP/install.log" | tr '\n' ' ')）"
       exit 1
     fi
