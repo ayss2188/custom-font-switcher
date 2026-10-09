@@ -205,26 +205,48 @@ store_font() {
   echo "OK:$id"
 }
 
-# ---- 冲突检测：其他启用中、且带字体文件或字体配置的模块 ----
+# 目录里是否存在真实字体文件（必须是文件；未匹配的通配符串会被 [ -f ] 挡掉）
+_conf_fonts_in() {
+  local f
+  [ -d "$1" ] || return 1
+  for f in "$1"/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *.[tT][tT][fFcC]|*.[oO][tT][fF]) return 0 ;; esac
+  done
+  return 1
+}
+
+# ---- 冲突检测：其他启用中、且会把字体挂到系统分区上的模块 ----
+# 只认 system/ 下的 fonts 目录 + 根级的厂商分区（vendor/product/system_ext/odm/my_*…），
+# 并排除 webroot/webui/web/assets/tools 这类界面与资源目录 —— 否则自带字体的 WebUI 模块
+# （例如 ReZygisk）会被误判成「其他字体模块」。
 list_conflicts() {
-  local m id d f hit name
+  local m id d f hit name rel
   for m in /data/adb/modules/*; do
     [ -d "$m" ] || continue
     id=${m##*/}
     [ "$id" = "$MODID" ] && continue
     { [ -f "$m/disable" ] || [ -f "$m/remove" ]; } && continue
     hit=0
-    for d in "$m"/system/fonts "$m"/system/product/fonts "$m"/system/system_ext/fonts \
-             "$m"/system/vendor/fonts "$m"/*/fonts; do
+    for d in "$m"/system/fonts "$m"/system/*/fonts "$m"/system/*/*/fonts; do
       [ -d "$d" ] || continue
-      for f in "$d"/*; do
-        case "$f" in *.[tT][tT][fFcC]|*.[oO][tT][fF]) hit=1; break ;; esac
+      _conf_fonts_in "$d" && { hit=1; break; }
+    done
+    if [ "$hit" = 0 ]; then
+      for d in "$m"/*/fonts; do
+        [ -d "$d" ] || continue
+        rel=${d#"$m"/}
+        case "$rel" in
+          webroot/*|webui/*|WebUI/*|web/*|assets/*|docs/*|tools/*|lib/*|lib64/*) continue ;;
+        esac
+        _conf_fonts_in "$d" && { hit=1; break; }
       done
-      [ "$hit" = 1 ] && break
-    done
-    [ "$hit" = 1 ] || for f in "$m"/system/etc/fonts.xml "$m"/system/etc/font_fallback.xml; do
-      [ -f "$f" ] && { hit=1; break; }
-    done
+    fi
+    if [ "$hit" = 0 ]; then
+      for f in "$m"/system/etc/fonts.xml "$m"/system/etc/font_fallback.xml "$m"/system/etc/fonts_additional.xml; do
+        [ -f "$f" ] && { hit=1; break; }
+      done
+    fi
     [ "$hit" = 1 ] || continue
     name=$(sed -n 's/^name=//p' "$m/module.prop" 2>/dev/null | head -n1 | tr -d '\r|')
     echo "$id|${name:-$id}"
