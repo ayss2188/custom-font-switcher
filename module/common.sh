@@ -165,3 +165,20 @@ mgr_path() {
 
 # 本次开机的唯一标识（判断挂载记录是不是这次开机写的）
 boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r\n'; }
+
+# ---------------------------------------------------------------------------
+# 开机心跳：记录每个开机阶段是否真的被执行过（诊断用，见 diag.sh）
+# 只要脚本被 Root 管理器执行过，就会留下一条带 boot_id 的记录；
+# 完全没有记录 = 脚本没被执行（模块被禁用 / 安全模式 / Magisk 共存 / UAPI 不匹配…）
+# ---------------------------------------------------------------------------
+beat() {
+  local f="$LIB/boot_events.log" t tmp
+  mkdir -p "$LIB" 2>/dev/null
+  t=$(date +%s 2>/dev/null)
+  tmp="$f.tmp.$$"
+  { tail -n 40 "$f" 2>/dev/null
+    echo "time=$t boot=$(boot_id) stage=$1 info=$2 manager=$(root_manager)"
+  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  return 0
+}

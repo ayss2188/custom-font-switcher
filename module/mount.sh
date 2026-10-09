@@ -14,7 +14,7 @@
 #   payload_verify <模块目录>          检查当前可见的系统字体是否就是本模块的文件，输出 "生效数 总数"
 
 payload_mount() {
-  local moddir="$1" id rel src dst ok=0 fail=0 skip=0
+  local moddir="$1" id rel src dst err ok=0 fail=0 skip=0
   local map="$moddir/slots.map"
   [ -s "$map" ] || return 0
   while read -r id rel || [ -n "$rel" ]; do
@@ -25,13 +25,21 @@ payload_mount() {
     if [ ! -f "$src" ] || [ ! -f "$dst" ]; then
       skip=$((skip+1)); continue
     fi
-    if mount -o bind "$src" "$dst" 2>/dev/null; then
+    if err=$(mount -o bind "$src" "$dst" 2>&1); then
       mount -o remount,bind,ro "$dst" 2>/dev/null
       ok=$((ok+1))
     else
       fail=$((fail+1))
+      echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 绑定失败 $src -> $dst : ${err:-未知错误}" >> "$LIB/mount.log" 2>/dev/null
     fi
   done < "$map"
+  echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 阶段=${2:-unknown} 成功=$ok 失败=$fail 跳过=$skip" >> "$LIB/mount.log" 2>/dev/null
+  if [ -f "$LIB/mount.log" ]; then
+    tail -n 100 "$LIB/mount.log" > "$LIB/mount.log.tmp.$$" 2>/dev/null && mv -f "$LIB/mount.log.tmp.$$" "$LIB/mount.log" 2>/dev/null
+  fi
+  if command -v beat >/dev/null 2>&1; then
+    beat mount "phase=${2:-unknown} ok=$ok fail=$fail skip=$skip"
+  fi
   {
     echo "boot=$(boot_id)"
     echo "ok=$ok"

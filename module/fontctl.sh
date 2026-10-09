@@ -218,8 +218,8 @@ _conf_fonts_in() {
 
 # ---- 冲突检测：其他启用中、且会把字体挂到系统分区上的模块 ----
 # 只认 system/ 下的 fonts 目录 + 根级的厂商分区（vendor/product/system_ext/odm/my_*…），
-# 并排除 webroot/webui/web/assets/tools 这类界面与资源目录 —— 否则自带字体的 WebUI 模块
-# （例如 ReZygisk）会被误判成「其他字体模块」。
+# 并排除 webroot/webui/web/assets/tools 这类界面/资源目录 —— 否则自带字体的 WebUI 模块
+# （例如 ReZygisk 之类）会被误判成"其他字体模块"。
 list_conflicts() {
   local m id d f hit name rel
   for m in /data/adb/modules/*; do
@@ -415,6 +415,8 @@ do_apply() {
 do_report() {
   local A P id mr v
   A=$(cur_active); P=$(cur_pending)
+  # 一键体检的结论放最前面（见 diag.sh）
+  [ -f "$MODDIR/diag.sh" ] && sh "$MODDIR/diag.sh" brief 2>/dev/null
   echo "== 自定义字体切换模块 诊断报告 =="
   echo "模块版本: $(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null) ($(sed -n 's/^versionCode=//p' "$MODDIR/module.prop" 2>/dev/null))"
   echo "设备: $(getp ro.product.brand) $(getp ro.product.model) | Android $(getp ro.build.version.release) (SDK $(getp ro.build.version.sdk))"
@@ -606,12 +608,22 @@ case "${1:-}" in
     list_conflicts
     ;;
   report)
-    if [ "$2" = save ]; then
+    # 有 diag.sh 时，报告就是「一键体检」（结论在最上面 + 9 节明细）
+    if [ -f "$MODDIR/diag.sh" ]; then
+      if [ "$2" = save ]; then sh "$MODDIR/diag.sh" save; else sh "$MODDIR/diag.sh" full; fi
+    elif [ "$2" = save ]; then
       out="/sdcard/Download/font_switcher_report.txt"
       mkdir -p /sdcard/Download 2>/dev/null
       do_report > "$out" 2>&1 && echo "OK:$out" || echo "ERROR:写入失败"
     else
       do_report
+    fi
+    ;;
+  diag)
+    if [ -f "$MODDIR/diag.sh" ]; then
+      sh "$MODDIR/diag.sh" "${2:-full}"
+    else
+      echo "ERROR:缺少 diag.sh"
     fi
     ;;
   sync)
@@ -623,7 +635,7 @@ case "${1:-}" in
     refresh_prop
     ;;
   *)
-    echo "用法: sh fontctl.sh status|list|import|upload-start|upload-finish|ls|rename|delete|apply|reapply|plan|setmeta|settings|verify|relink|conflicts|report|sync|prop|ack"
+    echo "用法: sh fontctl.sh status|list|import|upload-start|upload-finish|ls|rename|delete|apply|reapply|plan|setmeta|settings|verify|relink|conflicts|report|diag|sync|prop|ack"
     exit 2
     ;;
 esac

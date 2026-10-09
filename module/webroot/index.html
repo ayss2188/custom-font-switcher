@@ -20,6 +20,7 @@
     --toast-bg: #2a2a2d;
     --glow: rgba(124,92,255,.18);
     --warn: #f59e0b;
+    --danger: #ef4444;
     color-scheme: dark;
   }
   :root[data-theme="light"] {
@@ -37,6 +38,7 @@
     --accent: #6A48F5;
     --glow: rgba(106,72,245,.10);
     --warn: #d97706;
+    --danger: #dc2626;
     color-scheme: light;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -130,6 +132,9 @@
   }
   .g-btn.primary { background: var(--accent); color: #fff; border: none; }
   .g-btn.primary-blue { background: var(--pending-blue); color: #fff; border: none; }
+  .g-btn.urgent { background: var(--danger); color: #fff; border: none; animation: urgentPulse 1.6s ease-in-out infinite; }
+  .g-btn.urgent:disabled { opacity: 1; }
+  @keyframes urgentPulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
   .g-btn:active { transform: scale(.96); opacity: .85; }
   .g-btn:disabled { opacity: .5; }
   .g-hint { color: var(--text-dim); font-size: 11px; margin-bottom: 8px; line-height: 1.6; }
@@ -163,6 +168,7 @@
     transition: transform .15s ease, opacity .15s ease;
   }
   .reboot-btn:active { transform: scale(.98); opacity: .9; }
+  .reboot-btn.urgent { background: var(--danger); animation: urgentPulse 1.6s ease-in-out infinite; }
   .hint { text-align: center; color: var(--text-dim); font-size: 12px; margin-top: 10px; }
 
   .toast {
@@ -414,7 +420,7 @@ try {
     <button class="g-btn" onclick="showChangelog()">更新日志</button>
     <button class="g-btn" id="installBtn" onclick="installUpdate()" disabled>下载并安装</button>
   </div>
-  <div class="g-hint fade">在手机上直接从 GitHub 下载新版刷机包，校验后用当前 Root 管理器安装，字体库和设置会保留，安装完重启生效。</div>
+  <div class="g-hint fade">每次打开这个页面都会自动检查一次更新。下载并安装完成后，按钮会变成红色的「立即重启生效」，点它即可重启。</div>
 
   <div class="divider"></div>
 
@@ -447,6 +453,7 @@ try {
       <h3>诊断报告</h3>
       <div class="loading-box" id="reportLoading"><span class="spin"></span><span>正在生成诊断报告…</span></div>
       <textarea class="report" id="reportText" readonly style="display:none"></textarea>
+      <div class="g-hint">发反馈时请点「保存到 Download」：文件里除了上面这些，还包含系统字体配置原文、每个字体的 sha256 与表信息、TTC 合集信息、模块与挂载快照，作者拿到就能定位问题。</div>
       <div class="btn-row">
         <button class="g-btn" onclick="saveReport()">保存到 Download</button>
         <button class="g-btn primary-blue" onclick="document.getElementById('reportMask').classList.remove('show')">关闭</button>
@@ -1238,15 +1245,18 @@ async function showReport() {
   ta.style.display = "none"; ta.classList.remove("pop"); ld.style.display = "flex";
   document.getElementById("reportMask").classList.add("show");
   await nextPaint();
-  try { ta.value = (await ksuExec(`sh ${MODDIR}/fontctl.sh report`)).trim(); }
+  try { ta.value = (await ksuExec(`sh ${MODDIR}/fontctl.sh diag full`)).trim(); }
   catch (e) { ta.value = "生成失败：" + errText(e); }
   ld.style.display = "none"; ta.style.display = "block"; ta.scrollTop = 0;
   void ta.offsetWidth; ta.classList.add("pop");
 }
 async function saveReport() {
   try {
-    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh report save`);
-    showToast("已保存到 " + out.trim().replace(/^OK:/, ""));
+    showToast("正在生成完整报告...", true);
+    const out = (await ksuExec(`sh ${MODDIR}/fontctl.sh diag save`)).trim();
+    const last = out.split("\n").pop() || "";
+    if (last.indexOf("OK:") === 0) showToast("已保存到 " + last.slice(3));
+    else showToast("保存失败：" + last.replace(/^ERROR:/, ""));
   } catch (e) { showToast("保存失败：" + errText(e)); }
 }
 
@@ -1330,16 +1340,47 @@ async function checkUpdate(manual) {
   } finally { btn.disabled = false; }
 }
 
+// 已下载安装、等待重启的版本号（存 localStorage，刷新页面后依然显示「重启生效」）
+function updateDoneCode() { try { return localStorage.getItem("cf_update_done") || ""; } catch (e) { return ""; } }
+function setUpdateDone(code) {
+  try { if (code) localStorage.setItem("cf_update_done", String(code)); else localStorage.removeItem("cf_update_done"); } catch (e) {}
+}
+// 安装完成后：把「下载并安装」变成红色「立即重启生效」
+function applyRebootButton(ver) {
+  const btn = document.getElementById("installBtn");
+  btn.disabled = false;
+  btn.classList.remove("primary-blue");
+  btn.classList.add("urgent");
+  btn.textContent = "立即重启生效";
+  btn.onclick = doReboot;
+  const rb = document.getElementById("rebootBtn");
+  if (rb) rb.classList.add("urgent");
+  setValue("rebootHint", "新版本 " + (ver || "") + " 已安装，点红色按钮重启生效");
+}
+function resetInstallButton(has) {
+  const btn = document.getElementById("installBtn");
+  btn.disabled = !has;
+  btn.classList.remove("urgent");
+  btn.classList.toggle("primary-blue", has);
+  btn.textContent = "下载并安装";
+  btn.onclick = installUpdate;
+  const rb = document.getElementById("rebootBtn");
+  if (rb) rb.classList.remove("urgent");
+}
+
 function renderUpdate(u) {
   const lbl = document.getElementById("newVerLabel");
   updateInfo = u;
   const has = u.HAS === "1";
-  setValue("newVerLabel", has ? u.NEW_VER + "（可更新）" : u.NEW_VER + "（已是最新）");
+  const done = updateDoneCode();
+  const pendingReboot = has && !!done && done === String(u.NEW_CODE);
+  if (!has) setUpdateDone("");   // 已经跑上新版了，清掉「待重启」标记
+  setValue("newVerLabel", pendingReboot ? u.NEW_VER + "（已安装，待重启）"
+    : has ? u.NEW_VER + "（可更新）" : u.NEW_VER + "（已是最新）");
   lbl.classList.remove("ok", "warn", "off");
   lbl.classList.add(has ? "warn" : "ok");
-  document.getElementById("installBtn").disabled = !has;
-  document.getElementById("installBtn").classList.toggle("primary-blue", has);
-  document.getElementById("updateBanner").classList.toggle("show", has);
+  if (pendingReboot) applyRebootButton(u.NEW_VER); else resetInstallButton(has);
+  document.getElementById("updateBanner").classList.toggle("show", has && !pendingReboot);
   setValue("updateBannerVer", u.NEW_VER);
 }
 
@@ -1370,8 +1411,11 @@ async function installUpdate() {
     const out = (await ksuExec(`sh ${MODDIR}/update.sh install`)).trim();
     const last = out.split("\n").pop();
     if (last.indexOf("OK:") === 0) {
-      showToast("已安装 " + last.slice(3) + "，重启后生效");
-      setValue("rebootHint", "新版本已安装，点上面按钮立即重启生效");
+      const ver = last.slice(3) || updateInfo.NEW_VER;
+      setUpdateDone(updateInfo.NEW_CODE);
+      applyRebootButton(ver);
+      document.getElementById("updateBanner").classList.remove("show");
+      showToast("已安装 " + ver + "，点红色按钮重启生效");
     } else showToast("更新失败：" + last.replace(/^ERROR:/, ""));
   } catch (e) {
     showToast("更新失败：" + errText(e));
@@ -1396,18 +1440,13 @@ async function installUpdate() {
 refreshAll();
 loadSettings();
 refreshGoogle();
-// 每天最多自动检查一次更新，避免每次打开页面都联网；期间显示上次的结果
+// 每次打开页面都检查一次更新：先用上次结果立刻显示，再联网核对
 (function autoCheck() {
-  let last = 0, cached = null;
-  try { last = +localStorage.getItem(UPDATE_CHECK_KEY) || 0; cached = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || "null"); } catch (e) {}
-  // 已经装上新版本后，旧缓存里的"可更新"不再成立
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || "null"); } catch (e) {}
   const curVer = () => document.getElementById("curVerLabel").textContent;
-  if (Date.now() - last > 86400000 || !(cached && cached.NEW_CODE)) setTimeout(() => checkUpdate(false), 1500);
-  else setTimeout(() => {
-    // 模块版本变了（刚更新过），旧缓存作废，重新检查
-    if (cached.CUR_VER !== curVer()) { checkUpdate(false); return; }
-    renderUpdate(cached);
-  }, 800);
+  if (cached && cached.NEW_CODE && cached.CUR_VER === curVer()) setTimeout(() => renderUpdate(cached), 200);
+  setTimeout(() => checkUpdate(false), 800);
 })();
 </script>
 

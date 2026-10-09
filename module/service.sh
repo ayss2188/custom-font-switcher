@@ -12,6 +12,8 @@ rm -f "$MODDIR/.booting"
 
 # 自带挂载模式下选了字体，但本次开机没有挂载记录 -> 提示用户（多为管理器不支持 post-mount）
 P=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/pending_font")
+# 心跳：证明 service 阶段确实被执行了（诊断用）
+beat service "pending=$P boot_completed=$(getprop sys.boot_completed 2>/dev/null)"
 case "$P" in
   ""|none) ;;
   *)
@@ -24,3 +26,4 @@ esac
 
 sh "$MODDIR/fontctl.sh" sync
 sh "$MODDIR/fontctl.sh" relink >/dev/null 2>&1
+beat service "finish active=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/active_font") missed=$([ -f "$MODDIR/mount_missed" ] && echo 1 || echo 0)")

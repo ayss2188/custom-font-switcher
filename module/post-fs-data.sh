@@ -11,6 +11,9 @@ MODDIR=${0%/*}
 
 rm -f "$MODDIR/mount_missed"
 
+# 心跳：证明 post-fs-data 阶段确实被执行了（诊断用）
+beat post-fs-data "pending=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/pending_font") root=$(root_manager) mode=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/payload.mode") u=$(cut -d' ' -f1 /proc/uptime 2>/dev/null | cut -d. -f1)"
+
 if [ -f "$MODDIR/.booting" ]; then
   if [ "$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/payload.mode")" = manager ] && [ -f "$MODDIR/slots.applied" ]; then
     # 管理器挂载在 post-fs-data 之后才进行，删掉文件即可让它这次不挂载

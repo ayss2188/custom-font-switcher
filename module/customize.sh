@@ -34,7 +34,7 @@ LAST=$(tr -d '[:space:]' 2>/dev/null < "$LIB/last_selection")
 [ -n "$LAST" ] || LAST=none
 
 for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh action.sh \
-         post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
+         diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
   chmod 755 "$MODPATH/$f" 2>/dev/null
 done
 rm -f "$MODPATH/customize.sh.bak" 2>/dev/null
@@ -87,10 +87,37 @@ fi
 ui_print " "
 ui_print "若选字体后没能开机，下次开机会自动"
 ui_print "恢复为「无字体」。"
+
+# ---------------------------------------------------------------------------
+# 一键体检：安装时立刻执行（不依赖开机脚本是否被执行），
+# 结论直接打印在这里，完整报告写入 Download/字体体检报告.txt
+# ---------------------------------------------------------------------------
+ui_print " "
+ui_print "===================================="
+ui_print "  正在体检：收集字体配置 / 槽位 /"
+ui_print "  挂载 / 日志数据，需要十几秒，请稍等"
+ui_print "===================================="
+if [ -f "$MODPATH/diag.sh" ]; then
+  DIAG_OUT=$(sh "$MODPATH/diag.sh" install 2>&1) || true
+  ui_print " "
+  ui_print "===================================="
+  ui_print "  一键体检结果（这段请发给作者）"
+  ui_print "===================================="
+  if [ -n "$DIAG_OUT" ]; then
+    printf '%s\n' "$DIAG_OUT" | head -n 45 | while IFS= read -r L; do ui_print "$L"; done
+  else
+    ui_print "  体检脚本没有输出，请把上面内容截图发给作者"
+  fi
+  cp -f "$MODPATH/diag.sh" /data/local/tmp/font_diag.sh 2>/dev/null
+  chmod 755 /data/local/tmp/font_diag.sh 2>/dev/null
+else
+  ui_print "  未找到 diag.sh，请把上面内容截图发给作者"
+fi
+ui_print "===================================="
 ui_print "- 完成"
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh action.sh \
-         post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
+         diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
   set_perm "$MODPATH/$f" 0 0 0755
 done

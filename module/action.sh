@@ -33,6 +33,11 @@ case "$MO" in
   *)  echo "本次开机自带挂载：成功 $(echo "$MO" | cut -d, -f1) / 失败 $(echo "$MO" | cut -d, -f2)" ;;
 esac
 echo " "
+# 一键体检：结论会写进 Download/字体体检报告.txt，方便直接发给作者
+if [ -f "$MODDIR/diag.sh" ]; then
+  sh "$MODDIR/diag.sh" install 2>/dev/null
+  echo " "
+fi
 echo "正在检查更新..."
 eval "$(sh "$MODDIR/update.sh" check 2>/dev/null)"
 if [ -z "$NEW_CODE" ]; then
