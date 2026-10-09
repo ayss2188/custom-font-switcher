@@ -101,9 +101,9 @@ GM="无"; { command -v magisk >/dev/null 2>&1 || [ -e /data/adb/magisk ]; } && G
 ui_print " "
 ui_print "- 设备：$(getprop ro.product.brand) $(getprop ro.product.model) / Android $(getprop ro.build.version.release)"
 ui_print "- 门禁速查：已禁用=$GD  待激活=$GU  安全模式=$GS  Magisk共存=$GM"
-ui_print "- 需要诊断报告时（一分钟内出结果）：在 WebUI 里点「查看诊断报告」"
-ui_print "  或「保存到 Download」，也可以点模块卡片上的「操作」按钮；"
-ui_print "  报告会写到 Download/字体体检报告.txt"
+ui_print "- 需要诊断报告时（一分钟内出结果）：在 WebUI 里点「查看诊断报告」，"
+ui_print "  或点模块卡片上的「操作」按钮（不用再手动保存，生成完会自动落到 Download）；"
+ui_print "  快速体检写到 Download/快速体检报告.txt，完整报告写到 完整体检报告.txt"
 if [ -f "$MODPATH/diag.sh" ]; then
   cp -f "$MODPATH/diag.sh" /data/local/tmp/font_diag.sh 2>/dev/null
   chmod 755 /data/local/tmp/font_diag.sh 2>/dev/null

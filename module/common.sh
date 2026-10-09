@@ -166,6 +166,11 @@ mgr_path() {
 # 本次开机的唯一标识（判断挂载记录是不是这次开机写的）
 boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r\n'; }
 
+# 手机正在关机 / 重启：长时间循环必须查这个，不然会拖着 init 的关机流程（"关不了机"的常见原因）
+shutting_down() {
+  [ -n "$(getp sys.powerctl)$(getp sys.shutdown.requested)" ]
+}
+
 # ---------------------------------------------------------------------------
 # 开机心跳：记录每个开机阶段是否真的被执行过（诊断用，见 diag.sh）
 # 只要脚本被 Root 管理器执行过，就会留下一条带 boot_id 的记录；

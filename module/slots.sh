@@ -17,6 +17,10 @@
 
 FSROOT=${FSROOT:-}
 
+# 说明：厂商"个性化字体"（如魅族的 /data/customizecenter/font/flymeFont.ttf）优先级高于
+# /system/fonts，本模块**只做检测、报告，不接管替换**（真机上没验证过的路径，不默认去改）。
+# 检测与提示见 diag.sh 的结论区、第 7 节和 @@SECTION:PERSONALFONT。
+
 _lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # ---------------------------------------------------------------------------

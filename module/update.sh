@@ -40,10 +40,23 @@ fetch() {
     curl -fsSL --connect-timeout 8 -m "$mt" -o "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
   fi
   bb=$(find_busybox)
+  # wget 只有"-T 单次读超时"，没有总时长上限：网络卡在半路时它会一直挂着，
+  # 这个进程又是在后台跑的（父脚本早退了）→ 会一直活到关机窗口里。
+  # 所以有 timeout 就套一层总超时，没有就用 -T（至少别无限等）。
   if [ -n "$bb" ]; then
-    "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "$mt" "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    else
+      "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    fi
   fi
-  command -v wget >/dev/null 2>&1 && wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+  if command -v wget >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "$mt" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    else
+      wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    fi
+  fi
   rm -f "$2"
   return 1
 }
@@ -86,10 +99,35 @@ case "${1:-check}" in
     echo "ERR='$ERR'"
     ;;
   changelog)
-    load_json || { echo "ERROR:$ERR"; exit 1; }
-    [ -n "$LOG_URL" ] || { echo "ERROR:update.json 里没有 changelog 地址"; exit 1; }
-    fetch "$LOG_URL" "$TMP/changelog.md" 25 || { echo "ERROR:下载更新日志失败"; exit 1; }
-    head -c 30000 "$TMP/changelog.md"
+    # 优先用网上的（永远是最新）；拿不到就用随模块打包的那一份 ——
+    # raw.githubusercontent.com 在国内经常连不上，没网时至少还能看到本版的更新说明
+    if load_json && [ -n "$LOG_URL" ] && fetch "$LOG_URL" "$TMP/changelog.md" 25; then
+      head -c 30000 "$TMP/changelog.md"
+      exit 0
+    fi
+    if [ -s "$MODDIR/changelog.md" ]; then
+      echo "（当前无法连接 GitHub，下面是随模块一起装进来的更新日志）"
+      echo
+      head -c 30000 "$MODDIR/changelog.md"
+      exit 0
+    fi
+    echo "ERROR:下载更新日志失败（也找不到随模块打包的 changelog.md）"
+    exit 1
+    ;;
+  # 后台检查更新：立刻返回，网络请求丢到后台做（WebUI 打开时用它，避免占住界面线程）
+  # 结果写到 $TMP/check.out，界面用下面的 checkstate 轮询（每次只是一个 cat）
+  bgcheck)
+    rm -f "$TMP/check.out" "$TMP/check.rc" 2>/dev/null
+    ( sh "$MODDIR/update.sh" check > "$TMP/check.out" 2>&1; echo $? > "$TMP/check.rc" ) &
+    echo "OK:started"
+    ;;
+  checkstate)
+    if [ -f "$TMP/check.rc" ]; then
+      echo "READY=1"
+      cat "$TMP/check.out" 2>/dev/null
+    else
+      echo "READY=0"
+    fi
     ;;
   install)
     load_json || { echo "ERROR:$ERR"; exit 1; }
@@ -101,16 +139,19 @@ case "${1:-check}" in
     # 后台下载 + 每秒刷新进度。
     # 注意：不能用 kill -0 判断子进程是否结束 —— 子进程变成僵尸时 kill -0 仍返回成功，
     # 会死循环卡住（表现为"进度条一直转圈，更新不动"）。改成看结束标记文件。
-    ( fetch "$ZIP_URL" "$ZIP" 300; echo $? > "$TMP/dl.rc" ) &
+    ( fetch "$ZIP_URL" "$ZIP" 180; echo $? > "$TMP/dl.rc" ) &
     DLPID=$!
     waited=0
     while [ ! -f "$TMP/dl.rc" ]; do
+      # 关机中就别再下载了（后台下载进程会一直活到关机窗口里）
+      [ -n "$(getprop sys.powerctl)$(getprop sys.shutdown.requested)" ] && { kill "$DLPID" 2>/dev/null; break; }
       cur=$(wc -c < "$ZIP" 2>/dev/null | tr -d ' \n')
       prog download "${cur:-0}" "$TOTAL" "正在下载刷机包"
       sleep 1
       waited=$((waited + 1))
       if [ "$waited" -ge 600 ]; then
-        kill "$DLPID" 2>/dev/null
+        # 校验 pid 再杀：pid 只可能是 $!，但万一是空的/0/1 就别动
+        case "$DLPID" in ''|*[!0-9]*|0|1) ;; *) kill "$DLPID" 2>/dev/null ;; esac
         break
       fi
     done

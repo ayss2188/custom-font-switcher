@@ -2,7 +2,10 @@
 # 拉丁/数字/谷歌部分为标准 AOSP 命名；中文 flyme 槽为常见命名，
 # 安装时会扫描真机目录补全 FlymeSans/MeizuSans 等实际存在的文件。
 # 注意：魅族另有 /data/customizecenter/font/flymeFont.ttf 个性化字体机制，
-# 简单 system/fonts 覆盖无法接管该路径，本清单只覆盖系统字体链路。
+# 它的优先级高于 /system/fonts —— 只替换系统字体在魅族上可能完全看不出变化。
+# 本模块目前【只检测、不接管】这个路径：诊断报告结论区与第 7 节、以及导出段的
+# @@SECTION:PERSONALFONT 都会把它列出来（大小/修改时间/指纹），先靠报告收数据，
+# 真机确认安全后再考虑适配。
 Roboto-Thin.ttf
 Roboto-ExtraLight.ttf
 Roboto-Light.ttf

@@ -33,10 +33,11 @@ case "$MO" in
   *)  echo "本次开机自带挂载：成功 $(echo "$MO" | cut -d, -f1) / 失败 $(echo "$MO" | cut -d, -f2)" ;;
 esac
 echo " "
-# 诊断报告：手动触发，结论打印在这里，完整报告写入 Download/字体体检报告.txt
+# 诊断报告：手动触发，结论打印在这里，完整报告写入 Download
 if [ -f "$MODDIR/diag.sh" ]; then
-  echo "正在生成诊断报告（一般几秒到十几秒，请稍等）..."
-  echo "报告会保存到 Download/字体体检报告.txt"
+  echo "正在生成诊断报告（一般 1~2 分钟，字体多或机型慢时更久；生成时会主动降优先级，"
+  echo "所以比全速跑慢一些，但不影响你用手机）..."
+  echo "报告会保存到 Download/完整体检报告.txt（快速体检时是 快速体检报告.txt）"
   echo " "
   sh "$MODDIR/diag.sh" install 2>&1
   echo " "

@@ -18,6 +18,7 @@
 #   sh fontctl.sh relink                      修复断开的硬链接（节省空间，开机自动执行）
 #   sh fontctl.sh conflicts                   列出其他同样修改系统字体的模块
 #   sh fontctl.sh report [save]               诊断报告（save 则写到 Download 目录）
+#   sh fontctl.sh diag <brief|full|install|save|bg [force] [fast]|state|text|textpage <off> <len>|partinfo|savenow|cancel|clean|estimate>  一键体检（原样转发给 diag.sh）
 #   sh fontctl.sh sync                        开机后确认 pending -> active
 #   sh fontctl.sh prop                        刷新 module.prop 描述
 #   sh fontctl.sh ack                         清除"已自动恢复"提示
@@ -132,7 +133,7 @@ valid_font() {
 new_id() {
   local t i id
   t=$(date +%s); i=0; id="f$t"
-  while [ -e "$LIB/$id.ttf" ]; do
+  while [ -e "$LIB/$id.ttf" ] && [ "$i" -lt 1000 ]; do
     i=$((i+1)); id="f${t}_$i"
   done
   echo "$id"
@@ -622,7 +623,10 @@ case "${1:-}" in
     ;;
   diag)
     if [ -f "$MODDIR/diag.sh" ]; then
-      sh "$MODDIR/diag.sh" "${2:-full}"
+      # 原样转发后面所有参数：diag bg force fast / diag textpage 60000 60000 / diag state ...
+      shift
+      [ -n "${1:-}" ] || set -- full
+      sh "$MODDIR/diag.sh" "$@"
     else
       echo "ERROR:缺少 diag.sh"
     fi

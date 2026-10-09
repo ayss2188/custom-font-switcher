@@ -13,8 +13,18 @@
 #   payload_mount <模块目录> <阶段名>   挂载，结果写入 mount.state
 #   payload_verify <模块目录>          检查当前可见的系统字体是否就是本模块的文件，输出 "生效数 总数"
 
+# 带超时执行：没有 timeout、或者 timeout 用不了（个别 ROM 上会返回 127）就直接执行。
+# 目的只有一个 —— 任何一次 mount 都不允许把阻塞的 post-fs-data 阶段卡死。
+_to() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 "$@"; _to_rc=$?
+    [ "$_to_rc" = 127 ] || return $_to_rc
+  fi
+  "$@"
+}
+
 payload_mount() {
-  local moddir="$1" id rel src dst err ok=0 fail=0 skip=0
+  local moddir="$1" id rel src dst err ok=0 fail=0 skip=0 same=0
   local map="$moddir/slots.map"
   [ -s "$map" ] || return 0
   while read -r id rel || [ -n "$rel" ]; do
@@ -25,26 +35,35 @@ payload_mount() {
     if [ ! -f "$src" ] || [ ! -f "$dst" ]; then
       skip=$((skip+1)); continue
     fi
-    if err=$(mount -o bind "$src" "$dst" 2>&1); then
-      mount -o remount,bind,ro "$dst" 2>/dev/null
+    # 幂等：已经指向我们的文件了就别再叠一层
+    # （post-fs-data 和 post-mount 万一都跑到，或者被重复调用，会叠出多层挂载且再也数不清）
+    if [ "$(stat -L -c '%d:%i' "$src" 2>/dev/null)" = "$(stat -L -c '%d:%i' "$dst" 2>/dev/null)" ]; then
+      same=$((same+1)); continue
+    fi
+    # 每个挂载加超时：万一某个槽位卡住，绝不能让整个开机阶段跟着卡死（post-fs-data 是阻塞阶段）
+    # 成败看退出码，不看有没有输出 —— mount 成功时也可能打好几行警告
+    err=$(_to mount -o bind "$src" "$dst" 2>&1); rc=$?
+    if [ "$rc" = 0 ]; then
+      _to mount -o remount,bind,ro "$dst" 2>/dev/null
       ok=$((ok+1))
     else
       fail=$((fail+1))
       echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 绑定失败 $src -> $dst : ${err:-未知错误}" >> "$LIB/mount.log" 2>/dev/null
     fi
   done < "$map"
-  echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 阶段=${2:-unknown} 成功=$ok 失败=$fail 跳过=$skip" >> "$LIB/mount.log" 2>/dev/null
+  echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 阶段=${2:-unknown} 成功=$ok 失败=$fail 跳过=$skip 已就位=$same" >> "$LIB/mount.log" 2>/dev/null
   if [ -f "$LIB/mount.log" ]; then
     tail -n 100 "$LIB/mount.log" > "$LIB/mount.log.tmp.$$" 2>/dev/null && mv -f "$LIB/mount.log.tmp.$$" "$LIB/mount.log" 2>/dev/null
   fi
   if command -v beat >/dev/null 2>&1; then
-    beat mount "phase=${2:-unknown} ok=$ok fail=$fail skip=$skip"
+    beat mount "phase=${2:-unknown} ok=$ok fail=$fail skip=$skip same=$same"
   fi
   {
     echo "boot=$(boot_id)"
     echo "ok=$ok"
     echo "fail=$fail"
     echo "skip=$skip"
+    echo "same=$same"
     echo "stage=${2:-unknown}"
     echo "time=$(date +%s)"
   } > "$moddir/mount.state"
