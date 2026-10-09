@@ -355,7 +355,7 @@ try {
     <div class="bar"><i id="progressBar"></i></div>
   </div>
   <div class="g-hint fade" style="--d:.12s">
-    在内置浏览器里勾选一个或多个 .ttf/.otf，一次导入，直接复制，速度很快。TTC 合集请先在电脑上用刷机包 tools 里的 optimize_font.py 拆出单个字体。
+    在内置浏览器里勾选一个或多个 .ttf/.otf，一次导入，直接复制，速度很快。TTC 合集请先用刷机包 tools 里的 optimize_font.py 拆出单个字体（电脑或手机 Termux 均可）。
     <button class="link-btn" id="sysPickBtn" onclick="document.getElementById('fileInput').click()">改用系统选择器（很慢，不推荐）</button><br>
     所选字体会套用到所有字重槽位：静态字体各字重外观相同，可变字体(VF)可保留粗细变化。字体需含中文字形，否则中文会回退到系统字体。
   </div>
@@ -672,9 +672,7 @@ function makeCard(id, name, metaText, f) {
   ba.className = "badge active"; ba.textContent = "当前";
   meta.append(m, bp, ba);
   if (f) {
-    const sc = scopeOf(f);
     const addTag = (text, cls) => { const t = document.createElement("span"); t.className = "tag" + (cls ? " " + cls : ""); t.textContent = text; meta.append(t); };
-    if (sc) addTag(SCOPE_TEXT[sc], "t-info");
     if (f.meta.vf === "1") addTag("可变");
   }
   info.append(n, meta);
@@ -795,7 +793,7 @@ async function selectFont(id) {
     const go = await dialog({
       title: "字体体积较大",
       msg: "「" + f.name + "」有 " + fmtSize(f.size) + "。体积很大的字体会占用更多内存、首次加载更慢，低内存手机上可能出现卡顿。" +
-           "建议先在电脑上精简（刷机包 tools 文件夹里的 optimize_font.py）。仍要使用吗？",
+           "建议先精简（刷机包 tools 文件夹里的 optimize_font.py，电脑或手机 Termux 均可运行）。仍要使用吗？",
       okText: "仍然使用"
     });
     if (!go) return;

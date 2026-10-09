@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-optimize_font.py - 自定义字体切换模块配套的字体精简工具（在电脑上运行，不是在手机上）
+optimize_font.py - 自定义字体切换模块配套的字体精简工具（电脑或手机 Termux 上运行均可）
 
 作用（针对"字体模块刷完很卡 / 体积太大"）：
   1. 可变字体(VF) -> 静态实例：去掉 gvar/fvar/STAT 等变量数据，渲染更直接
@@ -11,7 +11,7 @@ optimize_font.py - 自定义字体切换模块配套的字体精简工具（在�
   4. 修正名称表（避免乱码的字体名）和垂直度量不一致
   5. 容忍个别字形的变量数据损坏（会跳过该字形的变量数据，不让整个流程崩）
 
-依赖：pip install fonttools
+依赖：pip install fonttools（手机 Termux 先 pkg install python，再 pip install fonttools）
 用法示例：
   python optimize_font.py 原字体.ttf -o 精简后.ttf --family "My Sans"
   python optimize_font.py 原字体.ttf -o out.ttf --wght 330            # 指定可变字体的字重
