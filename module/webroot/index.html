@@ -1,0 +1,1472 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>自定义字体切换模块</title>
+<style>
+  :root {
+    --accent: #7C5CFF;
+    --pending-blue: #3a8bff;
+    --ok: #22c55e;
+    --bg: #0e0e10;
+    --card: #1a1a1d;
+    --card-pending: #1a1f2a;
+    --card-press: #232326;
+    --text: #f2f2f2;
+    --text-dim: #9a9a9a;
+    --border: #2c2c2f;
+    --shadow: 0 10px 30px -22px rgba(0,0,0,.7);
+    --toast-bg: #2a2a2d;
+    --glow: rgba(124,92,255,.18);
+    --warn: #f59e0b;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --pending-blue: #2f6fe0;
+    --ok: #16a34a;
+    --bg: #f4f4f6;
+    --card: #ffffff;
+    --card-pending: #eef4ff;
+    --card-press: #ececef;
+    --text: #141418;
+    --text-dim: #71717a;
+    --border: #e4e4e9;
+    --shadow: 0 10px 26px -22px rgba(0,0,0,.35);
+    --toast-bg: #1c1c1e;
+    --accent: #6A48F5;
+    --glow: rgba(106,72,245,.10);
+    --warn: #d97706;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    padding: 20px 16px 40px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Noto Sans CJK SC", "Roboto", sans-serif;
+    transition: background .25s ease, color .25s ease;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(600px 300px at 50% -60px, var(--glow), transparent 70%);
+  }
+
+  .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+  .header h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin: 0; }
+  .theme-btn {
+    flex-shrink: 0; padding: 8px 12px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+    transition: transform .15s ease;
+  }
+  .theme-btn:active { transform: scale(.92); }
+
+  .status-box {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px 16px; margin-bottom: 18px; box-shadow: var(--shadow);
+  }
+  .status-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .status-row + .status-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .status-box .label { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+  .status-box .value { font-size: 15px; font-weight: 600; text-align: right; word-break: break-all; }
+  .value.active { color: var(--accent); }
+  .value.pending { color: var(--pending-blue); }
+  .value.ok { color: var(--ok); }
+  .value.off { color: var(--text-dim); }
+
+  .section-title { color: var(--text-dim); font-size: 12px; margin: 22px 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  .divider { height: 1px; background: var(--border); margin: 24px 0 16px; }
+
+  /* 字体卡片 */
+  .option {
+    position: relative; overflow: hidden;
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    padding: 14px 14px 14px 16px; margin-bottom: 10px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    cursor: pointer; box-shadow: var(--shadow);
+    transition: transform .16s ease, background .22s ease, border-color .22s ease;
+  }
+  .option:active { transform: scale(.97); background: var(--card-press); }
+  .option.is-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 12px 30px -18px var(--accent); }
+  .option.is-pending { border-color: var(--pending-blue); background: var(--card-pending); }
+  .option .info { min-width: 0; flex: 1; }
+  .option .name { font-size: 16px; font-weight: 600; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .option .meta { font-size: 12px; color: var(--text-dim); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .badge { display: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .badge.active { color: var(--accent); border: 1px solid var(--accent); }
+  .badge.pending { color: var(--pending-blue); border: 1px solid var(--pending-blue); }
+  .option.is-active .badge.active, .option.is-pending .badge.pending { display: inline-block; }
+
+  .icons { display: flex; gap: 6px; flex-shrink: 0; }
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--border);
+    background: transparent; color: var(--text); font-size: 15px; cursor: pointer; padding: 0;
+  }
+  .icon-btn:active { background: var(--card-press); }
+
+  .option.busy { cursor: progress; }
+  .option .overlay {
+    position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--card); color: var(--pending-blue); font-size: 13px; font-weight: 600; border-radius: 16px;
+  }
+  .spin { width: 16px; height: 16px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty { color: var(--text-dim); font-size: 12px; text-align: center; padding: 14px 0 6px; line-height: 1.6; }
+
+  /* 导入区 */
+  .btn-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .g-btn {
+    flex: 1; padding: 12px 6px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: var(--shadow); transition: transform .15s ease;
+  }
+  .g-btn.primary { background: var(--accent); color: #fff; border: none; }
+  .g-btn.primary-blue { background: var(--pending-blue); color: #fff; border: none; }
+  .g-btn:active { transform: scale(.96); opacity: .85; }
+  .g-btn:disabled { opacity: .5; }
+  .g-hint { color: var(--text-dim); font-size: 11px; margin-bottom: 8px; line-height: 1.6; }
+
+  .path-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .txt {
+    flex: 1; min-width: 0; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font-size: 13px; outline: none;
+  }
+  .txt:focus { border-color: var(--pending-blue); }
+  .path-row .g-btn { flex: 0 0 auto; padding: 0 16px; }
+
+  .scan-list { margin-bottom: 8px; }
+  .scan-item {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 12px; margin-bottom: 6px; cursor: pointer;
+  }
+  .scan-item:active { background: var(--card-press); }
+  .scan-item .n { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scan-item .p { font-size: 11px; color: var(--text-dim); word-break: break-all; margin-top: 2px; }
+
+  .progress { display: none; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 8px; }
+  .progress.show { display: block; }
+  .progress .t { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--pending-blue); transition: width .15s linear; }
+
+  .reboot-btn {
+    width: 100%; padding: 15px; border: none; border-radius: 16px; background: var(--accent);
+    color: #fff; font-size: 16px; font-weight: 600; letter-spacing: 1px; cursor: pointer;
+    transition: transform .15s ease, opacity .15s ease;
+  }
+  .reboot-btn:active { transform: scale(.98); opacity: .9; }
+  .hint { text-align: center; color: var(--text-dim); font-size: 12px; margin-top: 10px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translate(-50%, 14px);
+    background: var(--toast-bg); color: #fff; padding: 10px 16px; border-radius: 14px;
+    font-size: 13px; line-height: 1.45; text-align: center; opacity: 0;
+    transition: opacity .25s ease, transform .25s cubic-bezier(.22,.8,.34,1);
+    pointer-events: none; max-width: 88vw; box-shadow: 0 10px 30px -12px rgba(0,0,0,.5); z-index: 30;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* 弹窗 */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.55);
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .modal-mask.show { display: flex; }
+  .modal { width: 100%; max-width: 360px; background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 18px; }
+  .modal h3 { margin: 0 0 8px; font-size: 16px; }
+  .modal p { margin: 0 0 12px; font-size: 13px; color: var(--text-dim); line-height: 1.55; word-break: break-all; }
+  .modal .txt { width: 100%; margin-bottom: 12px; }
+  .modal .btn-row { margin: 0; }
+
+
+  /* 多选 / 批量 */
+  .manage-btn {
+    padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border);
+    background: transparent; color: var(--text-dim); font-size: 12px; cursor: pointer;
+  }
+  .manage-btn.on { color: #fff; background: var(--pending-blue); border-color: var(--pending-blue); }
+  .ckbox {
+    width: 24px; height: 24px; border-radius: 8px; border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    color: transparent; font-size: 14px; font-weight: 700; flex-shrink: 0;
+  }
+  .option.selected { border-color: var(--pending-blue); }
+  .option.selected .ckbox, .pick-item.selected .ckbox { background: var(--pending-blue); border-color: var(--pending-blue); color: #fff; }
+  .option.locked { opacity: .55; }
+  .batch-btn {
+    width: 100%; padding: 13px; border: none; border-radius: 14px; background: var(--accent);
+    color: #fff; font-size: 14px; font-weight: 600; margin-bottom: 10px; cursor: pointer;
+  }
+  .batch-btn:active { opacity: .85; }
+  .batch-btn:disabled { opacity: .5; }
+
+  .banner {
+    display: none; background: var(--card-pending); border: 1px solid var(--pending-blue);
+    border-radius: 14px; padding: 12px 14px; margin-bottom: 18px; font-size: 13px; line-height: 1.55;
+  }
+  .banner.show { display: block; }
+  .banner.warn { border-color: var(--warn); background: transparent; }
+  .banner.warn button { border-color: var(--warn); color: var(--warn); }
+  .value.warn { color: var(--warn); }
+  .combo-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 8px; box-shadow: var(--shadow); }
+  .combo-box .lbl { font-size: 12px; color: var(--text-dim); margin: 0 0 6px; }
+  .combo-box select.txt { margin-bottom: 10px; }
+  .combo-box .g-btn { width: 100%; }
+  .changelog { white-space: pre-wrap; font-size: 12px; line-height: 1.6; max-height: 46vh; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 10px; margin-bottom: 12px; color: var(--text); }
+  .foot { text-align: center; color: var(--text-dim); font-size: 11px; margin-top: 18px; }
+  .banner button {
+    margin-top: 8px; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--pending-blue);
+    background: transparent; color: var(--pending-blue); font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  .import-main { width: 100%; padding: 14px; border: none; border-radius: 14px; background: var(--pending-blue); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; margin-bottom: 8px; }
+  .import-main:active { opacity: .85; transform: scale(.98); }
+  .import-main:disabled { opacity: .5; }
+  .link-btn { background: none; border: none; color: var(--text-dim); font-size: 12px; text-decoration: underline; cursor: pointer; padding: 4px 0; }
+  .link-btn:disabled { opacity: .5; }
+
+  /* 文件浏览器（全屏面板） */
+  .sheet { position: fixed; inset: 0; z-index: 15; background: var(--bg); display: none; flex-direction: column; }
+  .sheet.show { display: flex; }
+  .sheet-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px; }
+  .sheet-title { font-size: 16px; font-weight: 600; flex: 1; }
+  .sheet-x { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 15px; cursor: pointer; }
+  .sheet-path { padding: 0 16px 8px; font-size: 12px; color: var(--text-dim); word-break: break-all; }
+  .sheet-tools { display: flex; gap: 8px; padding: 0 16px 10px; flex-wrap: wrap; }
+  .chip { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 12px; cursor: pointer; }
+  .chip:active { background: var(--card-press); }
+  .sheet-list { flex: 1; overflow-y: auto; padding: 0 16px 12px; }
+  .pick-item {
+    display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 11px 12px; margin-bottom: 6px; cursor: pointer;
+  }
+  .pick-item:active { background: var(--card-press); }
+  .pick-item.selected { border-color: var(--pending-blue); }
+  .pick-item .pico { font-size: 16px; flex-shrink: 0; }
+  .pick-item .pname { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pick-item .psize { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+  .pick-item .arrow { color: var(--text-dim); flex-shrink: 0; }
+  .sheet-foot { padding: 10px 16px 18px; border-top: 1px solid var(--border); background: var(--bg); }
+  .sheet-foot .g-btn { width: 100%; padding: 14px; font-size: 15px; }
+
+  .tag { font-size: 11px; border-radius: 6px; padding: 1px 6px; background: var(--card-press); color: var(--text-dim); white-space: nowrap; }
+  .tag.t-warn { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+  .tag.t-info { background: transparent; border: 1px solid var(--pending-blue); color: var(--pending-blue); }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 8px; cursor: pointer; }
+  .switch-row .t { font-size: 14px; font-weight: 600; }
+  .switch-row .d { font-size: 11px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
+  .sw { flex-shrink: 0; width: 44px; height: 26px; border-radius: 13px; background: var(--border); position: relative; transition: background .2s; }
+  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .sw.on { background: var(--pending-blue); }
+  .sw.on::after { transform: translateX(18px); }
+  select.txt { width: 100%; margin-bottom: 12px; }
+  .modal .lbl { font-size: 12px; color: var(--text-dim); margin: 0 0 6px; }
+  textarea.report { width: 100%; height: 46vh; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11px; line-height: 1.5; padding: 10px; resize: none; font-family: monospace; margin-bottom: 12px; }
+  .fade { animation: fadeUp .5s cubic-bezier(.22,.8,.34,1) both; animation-delay: var(--d, 0s); }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
+</style>
+<script>
+try {
+  var _t = localStorage.getItem("cf_theme") || "auto";
+  if (_t !== "light" && _t !== "dark") {
+    _t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  }
+  document.documentElement.setAttribute("data-theme", _t);
+} catch (e) {}
+</script>
+</head>
+<body>
+
+  <div class="header fade">
+    <div>
+      <h1>自定义字体切换模块</h1>
+      <div class="subtitle">默认不替换字体 · 中英文可分别选择 · 重启生效</div>
+    </div>
+    <button class="theme-btn" id="themeBtn" onclick="cycleTheme()" aria-label="切换主题">🌓 自动</button>
+  </div>
+
+  <div class="status-box fade" style="--d:.03s">
+    <div class="status-row">
+      <span class="label">当前实际生效</span>
+      <span class="value active" id="activeLabel">读取中...</span>
+    </div>
+    <div class="status-row" id="pendingRow" style="display:none;">
+      <span class="label">待生效（下次重启后）</span>
+      <span class="value pending" id="pendingLabel">-</span>
+    </div>
+    <div class="status-row">
+      <span class="label">已替换槽位</span>
+      <span class="value" id="slotLabel">-</span>
+    </div>
+    <div class="status-row">
+      <span class="label">实际挂载</span>
+      <span class="value" id="mountLabel">-</span>
+    </div>
+    <div class="status-row">
+      <span class="label">识别系统</span>
+      <span class="value" id="romLabel">读取中...</span>
+    </div>
+  </div>
+
+  <div class="banner" id="rescueBanner">
+    ⚠ 检测到上次选字体后没能正常开机，已自动恢复为「无字体」。建议换一个字体再试。
+    <br><button onclick="ackRescue()">知道了</button>
+  </div>
+  <div class="banner warn" id="conflictBanner">
+    ⚠ 检测到其他字体模块：<b id="conflictNames"></b>。多个字体模块会互相覆盖，建议在管理器里停用它们后重启。
+  </div>
+  <div class="banner warn" id="missedBanner">
+    ⚠ 本次开机没有执行自带挂载，你的 Root 管理器可能不支持 post-mount 阶段。可在下方「替换范围（高级）」里改为「交给管理器挂载」后再试。
+  </div>
+  <div class="banner" id="updateBanner">
+    发现新版本 <b id="updateBannerVer"></b>，可在页面下方「模块更新」里下载安装。
+  </div>
+
+  <div class="section-title fade" style="--d:.05s">
+    <span>字体库（点击卡片切换）</span>
+    <button class="manage-btn" id="manageBtn" onclick="toggleManage()">多选</button>
+  </div>
+  <div id="fontList"></div>
+  <button class="batch-btn" id="batchBtn" style="display:none" onclick="batchDelete()">删除选中 (0)</button>
+
+  <div class="section-title fade"><span>中英文分别选择</span></div>
+  <div class="combo-box fade">
+    <div class="lbl">中文字体（中文槽位和中英混合主槽位）</div>
+    <select class="txt" id="comboCjk"></select>
+    <div class="lbl">英文 / 数字字体（Roboto、Google Sans 等拉丁槽位）</div>
+    <select class="txt" id="comboLat"></select>
+    <button class="g-btn primary-blue" id="comboBtn" onclick="applyCombo()">应用组合</button>
+  </div>
+  <div class="g-hint">适合「中文用 A 字体、英文数字用 B 字体」。两个选同一个字体等于普通切换。注意：中英混合的系统主字体只能用中文字体，所以部分界面里的英文仍会显示中文字体自带的英文。</div>
+
+  <div class="section-title fade" style="--d:.08s"><span>导入字体</span></div>
+  <button class="import-main fade" style="--d:.1s" id="importBtn" onclick="openBrowser()">📂 选择字体文件（可多选）</button>
+  <input type="file" id="fileInput" accept=".ttf,.otf" multiple style="display:none" onchange="onFilePicked(this)">
+  <div class="progress" id="progress">
+    <div class="t" id="progressText">准备中...</div>
+    <div class="bar"><i id="progressBar"></i></div>
+  </div>
+  <div class="g-hint fade" style="--d:.12s">
+    在内置浏览器里勾选一个或多个 .ttf/.otf，一次导入，直接复制，速度很快。TTC 合集请先在电脑上用刷机包 tools 里的 optimize_font.py 拆出单个字体。
+    <button class="link-btn" id="sysPickBtn" onclick="document.getElementById('fileInput').click()">改用系统选择器（很慢，不推荐）</button><br>
+    所选字体会套用到所有字重槽位：静态字体各字重外观相同，可变字体(VF)可保留粗细变化。字体需含中文字形，否则中文会回退到系统字体。
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section-title fade"><span>替换范围（高级）</span></div>
+  <div class="switch-row fade" onclick="toggleSetting('keep_lang')">
+    <div><div class="t">保留日韩及其他文字的字体槽</div><div class="d">推荐开启。关闭后这些槽位也会换成你的字体，字体若没有对应文字会显示方块。</div></div>
+    <div class="sw on" id="sw_keep_lang"></div>
+  </div>
+  <div class="switch-row fade" onclick="toggleSetting('keep_special')">
+    <div><div class="t">保留衬线 / 等宽 / 时钟 / 展示 / 斜体槽</div><div class="d">推荐开启。避免终端、锁屏时钟、斜体等被统一成同一个字体。</div></div>
+    <div class="sw on" id="sw_keep_special"></div>
+  </div>
+  <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
+    <div><div class="t">模块自带挂载（推荐）</div><div class="d">不需要元模块，能覆盖 my_product、mi_ext 等厂商分区。关闭后交给 Root 管理器 / 元模块挂载（传统方式）。</div></div>
+    <div class="sw on" id="sw_mount_mode"></div>
+  </div>
+  <div class="g-hint">修改后会按当前选择自动重新生成，重启生效。</div>
+  <div class="btn-row">
+    <button class="g-btn" onclick="showReport()">查看诊断报告</button>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section-title fade"><span>谷歌字体兼容</span></div>
+  <div class="status-box fade">
+    <div class="status-row">
+      <span class="label">当前状态</span>
+      <span class="value off" id="googleLabel">读取中...</span>
+    </div>
+  </div>
+  <div class="btn-row fade">
+    <button class="g-btn" onclick="googleAction('status')">重新检测</button>
+    <button class="g-btn" id="enableBtn" onclick="googleAction('enable')">开启兼容</button>
+    <button class="g-btn" id="restoreBtn" onclick="googleAction('restore')">关闭兼容</button>
+  </div>
+  <div class="g-hint fade">开启/关闭立即生效（用于 Chrome / Gmail 等被 GMS 下载字体覆盖的情况）。只会恢复本模块停用过的组件，卸载模块时自动恢复。</div>
+
+  <div class="divider"></div>
+
+  <div class="section-title fade"><span>模块更新（GitHub）</span></div>
+  <div class="status-box fade">
+    <div class="status-row">
+      <span class="label">当前版本</span>
+      <span class="value" id="curVerLabel">-</span>
+    </div>
+    <div class="status-row">
+      <span class="label">最新版本</span>
+      <span class="value off" id="newVerLabel">未检查</span>
+    </div>
+  </div>
+  <div class="btn-row fade">
+    <button class="g-btn" id="checkBtn" onclick="checkUpdate(true)">检查更新</button>
+    <button class="g-btn" onclick="showChangelog()">更新日志</button>
+    <button class="g-btn" id="installBtn" onclick="installUpdate()" disabled>下载并安装</button>
+  </div>
+  <div class="btn-row fade">
+    <button class="g-btn" onclick="setMirror()">下载镜像：<span id="mirrorLabel">不使用</span></button>
+  </div>
+  <div class="g-hint fade">在手机上直接从 GitHub 下载新版刷机包，校验后用当前 Root 管理器安装，字体库和设置会保留，安装完重启生效。国内网络连不上 GitHub 时可设置镜像。</div>
+
+  <div class="divider"></div>
+
+  <button class="reboot-btn fade" id="rebootBtn" onclick="doReboot()">立即重启生效</button>
+  <div class="hint fade" id="rebootHint">切换字体后不会立刻改变，需要重启手机</div>
+  <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生</div>
+
+  <div class="sheet" id="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">选择字体（可多选）</div>
+      <button class="sheet-x" onclick="closeBrowser()" aria-label="关闭">✕</button>
+    </div>
+    <div class="sheet-path" id="fbPath"></div>
+    <div class="sheet-tools">
+      <button class="chip" onclick="fbLoad(FB_ROOT)">🏠 根目录</button>
+      <button class="chip" onclick="fbLoad(FB_ROOT + '/Download')">⬇ Download</button>
+      <button class="chip" onclick="fbUp()">↩ 上一级</button>
+      <button class="chip" id="fbAllBtn" onclick="fbSelectAll()">全选本页</button>
+      <button class="chip" onclick="fbClear()">清空已选</button>
+    </div>
+    <div class="sheet-list" id="fbList"></div>
+    <div class="sheet-foot">
+      <button class="g-btn primary-blue" id="fbImport" onclick="fbImport()">导入选中 (0)</button>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="reportMask">
+    <div class="modal">
+      <h3>诊断报告</h3>
+      <textarea class="report" id="reportText" readonly></textarea>
+      <div class="btn-row">
+        <button class="g-btn" onclick="saveReport()">保存到 Download</button>
+        <button class="g-btn primary-blue" onclick="document.getElementById('reportMask').classList.remove('show')">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="logMask">
+    <div class="modal">
+      <h3>更新日志</h3>
+      <div class="changelog" id="logText"></div>
+      <div class="btn-row">
+        <button class="g-btn primary-blue" onclick="document.getElementById('logMask').classList.remove('show')">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="modal-mask" id="modalMask">
+    <div class="modal">
+      <h3 id="modalTitle"></h3>
+      <p id="modalMsg"></p>
+      <input class="txt" id="modalInput" type="text" maxlength="40" style="display:none">
+      <div class="lbl" id="modalSelLbl" style="display:none"></div>
+      <select class="txt" id="modalSelect" style="display:none"></select>
+      <div class="btn-row">
+        <button class="g-btn" id="modalCancel">取消</button>
+        <button class="g-btn primary" id="modalOk">确定</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const MODDIR = "/data/adb/modules/custom_font_switcher";
+const LIB = "/data/adb/custom_font_lib";
+const NONE_LABEL = "无字体（系统默认）";
+const ROM_NAMES = {hyperos:"澎湃OS/HyperOS/MIUI", coloros:"ColorOS/OPPO/一加/realme", originos:"OriginOS/vivo/iQOO", flyme:"Flyme/魅族", samsung:"三星 One UI（通用适配）", honor:"荣耀 MagicOS（通用适配）", huawei:"华为 EMUI/鸿蒙（通用适配）", nothing:"Nothing OS（通用适配）", aosp:"原生/类原生/谷歌Pixel"};
+const BIG_FONT = 20 * 1048576;     // 超过这个体积给出提示
+const HUGE_FONT = 30 * 1048576;    // 超过这个体积应用前要确认
+const SCOPE_TEXT = {all: "中英文", latin: "仅英文/数字", cjk: "仅中文", combo: "中英分别"};
+const THEME_LABELS = {auto:"🌓 自动", light:"☀️ 浅色", dark:"🌙 深色"};
+
+let cbCounter = 0, busy = false, themePref = "auto", toastTimer = null;
+let fonts = [];            // [{id,name,size}]
+let activeId = "none", pendingId = "none";
+let manageMode = false;
+const selected = new Set();   // 字体库多选
+
+/* ---------- 基础工具 ---------- */
+function ksuExec(cmd) {
+  return new Promise((resolve, reject) => {
+    if (typeof ksu === "undefined" || typeof ksu.exec !== "function") { reject(new Error("NO_BRIDGE")); return; }
+    const cbName = "__ksu_cb_" + (cbCounter++);
+    window[cbName] = (errno, stdout, stderr) => {
+      delete window[cbName];
+      if (errno === 0) resolve(stdout);
+      else reject(new Error(((stdout || "") + (stderr || "")).trim() || ("errno=" + errno)));
+    };
+    try { ksu.exec(cmd, "{}", cbName); } catch (e) { delete window[cbName]; reject(e); }
+  });
+}
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const errText = e => String(e && e.message || e).replace(/^ERROR:/, "");
+const fmtSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+const nextPaint = () => new Promise(r => setTimeout(r, 50));
+const baseName = p => p.split("/").pop();
+const stripExt = n => n.replace(/\.[^.]+$/, "");
+
+function showToast(msg, sticky) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  if (toastTimer) clearTimeout(toastTimer);
+  if (!sticky) toastTimer = setTimeout(() => t.classList.remove("show"), 2800);
+}
+
+function setValue(id, text) {
+  const el = document.getElementById(id);
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+/* ---------- 主题 ---------- */
+function systemLight() { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches); }
+function applyTheme(pref) {
+  themePref = pref;
+  const resolved = pref === "auto" ? (systemLight() ? "light" : "dark") : pref;
+  document.documentElement.setAttribute("data-theme", resolved);
+  const btn = document.getElementById("themeBtn");
+  if (btn) btn.textContent = THEME_LABELS[pref] || "🌓 自动";
+  try { localStorage.setItem("cf_theme", pref); } catch (e) {}
+}
+function cycleTheme() {
+  const order = ["auto", "light", "dark"];
+  applyTheme(order[(order.indexOf(themePref) + 1) % order.length]);
+  showToast("主题：" + (themePref === "auto" ? "跟随系统" : themePref === "light" ? "浅色" : "深色"));
+}
+
+/* ---------- 弹窗 ---------- */
+function dialog({title, msg = "", input = null, select = null, okText = "确定", danger = false}) {
+  return new Promise(resolve => {
+    const mask = document.getElementById("modalMask");
+    const inp = document.getElementById("modalInput");
+    const sel = document.getElementById("modalSelect");
+    const selLbl = document.getElementById("modalSelLbl");
+    const ok = document.getElementById("modalOk");
+    const cancel = document.getElementById("modalCancel");
+    document.getElementById("modalTitle").textContent = title;
+    const p = document.getElementById("modalMsg");
+    p.textContent = msg; p.style.display = msg ? "block" : "none";
+    inp.style.display = input === null ? "none" : "block";
+    if (input !== null) inp.value = input;
+    sel.textContent = "";
+    selLbl.style.display = sel.style.display = select ? "block" : "none";
+    if (select) {
+      selLbl.textContent = select.label;
+      select.options.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.append(o); });
+      sel.value = select.value;
+    }
+    ok.textContent = okText;
+    ok.className = "g-btn " + (danger ? "primary" : "primary-blue");
+    const done = v => { mask.classList.remove("show"); ok.onclick = cancel.onclick = null; resolve(v); };
+    ok.onclick = () => done(select ? {text: inp.value.trim(), sel: sel.value} : (input === null ? true : inp.value.trim()));
+    cancel.onclick = () => done(null);
+    mask.classList.add("show");
+    if (input !== null) setTimeout(() => { inp.focus(); inp.select(); }, 80);
+  });
+}
+
+/* ---------- 状态 / 字体库 ---------- */
+// 选择格式：none | <id> | <中文id>+<英文id>
+const selIds = s => (!s || s === "none") ? [] : s.split("+");
+function nameOf(id) {
+  const f = fonts.find(x => x.id === id);
+  return f ? f.name : id;
+}
+function labelOf(id) {
+  if (!id || id === "none") return NONE_LABEL;
+  const p = selIds(id);
+  return p.length === 2 ? "中文 " + nameOf(p[0]) + " + 英文 " + nameOf(p[1]) : nameOf(id);
+}
+
+async function refreshAll() {
+  try {
+    const listOut = await ksuExec(`sh ${MODDIR}/fontctl.sh list`);
+    fonts = listOut.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+      const p = l.split("|");
+      const id = p.shift();
+      const metaStr = p.pop();
+      const size = parseInt(p.pop(), 10) || 0;
+      const meta = {};
+      (metaStr || "").split(",").forEach(kv => { const i = kv.indexOf("="); if (i > 0) meta[kv.slice(0, i)] = kv.slice(i + 1); });
+      return {id, name: p.join("|") || id, size, meta};
+    });
+    const st = await ksuExec(`sh ${MODDIR}/fontctl.sh status`);
+    const g = k => (st.match(new RegExp("^" + k + "=(.*)$", "m")) || [])[1] || "";
+    activeId = g("A").trim() || "none";
+    pendingId = g("P").trim() || activeId;
+    const rom = g("R").trim();
+    const nSlots = g("N").trim();
+    setValue("slotLabel", nSlots && +nSlots > 0 ? nSlots + " 个" : "0（未替换）");
+    document.getElementById("rescueBanner").classList.toggle("show", g("X") === "1");
+    document.getElementById("missedBanner").classList.toggle("show", g("MM") === "1");
+    setValue("romLabel", ROM_NAMES[rom] || rom || "未知");
+    setValue("curVerLabel", g("V") || "-");
+    mountMode = g("M") === "manager" ? "manager" : "self";
+    const mo = g("MO").split(",");
+    const ml = document.getElementById("mountLabel");
+    ml.classList.remove("warn", "ok");
+    if (g("PM") === "manager") setValue("mountLabel", "交给管理器挂载");
+    else if (activeId === "none") setValue("mountLabel", "无需挂载");
+    else if (mo[0] !== "") {
+      setValue("mountLabel", "自带挂载 成功 " + mo[0] + (+mo[1] ? " / 失败 " + mo[1] : ""));
+      ml.classList.add(+mo[1] ? "warn" : "ok");
+    } else { setValue("mountLabel", "本次开机未挂载"); ml.classList.add("warn"); }
+    render();
+  } catch (e) {
+    setValue("activeLabel", "无法读取（请在支持WebUI的模块管理器中打开）");
+    setValue("romLabel", "无法读取");
+  }
+  refreshConflicts();
+}
+
+async function refreshConflicts() {
+  try {
+    const out = (await ksuExec(`sh ${MODDIR}/fontctl.sh conflicts`)).trim();
+    const names = out ? out.split("\n").map(l => l.split("|")[1] || l.split("|")[0]) : [];
+    document.getElementById("conflictNames").textContent = names.join("、");
+    document.getElementById("conflictBanner").classList.toggle("show", names.length > 0);
+  } catch (e) {}
+}
+
+function isLocked(id) { return selIds(activeId).includes(id) || selIds(pendingId).includes(id); }
+
+function autoScope(meta) {
+  if (meta.latin === undefined && meta.cjk === undefined) return null;
+  if (meta.cjk === "1" && meta.latin === "1") return "all";
+  if (meta.latin === "1") return "latin";
+  if (meta.cjk === "1") return "cjk";
+  return "latin";
+}
+function scopeOf(f) {
+  const s = f.meta && f.meta.scope;
+  return (s === "all" || s === "latin" || s === "cjk") ? s : autoScope(f.meta || {});
+}
+
+function makeCard(id, name, metaText, f) {
+  const card = document.createElement("div");
+  card.className = "option";
+  card.dataset.id = id;
+
+  const info = document.createElement("div");
+  info.className = "info";
+  const n = document.createElement("div");
+  n.className = "name"; n.textContent = name;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const m = document.createElement("span");
+  m.textContent = metaText;
+  const bp = document.createElement("span");
+  bp.className = "badge pending"; bp.textContent = "待生效";
+  const ba = document.createElement("span");
+  ba.className = "badge active"; ba.textContent = "当前";
+  meta.append(m, bp, ba);
+  if (f) {
+    const sc = scopeOf(f);
+    const addTag = (text, cls) => { const t = document.createElement("span"); t.className = "tag" + (cls ? " " + cls : ""); t.textContent = text; meta.append(t); };
+    addTag(sc ? SCOPE_TEXT[sc] : "覆盖未知", sc ? "t-info" : "");
+    if (f.meta.vf === "1") addTag("可变");
+    if (f.size >= BIG_FONT) addTag("大文件", "t-warn");
+  }
+  info.append(n, meta);
+  card.append(info);
+
+  card.classList.toggle("is-active", id === activeId);
+  card.classList.toggle("is-pending", pendingId !== activeId && id === pendingId);
+  return card;
+}
+
+function render() {
+  setValue("activeLabel", labelOf(activeId));
+  const hasPending = pendingId !== activeId;
+  document.getElementById("pendingRow").style.display = hasPending ? "flex" : "none";
+  if (hasPending) setValue("pendingLabel", labelOf(pendingId));
+
+  // 字体被删掉后，清理多选里失效的项
+  [...selected].forEach(id => { if (!fonts.some(f => f.id === id) || isLocked(id)) selected.delete(id); });
+
+  const box = document.getElementById("fontList");
+  box.textContent = "";
+
+  const none = makeCard("none", NONE_LABEL, "不替换任何系统字体（默认）");
+  if (manageMode) none.classList.add("locked");
+  none.onclick = () => { if (manageMode) showToast("这一项不能删除"); else selectFont("none"); };
+  box.append(none);
+
+  fonts.forEach(f => {
+    const card = makeCard(f.id, f.name, fmtSize(f.size), f);
+    if (manageMode) {
+      const locked = isLocked(f.id);
+      if (locked) card.classList.add("locked");
+      card.classList.toggle("selected", selected.has(f.id));
+      const ck = document.createElement("div");
+      ck.className = "ckbox"; ck.textContent = "✓";
+      card.append(ck);
+      card.onclick = () => toggleSelect(f.id, card);
+    } else {
+      card.onclick = () => selectFont(f.id);
+      const icons = document.createElement("div");
+      icons.className = "icons";
+      const ed = document.createElement("button");
+      ed.className = "icon-btn"; ed.textContent = "✎"; ed.setAttribute("aria-label", "编辑");
+      ed.onclick = ev => { ev.stopPropagation(); editFont(f.id); };
+      const del = document.createElement("button");
+      del.className = "icon-btn"; del.textContent = "🗑"; del.setAttribute("aria-label", "删除");
+      del.onclick = ev => { ev.stopPropagation(); deleteFonts([f.id]); };
+      icons.append(ed, del);
+      card.append(icons);
+    }
+    box.append(card);
+  });
+
+  if (!fonts.length) {
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "字体库还是空的，先在下方导入一个字体吧";
+    box.append(e);
+  }
+
+  updateBatchBtn();
+  renderCombo();
+
+  const hint = document.getElementById("rebootHint");
+  hint.textContent = hasPending
+    ? "已选择「" + labelOf(pendingId) + "」，点上面按钮立即重启生效"
+    : "当前没有待生效的更改，重启按钮仍可随时使用";
+}
+
+/* ---------- 字体库多选 / 批量删除 ---------- */
+function updateBatchBtn() {
+  const btn = document.getElementById("batchBtn");
+  btn.style.display = manageMode ? "block" : "none";
+  btn.textContent = "删除选中 (" + selected.size + ")";
+  btn.disabled = selected.size === 0;
+  const mb = document.getElementById("manageBtn");
+  mb.textContent = manageMode ? "完成" : "多选";
+  mb.classList.toggle("on", manageMode);
+}
+
+function toggleManage() {
+  if (busy) return;
+  manageMode = !manageMode;
+  selected.clear();
+  render();
+}
+
+function toggleSelect(id, card) {
+  if (isLocked(id)) { showToast("使用中或待生效的字体不能删除"); return; }
+  if (selected.has(id)) selected.delete(id); else selected.add(id);
+  if (card) card.classList.toggle("selected", selected.has(id));
+  updateBatchBtn();
+}
+
+function batchDelete() {
+  if (selected.size) deleteFonts([...selected]);
+}
+
+function setCardBusy(card, on) {
+  if (!card) return;
+  const old = card.querySelector(".overlay");
+  if (!on) { card.classList.remove("busy"); if (old) old.remove(); return; }
+  if (old) return;
+  const ov = document.createElement("div");
+  ov.className = "overlay";
+  const sp = document.createElement("span"); sp.className = "spin";
+  const tx = document.createElement("span"); tx.textContent = "应用中...";
+  ov.append(sp, tx);
+  card.append(ov);
+  card.classList.add("busy");
+}
+
+/* ---------- 中英文分别选择 ---------- */
+function renderCombo() {
+  const cur = selIds(pendingId);
+  const fill = (elId, want, fallback) => {
+    const sel = document.getElementById(elId);
+    const keep = sel.value;
+    sel.textContent = "";
+    fonts.forEach(f => { const o = document.createElement("option"); o.value = f.id; o.textContent = f.name; sel.append(o); });
+    const pick = [want, keep, fallback].find(v => v && fonts.some(f => f.id === v));
+    if (pick) sel.value = pick;
+  };
+  fill("comboCjk", cur[0], (fonts.find(f => f.meta && f.meta.cjk === "1") || {}).id);
+  fill("comboLat", cur[1] || cur[0], (fonts.find(f => f.meta && f.meta.cjk !== "1" && f.meta.latin === "1") || {}).id);
+  document.getElementById("comboBtn").disabled = fonts.length === 0;
+}
+
+async function applyCombo() {
+  const c = document.getElementById("comboCjk").value, l = document.getElementById("comboLat").value;
+  if (!c || !l) { showToast("请先导入字体"); return; }
+  const fc = fonts.find(f => f.id === c), fl = fonts.find(f => f.id === l);
+  if (c !== l && fc && fc.meta.cjk === "0") {
+    const go = await dialog({title: "中文字体可能没有中文", msg: "「" + fc.name + "」检测不到常用汉字，作为中文字体时中文会回退到系统字体。仍要应用吗？", okText: "仍然应用"});
+    if (!go) return;
+  }
+  if (c !== l && fl && fl.meta.latin === "0") {
+    const go = await dialog({title: "英文字体可能不完整", msg: "「" + fl.name + "」缺少部分英文字母或数字。仍要应用吗？", okText: "仍然应用"});
+    if (!go) return;
+  }
+  await selectFont(c === l ? c : c + "+" + l);
+}
+
+/* ---------- 切换 / 重命名 / 删除 ---------- */
+async function selectFont(id) {
+  if (busy) return;
+  const big = selIds(id).map(x => fonts.find(f => f.id === x)).filter(f => f && f.size >= HUGE_FONT);
+  if (big.length) {
+    const f = big[0];
+    const go = await dialog({
+      title: "字体体积较大",
+      msg: "「" + f.name + "」有 " + fmtSize(f.size) + "。体积很大的字体会占用更多内存、首次加载更慢，低内存手机上可能出现卡顿。" +
+           "建议先在电脑上精简（刷机包 tools 文件夹里的 optimize_font.py）。仍要使用吗？",
+      okText: "仍然使用"
+    });
+    if (!go) return;
+  }
+  busy = true;
+  const card = document.querySelector('.option[data-id="' + id + '"]');
+  setCardBusy(card, true);
+  showToast("正在生成字体文件...", true);
+  await nextPaint();
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh apply ${shq(id)}`);
+    const m = out.match(/^OK:(.*):(\d+):(\w+)\s*$/m);
+    if (m) {
+      showToast(id === "none"
+        ? "已选择「无字体」，重启后恢复系统默认"
+        : "已选择「" + labelOf(id) + "」：将替换 " + m[2] + " 个槽位（" + (SCOPE_TEXT[m[3]] || m[3]) + "），重启后生效");
+    } else showToast("切换失败：" + out.replace(/^ERROR:/, ""));
+  } catch (e) {
+    showToast("切换失败：" + errText(e));
+  } finally {
+    busy = false;
+    await refreshAll();
+  }
+}
+
+async function editFont(id) {
+  if (busy) return;
+  const f = fonts.find(x => x.id === id);
+  if (!f) return;
+  const cur = (f.meta && (f.meta.scope === "all" || f.meta.scope === "latin" || f.meta.scope === "cjk")) ? f.meta.scope : "auto";
+  const auto = autoScope(f.meta || {});
+  const r = await dialog({
+    title: "编辑字体",
+    input: f.name,
+    select: {
+      label: "替换范围",
+      value: cur,
+      options: [
+        ["auto", "自动（" + (auto ? SCOPE_TEXT[auto] : "覆盖未知，按中英文") + "）"],
+        ["all", "中英文全部"],
+        ["latin", "仅英文/数字"],
+        ["cjk", "仅中文"]
+      ]
+    },
+    okText: "保存"
+  });
+  if (!r) return;
+  busy = true;
+  try {
+    if (r.text && r.text !== f.name) await ksuExec(`sh ${MODDIR}/fontctl.sh rename ${shq(id)} ${shq(r.text)}`);
+    if (r.sel !== cur) await ksuExec(`sh ${MODDIR}/fontctl.sh setmeta ${shq(id)} scope=${r.sel}`);
+    showToast(r.sel !== cur && isLocked(id) ? "已保存，正在按新范围重新生成..." : "已保存");
+    if (r.sel !== cur && selIds(pendingId).length === 1 && pendingId === id) await ksuExec(`sh ${MODDIR}/fontctl.sh reapply`);
+  } catch (e) { showToast("保存失败：" + errText(e)); }
+  busy = false;
+  await refreshAll();
+}
+
+async function deleteFonts(ids) {
+  if (busy || !ids.length) return;
+  const msg = ids.length === 1
+    ? "确定从字体库删除「" + labelOf(ids[0]) + "」？"
+    : "确定从字体库删除选中的 " + ids.length + " 个字体？";
+  const ok = await dialog({title: "删除字体", msg, okText: "删除", danger: true});
+  if (!ok) return;
+  busy = true;
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh delete ${ids.map(shq).join(" ")}`);
+    const m = out.match(/OK:(\d+):(\d+)/);
+    const del = m ? +m[1] : 0, skip = m ? +m[2] : 0;
+    if (!del && skip) showToast("使用中或待生效的字体不能删除");
+    else showToast("已删除 " + del + " 个" + (skip ? "，" + skip + " 个使用中已跳过" : ""));
+  } catch (e) { showToast("删除失败：" + errText(e)); }
+  busy = false;
+  selected.clear();
+  manageMode = false;
+  await refreshAll();
+}
+
+async function ackRescue() {
+  try { await ksuExec(`sh ${MODDIR}/fontctl.sh ack`); } catch (e) {}
+  document.getElementById("rescueBanner").classList.remove("show");
+}
+
+/* ---------- 导入 ---------- */
+/* ---------- 字体体检：读取 cmap，判断覆盖范围 / 是否可变 / 字重 ---------- */
+// 只读取字体的表目录和 cmap 等小表（几十 KB），不经过 WebView 传整个文件
+const PROBES = {
+  latin:  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+  digits: "0123456789",
+  han:    "的一是不了人我在有他这中大来上国个到说们为子和你地出道也时年得就那要下以生会自着去之过家学对可她里后小",
+  kana:   "あいうえおかきくけこさしすせそアイウエオカキクケコ",
+  hangul: "한국어글자가나다라마바사아자차카타파하"
+};
+
+async function readHex(path, offset, length) {
+  const out = await ksuExec(`tail -c +${offset + 1} ${shq(path)} | head -c ${length} | od -An -v -tx1 | tr -d ' \\n'`);
+  const hex = out.trim();
+  const u8 = new Uint8Array(hex.length >> 1);
+  for (let i = 0; i < u8.length; i++) u8[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return u8;
+}
+const u16 = (b, o) => (b[o] << 8) | b[o + 1];
+const u32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
+
+// 返回 (codepoint) => 是否有字形
+function cmapLookup(buf) {
+  const n = u16(buf, 2);
+  let best = null, bestScore = -1;
+  for (let i = 0; i < n; i++) {
+    const pid = u16(buf, 4 + i * 8), eid = u16(buf, 6 + i * 8), off = u32(buf, 8 + i * 8);
+    if (off + 4 > buf.length) continue;
+    const fmt = u16(buf, off);
+    let score = -1;
+    if ((pid === 3 && eid === 10) || (pid === 0 && (eid === 4 || eid === 6))) score = fmt === 12 ? 4 : -1;
+    else if ((pid === 3 && eid === 1) || (pid === 0 && eid <= 3)) score = fmt === 4 ? 3 : (fmt === 12 ? 2 : -1);
+    if (score > bestScore) { bestScore = score; best = {off, fmt}; }
+  }
+  if (!best) return null;
+  const t = best.off;
+  if (best.fmt === 12) {
+    const groups = u32(buf, t + 12);
+    return cp => {
+      let lo = 0, hi = groups - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1, g = t + 16 + mid * 12;
+        if (g + 12 > buf.length) return false;
+        const s = u32(buf, g), e = u32(buf, g + 4);
+        if (cp < s) hi = mid - 1; else if (cp > e) lo = mid + 1; else return (u32(buf, g + 8) + cp - s) !== 0;
+      }
+      return false;
+    };
+  }
+  if (best.fmt === 4) {
+    const segX2 = u16(buf, t + 6), seg = segX2 >> 1;
+    const endO = t + 14, startO = endO + segX2 + 2, deltaO = startO + segX2, rangeO = deltaO + segX2;
+    return cp => {
+      if (cp > 0xFFFF) return false;
+      for (let i = 0; i < seg; i++) {
+        if (rangeO + i * 2 + 2 > buf.length) return false;
+        const e = u16(buf, endO + i * 2);
+        if (cp > e) continue;
+        const s = u16(buf, startO + i * 2);
+        if (cp < s) return false;
+        const delta = u16(buf, deltaO + i * 2), ro = u16(buf, rangeO + i * 2);
+        if (ro === 0) return ((cp + delta) & 0xFFFF) !== 0;
+        const a = rangeO + i * 2 + ro + (cp - s) * 2;
+        if (a + 2 > buf.length) return false;
+        const gid = u16(buf, a);
+        return gid !== 0 && ((gid + delta) & 0xFFFF) !== 0;
+      }
+      return false;
+    };
+  }
+  return null;
+}
+
+// 返回元数据对象；失败/不支持时抛出错误
+async function probeFont(path) {
+  const head = await readHex(path, 0, 12);
+  const tag0 = String.fromCharCode(head[0], head[1], head[2], head[3]);
+  if (tag0 === "ttcf") throw new Error("TTC 合集");
+  const num = u16(head, 4);
+  if (!num || num > 64) throw new Error("字体目录异常");
+  const dir = await readHex(path, 12, num * 16);
+  const tables = {};
+  for (let i = 0; i < num; i++) {
+    const o = i * 16;
+    tables[String.fromCharCode(dir[o], dir[o + 1], dir[o + 2], dir[o + 3])] = {off: u32(dir, o + 8), len: u32(dir, o + 12)};
+  }
+  const meta = {vf: tables["fvar"] ? 1 : 0};
+  if (tables["CFF "] || tables["CFF2"]) meta.cff = 1;
+  if (tables["COLR"] || tables["CBDT"] || tables["sbix"]) meta.color = 1;
+  if (tables["maxp"]) meta.glyphs = u16(await readHex(path, tables["maxp"].off + 4, 2), 0);
+  if (tables["OS/2"]) meta.wght = u16(await readHex(path, tables["OS/2"].off + 4, 2), 0);
+  if (tables["cmap"]) {
+    const buf = await readHex(path, tables["cmap"].off, Math.min(tables["cmap"].len, 4 * 1024 * 1024));
+    const has = cmapLookup(buf);
+    if (has) {
+      const ratio = s => { const cps = Array.from(s); return cps.filter(c => has(c.codePointAt(0))).length / cps.length; };
+      meta.latin = ratio(PROBES.latin) >= 0.95 && ratio(PROBES.digits) >= 0.99 ? 1 : 0;
+      meta.cjk = ratio(PROBES.han) >= 0.9 ? 1 : 0;
+      meta.kana = ratio(PROBES.kana) >= 0.8 ? 1 : 0;
+      meta.hangul = ratio(PROBES.hangul) >= 0.8 ? 1 : 0;
+    }
+  }
+  return meta;
+}
+
+// 导入后读取覆盖范围并写入元数据；失败不影响导入（按"覆盖未知"处理）
+async function probeAndSave(id) {
+  try {
+    const m = await probeFont(`${LIB}/${id}.ttf`);
+    const kv = Object.entries(m).map(([k, v]) => k + "=" + v).join(" ");
+    await ksuExec(`sh ${MODDIR}/fontctl.sh setmeta ${shq(id)} ${kv}`);
+  } catch (e) { /* 忽略 */ }
+}
+function setImporting(on) {
+  ["importBtn", "sysPickBtn"].forEach(i => { document.getElementById(i).disabled = on; });
+  if (!on) document.getElementById("progress").classList.remove("show");
+}
+function setProgress(text, ratio) {
+  document.getElementById("progress").classList.add("show");
+  document.getElementById("progressText").textContent = text;
+  document.getElementById("progressBar").style.width = Math.round((ratio || 0) * 100) + "%";
+}
+function summarize(ok, fails) {
+  if (!fails.length) return "导入成功 " + ok + " 个";
+  return "成功 " + ok + " 个，失败 " + fails.length + " 个：" + fails[0];
+}
+
+// 批量导入：items = [[完整路径, 显示名], ...]，每个文件一次 cp，速度快
+async function importMany(items) {
+  if (busy || !items.length) return;
+  busy = true; setImporting(true);
+  let ok = 0; const fails = [];
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const [path, name] = items[i];
+      setProgress("导入 " + (i + 1) + "/" + items.length + "：" + name, i / items.length);
+      await nextPaint();
+      try {
+        const out = await ksuExec(`sh ${MODDIR}/fontctl.sh import ${shq(path)} ${shq(stripExt(name))}`);
+        if (out.indexOf("OK:") === 0) { ok++; setProgress("检查字体覆盖范围：" + name, (i + 1) / items.length); await probeAndSave(out.trim().slice(3)); }
+        else fails.push(name + "：" + out.replace(/^ERROR:/, ""));
+      } catch (e) {
+        fails.push(name + "：" + errText(e));
+      }
+    }
+    setProgress("完成", 1);
+    showToast(summarize(ok, fails));
+  } finally {
+    busy = false; setImporting(false);
+    await refreshAll();
+  }
+}
+
+/* ---------- 文件浏览器（可多选，选择会跨文件夹保留） ---------- */
+const FB_ROOT = "/storage/emulated/0";
+const FB = {path: FB_ROOT, dirs: [], files: []};
+const picked = new Map();   // 完整路径 -> {name, size}
+const b64 = s => btoa(unescape(encodeURIComponent(s)));
+const joinPath = (d, n) => d.replace(/\/$/, "") + "/" + n;
+
+function openBrowser() {
+  if (busy) return;
+  document.getElementById("sheet").classList.add("show");
+  updatePickCount();
+  fbLoad(FB.path);
+}
+function closeBrowser() { document.getElementById("sheet").classList.remove("show"); }
+
+function fbMsg(text) {
+  const list = document.getElementById("fbList");
+  list.textContent = "";
+  const e = document.createElement("div");
+  e.className = "empty"; e.textContent = text;
+  list.append(e);
+}
+
+async function fbLoad(path) {
+  fbMsg("读取中...");
+  document.getElementById("fbPath").textContent = path;
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh ls ${shq(b64(path))}`);
+    const dirs = [], files = [];
+    let cur = path;
+    out.split("\n").forEach(l => {
+      const p = l.replace(/\r$/, "").split("|");
+      if (p[0] === "P") cur = p.slice(1).join("|");
+      else if (p[0] === "D") dirs.push(p.slice(1).join("|"));
+      else if (p[0] === "F") {
+        const size = parseInt(p.pop(), 10) || 0;
+        files.push({n: p.slice(1).join("|"), s: size});
+      }
+    });
+    FB.path = cur;
+    FB.dirs = dirs;
+    FB.files = files.map(f => ({...f, full: joinPath(cur, f.n)}));
+    renderBrowser();
+  } catch (e) {
+    if (path !== FB_ROOT) { showToast("该目录无法读取，已回到根目录"); FB.path = FB_ROOT; fbLoad(FB_ROOT); }
+    else fbMsg("读取失败：" + errText(e));
+  }
+}
+
+function renderBrowser() {
+  document.getElementById("fbPath").textContent = FB.path;
+  const list = document.getElementById("fbList");
+  list.textContent = "";
+
+  FB.dirs.forEach(d => {
+    const it = document.createElement("div");
+    it.className = "pick-item";
+    const ico = document.createElement("span"); ico.className = "pico"; ico.textContent = "📁";
+    const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = d;
+    const ar = document.createElement("span"); ar.className = "arrow"; ar.textContent = "›";
+    it.append(ico, nm, ar);
+    it.onclick = () => fbLoad(joinPath(FB.path, d));
+    list.append(it);
+  });
+
+  FB.files.forEach(f => {
+    const it = document.createElement("div");
+    it.className = "pick-item" + (picked.has(f.full) ? " selected" : "");
+    const ck = document.createElement("div"); ck.className = "ckbox"; ck.textContent = "✓";
+    const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = f.n;
+    const sz = document.createElement("span"); sz.className = "psize"; sz.textContent = fmtSize(f.s);
+    it.append(ck, nm, sz);
+    it.onclick = () => {
+      if (picked.has(f.full)) picked.delete(f.full); else picked.set(f.full, {name: f.n, size: f.s});
+      it.classList.toggle("selected", picked.has(f.full));
+      updatePickCount();
+    };
+    list.append(it);
+  });
+
+  if (!FB.dirs.length && !FB.files.length) fbMsg("这个文件夹里没有子文件夹，也没有 .ttf/.otf 字体");
+  updatePickCount();
+}
+
+function updatePickCount() {
+  const b = document.getElementById("fbImport");
+  b.textContent = "导入选中 (" + picked.size + ")";
+  b.disabled = picked.size === 0;
+  const all = FB.files.length > 0 && FB.files.every(f => picked.has(f.full));
+  document.getElementById("fbAllBtn").textContent = all ? "取消全选" : "全选本页";
+}
+
+function fbUp() {
+  if (FB.path === FB_ROOT) return;
+  fbLoad(FB.path.replace(/\/[^\/]+$/, "") || FB_ROOT);
+}
+function fbSelectAll() {
+  if (!FB.files.length) { showToast("这个文件夹里没有字体"); return; }
+  const all = FB.files.every(f => picked.has(f.full));
+  FB.files.forEach(f => { if (all) picked.delete(f.full); else picked.set(f.full, {name: f.n, size: f.s}); });
+  renderBrowser();
+}
+function fbClear() { picked.clear(); renderBrowser(); }
+
+function fbImport() {
+  if (!picked.size) return;
+  const items = [...picked.entries()].map(([path, v]) => [path, v.name]);
+  picked.clear();
+  closeBrowser();
+  importMany(items);
+}
+
+/* ---------- 系统选择器（备用，慢：按块经 WebView 传输） ---------- */
+const CHUNK = 45000; // 每块字节数（3 的倍数，base64 后约 60KB）
+
+function toB64(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+  return btoa(s);
+}
+
+async function onFilePicked(input) {
+  const list = Array.from(input.files || []);
+  input.value = "";
+  if (!list.length || busy) return;
+  busy = true; setImporting(true);
+  let ok = 0; const fails = [];
+  try {
+    for (let k = 0; k < list.length; k++) {
+      const file = list[k];
+      const tag = list.length > 1 ? "(" + (k + 1) + "/" + list.length + ") " : "";
+      if (!/\.(ttf|otf)$/i.test(file.name)) { fails.push(file.name + "：不是 ttf/otf"); continue; }
+      try {
+        await ksuExec(`sh ${MODDIR}/fontctl.sh upload-start`);
+        for (let off = 0; off < file.size; off += CHUNK) {
+          const buf = new Uint8Array(await file.slice(off, off + CHUNK).arrayBuffer());
+          await ksuExec(`printf '%s' '${toB64(buf)}' | base64 -d >> ${LIB}/.upload.part`);
+          const done = Math.min(off + CHUNK, file.size);
+          setProgress(tag + "传输 " + file.name + " " + fmtSize(done) + "/" + fmtSize(file.size), done / file.size);
+        }
+        const out = await ksuExec(`sh ${MODDIR}/fontctl.sh upload-finish ${file.size} ${shq(stripExt(file.name))}`);
+        if (out.indexOf("OK:") === 0) { ok++; await probeAndSave(out.trim().slice(3)); }
+        else fails.push(file.name + "：" + out.replace(/^ERROR:/, ""));
+      } catch (e) {
+        fails.push(file.name + "：" + errText(e));
+        try { await ksuExec(`rm -f ${LIB}/.upload.part`); } catch (_) {}
+      }
+    }
+    showToast(summarize(ok, fails));
+  } finally {
+    busy = false; setImporting(false);
+    await refreshAll();
+  }
+}
+
+/* ---------- 替换范围设置 / 诊断 ---------- */
+const settings = {keep_lang: "1", keep_special: "1", mount_mode: "self", update_mirror: "off"};
+let mountMode = "self";
+async function loadSettings() {
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh settings`);
+    (out.match(/(\w+)=(\S+)/g) || []).forEach(kv => { const i = kv.indexOf("="); settings[kv.slice(0, i)] = kv.slice(i + 1); });
+  } catch (e) {}
+  ["keep_lang", "keep_special"].forEach(k => document.getElementById("sw_" + k).classList.toggle("on", settings[k] === "1"));
+  document.getElementById("sw_mount_mode").classList.toggle("on", settings.mount_mode !== "manager");
+  setValue("mirrorLabel", settings.update_mirror && settings.update_mirror !== "off" ? settings.update_mirror.replace(/^https:\/\//, "") : "不使用");
+}
+async function toggleSetting(key) {
+  if (busy) return;
+  let nv;
+  if (key === "mount_mode") {
+    nv = settings.mount_mode === "manager" ? "self" : "manager";
+    if (nv === "manager") {
+      const ok = await dialog({
+        title: "改为交给管理器挂载？",
+        msg: "字体文件会放进模块的 system 目录，由 Root 管理器挂载。KernelSU / APatch 需要先装好元模块（如 Hybrid Mount）；my_product、mi_ext 等厂商分区的字体槽可能无法生效。仅在自带挂载不工作时使用。",
+        okText: "改用管理器挂载", danger: true
+      });
+      if (!ok) return;
+    }
+  } else {
+    nv = settings[key] === "1" ? "0" : "1";
+    if (nv === "0") {
+      const ok = await dialog({
+        title: "确认关闭保留？",
+        msg: key === "keep_lang"
+          ? "关闭后，日文/韩文/阿拉伯文等其他文字的字体槽也会被换成你的字体。如果你的字体没有这些文字，对应语言会显示方块。"
+          : "关闭后，衬线、等宽、时钟、展示和斜体槽位也会被换成你的字体，终端和锁屏时钟等可能变得不协调。",
+        okText: "关闭", danger: true
+      });
+      if (!ok) return;
+    }
+  }
+  busy = true;
+  try {
+    await ksuExec(`sh ${MODDIR}/fontctl.sh settings set ${key} ${nv}`);
+    if (pendingId !== "none") {
+      showToast("已修改，正在重新生成...", true);
+      const out = await ksuExec(`sh ${MODDIR}/fontctl.sh reapply`);
+      const m = out.match(/^OK:(.*):(\d+):(\w+)\s*$/m);
+      showToast(m ? "已重新生成：" + m[2] + " 个槽位，重启后生效" : "重新生成失败：" + out.replace(/^ERROR:/, ""));
+    } else showToast("已修改");
+  } catch (e) { showToast("修改失败：" + errText(e)); }
+  busy = false;
+  await loadSettings();
+  await refreshAll();
+}
+async function showReport() {
+  const ta = document.getElementById("reportText");
+  ta.value = "生成中...";
+  document.getElementById("reportMask").classList.add("show");
+  try { ta.value = (await ksuExec(`sh ${MODDIR}/fontctl.sh report`)).trim(); }
+  catch (e) { ta.value = "生成失败：" + errText(e); }
+}
+async function saveReport() {
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh report save`);
+    showToast("已保存到 " + out.trim().replace(/^OK:/, ""));
+  } catch (e) { showToast("保存失败：" + errText(e)); }
+}
+
+/* ---------- 重启 / 谷歌兼容 ---------- */
+async function doReboot() {
+  showToast("即将重启...");
+  try { await ksuExec("reboot"); } catch (e) { showToast("重启命令执行失败：" + errText(e)); }
+}
+
+async function refreshGoogle() {
+  const el = document.getElementById("googleLabel");
+  const enableBtn = document.getElementById("enableBtn");
+  const restoreBtn = document.getElementById("restoreBtn");
+  try {
+    const out = (await ksuExec(`sh ${MODDIR}/google_font.sh status`)).trim();
+    const on = out === "on";
+    if (out === "nogms") {
+      setValue("googleLabel", "未安装 Google Play 服务（无需开启）");
+      el.classList.remove("ok"); el.classList.add("off");
+      return;
+    }
+    setValue("googleLabel", on ? "已开启" : "未开启");
+    el.classList.toggle("ok", on);
+    el.classList.toggle("off", !on);
+    enableBtn.classList.remove("primary-blue"); restoreBtn.classList.remove("primary-blue");
+    (on ? enableBtn : restoreBtn).classList.add("primary-blue");
+  } catch (e) {
+    setValue("googleLabel", "无法读取");
+    el.classList.remove("ok"); el.classList.add("off");
+  }
+}
+
+async function googleAction(action) {
+  if (busy) return;
+  busy = true;
+  showToast("正在执行...", true);
+  await nextPaint();
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/google_font.sh ${action}`);
+    showToast(action === "status" ? (out.trim() === "on" ? "谷歌兼容：已开启" : out.trim() === "nogms" ? "未安装 Google Play 服务" : "谷歌兼容：未开启") : out);
+  } catch (e) {
+    showToast("执行失败：" + errText(e));
+  } finally {
+    busy = false;
+    await refreshGoogle();
+  }
+}
+
+/* ---------- GitHub 更新 ---------- */
+const UPDATE_CHECK_KEY = "cf_update_checked";
+const UPDATE_CACHE_KEY = "cf_update_info";
+let updateInfo = null;
+
+function parseKV(out) {
+  const o = {};
+  out.split("\n").forEach(l => { const m = l.match(/^(\w+)='(.*)'\s*$/); if (m) o[m[1]] = m[2]; });
+  return o;
+}
+
+async function checkUpdate(manual) {
+  const btn = document.getElementById("checkBtn");
+  const lbl = document.getElementById("newVerLabel");
+  btn.disabled = true;
+  if (manual) setValue("newVerLabel", "检查中...");
+  try {
+    const u = parseKV(await ksuExec(`sh ${MODDIR}/update.sh check`));
+    try { localStorage.setItem(UPDATE_CHECK_KEY, String(Date.now())); } catch (e) {}
+    lbl.classList.remove("ok", "warn", "off");
+    if (!u.NEW_CODE) {
+      setValue("newVerLabel", "检查失败");
+      lbl.classList.add("off");
+      if (manual) showToast("检查失败：" + (u.ERR || "未知错误"));
+      return;
+    }
+    try { localStorage.setItem(UPDATE_CACHE_KEY, JSON.stringify(u)); } catch (e) {}
+    renderUpdate(u);
+    if (manual) showToast(u.HAS === "1" ? "发现新版本 " + u.NEW_VER : "已是最新版本");
+  } catch (e) {
+    setValue("newVerLabel", "检查失败");
+    if (manual) showToast("检查失败：" + errText(e));
+  } finally { btn.disabled = false; }
+}
+
+function renderUpdate(u) {
+  const lbl = document.getElementById("newVerLabel");
+  updateInfo = u;
+  const has = u.HAS === "1";
+  setValue("newVerLabel", has ? u.NEW_VER + "（可更新）" : u.NEW_VER + "（已是最新）");
+  lbl.classList.remove("ok", "warn", "off");
+  lbl.classList.add(has ? "warn" : "ok");
+  document.getElementById("installBtn").disabled = !has;
+  document.getElementById("installBtn").classList.toggle("primary-blue", has);
+  document.getElementById("updateBanner").classList.toggle("show", has);
+  setValue("updateBannerVer", u.NEW_VER);
+}
+
+async function showChangelog() {
+  const box = document.getElementById("logText");
+  box.textContent = "读取中...";
+  document.getElementById("logMask").classList.add("show");
+  try { box.textContent = (await ksuExec(`sh ${MODDIR}/update.sh changelog`)).trim() || "（空）"; }
+  catch (e) { box.textContent = "读取失败：" + errText(e); }
+}
+
+async function installUpdate() {
+  if (busy || !updateInfo || updateInfo.HAS !== "1") return;
+  const ok = await dialog({
+    title: "安装新版本 " + updateInfo.NEW_VER + "？",
+    msg: "将从 GitHub 下载刷机包，校验后用当前 Root 管理器安装。字体库、设置和当前字体选择都会保留，安装完成后重启生效。",
+    okText: "下载并安装"
+  });
+  if (!ok) return;
+  busy = true;
+  const btn = document.getElementById("installBtn");
+  btn.disabled = true;
+  showToast("正在下载并安装，请勿离开页面...", true);
+  await nextPaint();
+  try {
+    const out = (await ksuExec(`sh ${MODDIR}/update.sh install`)).trim();
+    const last = out.split("\n").pop();
+    if (last.indexOf("OK:") === 0) {
+      showToast("已安装 " + last.slice(3) + "，重启后生效");
+      setValue("rebootHint", "新版本已安装，点上面按钮立即重启生效");
+    } else showToast("更新失败：" + last.replace(/^ERROR:/, ""));
+  } catch (e) {
+    showToast("更新失败：" + errText(e));
+    btn.disabled = false;
+  } finally { busy = false; }
+}
+
+async function setMirror() {
+  if (busy) return;
+  const cur = settings.update_mirror && settings.update_mirror !== "off" ? settings.update_mirror : "";
+  const r = await dialog({
+    title: "下载镜像",
+    msg: "国内连不上 GitHub 时填写镜像前缀，例如 https://ghfast.top 。留空表示直连 GitHub。镜像由第三方提供，下载后仍会校验 sha256。",
+    input: cur,
+    okText: "保存"
+  });
+  if (r === null) return;
+  const v = r.trim() || "off";
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh settings set update_mirror ${shq(v)}`);
+    showToast(out.indexOf("OK") === 0 ? "已保存" : out.replace(/^ERROR:/, ""));
+  } catch (e) { showToast("保存失败：" + errText(e)); }
+  await loadSettings();
+}
+
+/* ---------- 初始化 ---------- */
+(function initTheme() {
+  let saved = "auto";
+  try { saved = localStorage.getItem("cf_theme") || "auto"; } catch (e) {}
+  if (!["auto", "light", "dark"].includes(saved)) saved = "auto";
+  applyTheme(saved);
+  if (window.matchMedia) {
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => { if (themePref === "auto") applyTheme("auto"); };
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+})();
+
+refreshAll();
+loadSettings();
+refreshGoogle();
+// 每天最多自动检查一次更新，避免每次打开页面都联网；期间显示上次的结果
+(function autoCheck() {
+  let last = 0, cached = null;
+  try { last = +localStorage.getItem(UPDATE_CHECK_KEY) || 0; cached = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || "null"); } catch (e) {}
+  // 已经装上新版本后，旧缓存里的"可更新"不再成立
+  const curVer = () => document.getElementById("curVerLabel").textContent;
+  if (Date.now() - last > 86400000 || !(cached && cached.NEW_CODE)) setTimeout(() => checkUpdate(false), 1500);
+  else setTimeout(() => {
+    if (cached.HAS === "1" && curVer() === cached.NEW_VER) cached.HAS = "0";
+    renderUpdate(cached);
+  }, 800);
+})();
+</script>
+
+</body>
+</html>

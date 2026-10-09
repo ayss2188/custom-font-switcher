@@ -1,0 +1,96 @@
+#!/system/bin/sh
+# 自定义字体切换模块 - 安装脚本（Magisk / KernelSU / APatch 通用）
+# 刷机包里的文件已由管理器解压到 $MODPATH
+
+LIB=/data/adb/custom_font_lib
+MODID=$(sed -n 's/^id=//p' "$MODPATH/module.prop" | head -n1 | tr -d '\r')
+OLD="/data/adb/modules/$MODID"
+
+ui_print "*****************************************"
+ui_print "  自定义字体切换模块 $(sed -n 's/^version=//p' "$MODPATH/module.prop")"
+ui_print "  默认不替换字体 · 中英文可分别选择"
+ui_print "*****************************************"
+
+. "$MODPATH/common.sh"
+mkdir -p "$LIB"
+
+ROM_ID=$(detect_rom)
+ROM_NAME=$(rom_name "$ROM_ID")
+RM=$(root_manager)
+echo "$ROM_ID" > "$MODPATH/current_rom"
+
+# 旧版设置在模块目录里，迁移到字体库目录（以后更新不会丢）
+[ -f "$SETTINGS" ] || { [ -f "$OLD/settings.conf" ] && cp -f "$OLD/settings.conf" "$SETTINGS"; }
+
+# 当前实际生效的字体（升级前的状态），用于界面显示"当前 / 待生效"
+A=$(tr -d '[:space:]' 2>/dev/null < "$OLD/active_font")
+[ -n "$A" ] || A=none
+echo "$A" > "$MODPATH/active_font"
+echo none > "$MODPATH/pending_font"
+
+# 上次的选择：优先字体库记录，其次旧模块的待生效记录
+LAST=$(tr -d '[:space:]' 2>/dev/null < "$LIB/last_selection")
+[ -n "$LAST" ] || LAST=$(tr -d '[:space:]' 2>/dev/null < "$OLD/pending_font")
+[ -n "$LAST" ] || LAST=none
+
+for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh action.sh \
+         post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
+  chmod 755 "$MODPATH/$f" 2>/dev/null
+done
+rm -f "$MODPATH/customize.sh.bak" 2>/dev/null
+
+ui_print " "
+ui_print "- 识别到系统：$ROM_NAME"
+ui_print "- Root 管理器：$(root_manager_name "$RM")"
+ui_print "- 挂载方式：$([ "$(mount_mode)" = manager ] && echo 交给管理器/元模块 || echo 模块自带挂载（无需元模块）)"
+
+RESTORED=0
+if [ "$LAST" != none ]; then
+  ui_print "- 正在恢复上次的字体选择..."
+  OUT=$(sh "$MODPATH/fontctl.sh" apply "$LAST" 2>&1 | tail -n1)
+  case "$OUT" in
+    OK:*)
+      RESTORED=1
+      ui_print "  已恢复：$(echo "$OUT" | cut -d: -f2)（$(echo "$OUT" | cut -d: -f3) 个槽位）"
+      ;;
+    *)
+      ui_print "  恢复失败：${OUT#ERROR:}"
+      ui_print "  已改为「无字体」，请开机后在 WebUI 重新选择"
+      ;;
+  esac
+fi
+[ "$RESTORED" = 1 ] || sh "$MODPATH/fontctl.sh" apply none >/dev/null 2>&1
+sh "$MODPATH/fontctl.sh" prop >/dev/null 2>&1
+
+LIB_COUNT=$(ls "$LIB"/f*.ttf 2>/dev/null | wc -l)
+CONFLICTS=$(sh "$MODPATH/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')
+
+ui_print " "
+ui_print "===================================="
+ui_print "字体库已有：$LIB_COUNT 个字体（$LIB）"
+ui_print "更新 / 重装模块不会丢失字体库和设置"
+ui_print "===================================="
+ui_print "使用方法：在模块管理器打开【WebUI】"
+ui_print "  1. 导入自己的 TTF/OTF 字体（可多选）"
+ui_print "  2. 点选字体，或中英文分别选择"
+ui_print "  3. 重启生效；选「无字体」即恢复默认"
+if [ "$RM" = magisk ]; then
+  ui_print " "
+  ui_print "Magisk 没有 WebUI 入口：请安装 KsuWebUI"
+  ui_print "后点模块卡片上的「操作」按钮打开。"
+fi
+if [ -n "$CONFLICTS" ]; then
+  ui_print " "
+  ui_print "⚠ 检测到其他字体模块：$CONFLICTS"
+  ui_print "  建议先停用它们，避免互相覆盖。"
+fi
+ui_print " "
+ui_print "若选字体后没能开机，下次开机会自动"
+ui_print "恢复为「无字体」。"
+ui_print "- 完成"
+
+set_perm_recursive "$MODPATH" 0 0 0755 0644
+for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh action.sh \
+         post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
+  set_perm "$MODPATH/$f" 0 0 0755
+done

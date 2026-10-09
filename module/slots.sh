@@ -1,0 +1,255 @@
+#!/system/bin/sh
+# slots.sh - 字体槽位发现与分类
+#
+# 思路（吸取"按设备真实情况生成"的做法，而不是固定清单硬铺）：
+#   1. 只替换设备上"真实存在"的字体文件，不凭空创建不存在的路径（减少挂载节点）
+#   2. 候选来源：字体配置 XML 中的主文字族 ∪ 本 ROM 已知文件名 ∪ OEM 命名规则
+#   3. 按文件名给每个槽位分角色，默认不碰：其他文字体系/日韩、符号/Emoji、
+#      衬线/等宽/时钟/展示/斜体 等"高风险"槽位
+#   4. 按字体实际覆盖范围决定范围（中英文 / 仅英文 / 仅中文）
+#
+# 用法（source 后调用）：
+#   slot_plan <模块目录> <scope:all|latin|cjk> <keep_lang:0|1> <keep_special:0|1>
+#     -> 每行输出 "角色 目标路径"，目标路径相对 /，如 latin system/fonts/Roboto-Regular.ttf
+#   slot_report <模块目录>   -> 角色统计（诊断用）
+#
+# FSROOT 仅供测试：把真实路径前缀到一个模拟根目录下。
+
+FSROOT=${FSROOT:-}
+
+_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ---------------------------------------------------------------------------
+# 真实存在的字体目录（输出绝对路径，不含 FSROOT）
+# ---------------------------------------------------------------------------
+slot_dirs() {
+  local d p parent
+  {
+    for d in /system/fonts /system_ext/fonts /product/fonts /vendor/fonts /odm/fonts /oem/fonts \
+             /my_product/fonts /my_region/fonts /my_company/fonts /my_carrier/fonts /my_stock/fonts \
+             /my_heytap/fonts /my_manifest/fonts /my_bigball/fonts /mi_ext/fonts /hw_product/fonts \
+             /prism/fonts /optics/fonts /product/vivo/fonts /system_ext/vivo/fonts /vendor/vivo/fonts \
+             /oplus_product/fonts /oplus_engineering/fonts /oplus_version/fonts /oplus_region/fonts; do
+      [ -d "$FSROOT$d" ] && echo "$d"
+    done
+    # 未知厂商分区自动发现：/xxx/fonts 与 /xxx/yyy/fonts
+    for d in "$FSROOT"/*/fonts "$FSROOT"/*/*/fonts; do
+      [ -d "$d" ] || continue
+      parent=${d%/fonts}
+      [ -L "$parent" ] && continue          # /system/product 之类的符号链接，避免重复
+      p=${d#"$FSROOT"}
+      case "$p" in
+        /data/*|/sdcard/*|/storage/*|/mnt/*|/proc/*|/sys/*|/dev/*|/apex/*|/linkerconfig/*|\
+        /config/*|/metadata/*|/cache/*|/acct/*|/debug_ramdisk/*|/second_stage_resources/*|\
+        /system/etc/*|/system/usr/*|/system/app/*|/system/priv-app/*) continue ;;
+      esac
+      echo "$p"
+    done
+  } | sort -u
+}
+
+# ---------------------------------------------------------------------------
+# 字体配置 XML 文件列表
+# ---------------------------------------------------------------------------
+slot_xml_files() {
+  local x
+  for x in "$FSROOT"/system/etc/*font*.xml "$FSROOT"/system_ext/etc/*font*.xml \
+           "$FSROOT"/product/etc/*font*.xml "$FSROOT"/vendor/etc/*font*.xml \
+           "$FSROOT"/odm/etc/*font*.xml "$FSROOT"/*/etc/*font*.xml; do
+    [ -f "$x" ] && echo "$x"
+  done | sort -u
+}
+
+# 某个 <family> 是否属于"主文字族"（无语言 / 拉丁 / 中文），排除衬线、等宽、Emoji 等
+# 入参必须已是小写（批量转换，避免为每个 family 单独启动进程）
+_xml_family_ok_l() {
+  case "$1" in
+    *emoji*|*symbol*|*mono*|*cursive*|*casual*|*math*|*music*|*clock*) return 1 ;;
+    sans-serif*) : ;;
+    *serif*) return 1 ;;
+  esac
+  if [ -n "$2" ]; then
+    case "$2" in
+      *zh*|*und-latn*|en|en-*) : ;;
+      *) return 1 ;;
+    esac
+  fi
+  return 0
+}
+
+# 从 XML 里取主文字族引用的字体文件名
+slot_xml_names() {
+  local x raw low fam lfam a n l t
+  t="${TMPDIR:-/data/local/tmp}"
+  for x in $(slot_xml_files); do
+    raw="$t/.xml.raw.$$"; low="$raw.l"
+    tr '\n\r\t' '   ' 2>/dev/null < "$x" \
+      | sed 's/<family/\n<family/g; s#</family>#\n#g' | grep '^<family' > "$raw"
+    tr '[:upper:]' '[:lower:]' < "$raw" > "$low"
+    exec 3< "$raw"; exec 4< "$low"
+    while IFS= read -r fam <&3 && IFS= read -r lfam <&4; do
+      a=${lfam%%>*}
+      n=""; l=""
+      case "$a" in *' name="'*) n=${a#*' name="'}; n=${n%%\"*} ;; esac
+      case "$a" in *' lang="'*) l=${a#*' lang="'}; l=${l%%\"*} ;; esac
+      _xml_family_ok_l "$n" "$l" || continue
+      printf '%s' "$fam" | grep -o '>[^<>]*\.[oOtT][tT][fF] *<' | sed 's/^> *//; s/ *<$//'
+    done
+    exec 3<&- 4<&-
+    rm -f "$raw" "$low"
+  done | sed 's#.*/##' | sort -u
+}
+
+# 本 ROM 已知文件名（targets/<rom>.list；aosp 清单始终包含）
+slot_static_names() {
+  local moddir="$1" rom list
+  rom=$(tr -d '[:space:]' 2>/dev/null < "$moddir/current_rom")
+  for list in "$moddir/targets/$rom.list" "$moddir/targets/aosp.list"; do
+    [ -f "$list" ] || continue
+    grep -v '^#' "$list" | tr -d '\r' | sed 's#.*/##' | grep -v '^[[:space:]]*$'
+  done | sort -u
+}
+
+# OEM 命名规则：扫描真实目录，匹配厂商主字体命名
+slot_oem_names() {
+  local moddir="$1" rom pat d b l t
+  rom=$(tr -d '[:space:]' 2>/dev/null < "$moddir/current_rom")
+  case "$rom" in
+    coloros)  pat='sysfont*|syssans*|oplussans*|oplusosui*|opposans*|opsans*|din*|oppodin*|sourcesanspro*' ;;
+    originos) pat='*vivosans*|*vivo-sans*|*originsans*|*origin-sans*|*iqoosans*|*iqoo-sans*' ;;
+    flyme)    pat='*flymefont*|*flymesans*|*flyme-sans*|*meizusans*|*meizu-sans*|*mflyme*' ;;
+    *) return 0 ;;
+  esac
+  t="${TMPDIR:-/data/local/tmp}/.oem.$$"
+  for d in $(slot_dirs); do
+    ls -1 "$FSROOT$d" 2>/dev/null > "$t"
+    tr '[:upper:]' '[:lower:]' < "$t" > "$t.l"
+    exec 3< "$t"; exec 4< "$t.l"
+    while IFS= read -r b <&3 && IFS= read -r l <&4; do
+      case "$l" in *.ttf|*.otf) ;; *) continue ;; esac
+      case "$l" in
+        $pat) [ -f "$FSROOT$d/$b" ] && echo "$b" ;;
+      esac
+    done
+    exec 3<&- 4<&-
+  done | sort -u
+  rm -f "$t" "$t.l" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# 角色分类（按文件名；输出之一）：
+#   sym     符号 / Emoji / 图标 / 彩色            默认永不替换
+#   lang    其他文字体系 / 日韩                     keep_lang=1 时不替换
+#   italic  斜体                                   keep_special=1 时不替换
+#   serif mono clock display                       keep_special=1 时不替换
+#   latin   拉丁主字体（Roboto / GoogleSans 等）
+#   cjk     中文专用槽位（Hans / Hant / SC / TC）
+#   main    其他主文字槽位（OEM 中英混合主字体、数字命名权重文件等）
+# ---------------------------------------------------------------------------
+_role_set() {
+  local l="$1"
+  case "$l" in
+    *emoji*|*symbol*|*icon*|*material*|*color*|*flag*|*dingbat*|*lottie*|*braille*|*mathematical*|*music*)
+      ROLE=sym; return ;;
+    *kore*|*hangul*|*korean*|*jpan*|*japan*|*kana*|*jp[-_.]*|*kr[-_.]*|\
+    *arab*|*hebr*|*thai*|*deva*|*beng*|*taml*|*telu*|*gujr*|*guru*|*knda*|*mlym*|*orya*|*sinh*|\
+    *khmr*|*khmer*|*laoo*|*mymr*|*myanmar*|*geor*|*armn*|*ethi*|*tibt*|*tibetan*|*cherokee*|\
+    *milanpro*|*naskh*|*nastaliq*|*kufi*|*lao[-_.]*)
+      ROLE=lang; return ;;
+    *clock*) ROLE=clock; return ;;
+    *mono*|*courier*|*cutive*|*michroma*|*consol*|*monaco*|*menlo*) ROLE=mono; return ;;
+    *italic*|*oblique*) ROLE=italic; return ;;
+    *sansserif*|*sans-serif*) : ;;
+    *serif*) ROLE=serif; return ;;
+  esac
+  case "$l" in
+    *lobster*|*dancing*|*comingsoon*|*carrois*|*dela*|*chamberi*|*gulfs*|*neumatic*|*interscaled*|\
+    *bebas*|*beihai*|*silk*|*condensed*|*cond[-_.]*|*rounded*|*square*|*hz[-_.]*|*qinghe*|*mihaus*|\
+    *c800*|*rcf*)
+      ROLE=display; return ;;
+  esac
+  case "$l" in
+    *hans*|*hant*|*cjk*|*chinese*|*sc[-_.]*|*tc[-_.]*|*misansl3*|*misanstc*) ROLE=cjk; return ;;
+    roboto*|googlesans*|google-sans*|productsans*|*latin*|samsungone*|notosans-*|\
+    miuiex*|mitype*|inter*|opensans*|lato*|sourcesans*|worksans*|nunito*) ROLE=latin; return ;;
+  esac
+  ROLE=main
+}
+
+# 对外接口：输入原始文件名，输出角色
+slot_role() { _role_set "$(_lc "$1")"; echo "$ROLE"; }
+
+# 该角色在当前设置下是否参与替换
+_role_wanted() {
+  local role="$1" scope="$2" keep_lang="$3" keep_special="$4"
+  case "$role" in
+    sym) return 1 ;;
+    lang)
+      # 其他文字体系只在"全部范围 + 明确关闭保留"时才会被替换（字体需自带这些文字）
+      [ "$keep_lang" = 1 ] && return 1
+      [ "$scope" = all ] || return 1
+      return 0 ;;
+    italic|serif|mono|clock|display)
+      [ "$keep_special" = 1 ] && return 1 ;;
+  esac
+  case "$scope" in
+    latin) case "$role" in latin|italic|serif|mono|clock|display) return 0 ;; esac; return 1 ;;
+    cjk)   [ "$role" = cjk ] && return 0; return 1 ;;
+    *)     return 0 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# 候选枚举：输出 "角色 目录 文件名"（目录为真实路径），仅限设备上真实存在的文件
+# 整份名单只转一次小写、成对读取，避免为每个文件名单独启动外部进程
+# ---------------------------------------------------------------------------
+slot_candidates() {
+  local moddir="$1" t name l d dirs
+  t="${TMPDIR:-/data/local/tmp}/.cand.$$"
+  mkdir -p "${t%/*}" 2>/dev/null
+  { slot_xml_names; slot_static_names "$moddir"; slot_oem_names "$moddir"; } \
+    | grep -v '^[[:space:]]*$' | sort -u > "$t"
+  tr '[:upper:]' '[:lower:]' < "$t" > "$t.l"
+  dirs=$(slot_dirs)
+  exec 3< "$t"; exec 4< "$t.l"
+  while IFS= read -r name <&3 && IFS= read -r l <&4; do
+    case "$l" in *.ttf|*.otf) ;; *) continue ;; esac
+    _role_set "$l"
+    for d in $dirs; do
+      [ -f "$FSROOT$d/$name" ] && printf '%s %s %s\n' "$ROLE" "$d" "$name"
+    done
+  done
+  exec 3<&- 4<&-
+  rm -f "$t" "$t.l" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# 生成槽位计划
+# ---------------------------------------------------------------------------
+slot_plan() {
+  local moddir="$1" scope="${2:-all}" keep_lang="${3:-1}" keep_special="${4:-1}"
+  local role d name
+  slot_candidates "$moddir" | while read -r role d name; do
+    _role_wanted "$role" "$scope" "$keep_lang" "$keep_special" || continue
+    printf '%s %s/%s\n' "$role" "${d#/}" "$name"
+  done | sort -u -k2,2
+}
+
+# 诊断：按角色统计设备上"候选且存在"的槽位数量
+slot_report() {
+  local moddir="$1" role d name
+  local c_latin=0 c_cjk=0 c_main=0 c_lang=0 c_sym=0 c_italic=0 c_serif=0 c_mono=0 c_clock=0 c_display=0
+  local tmp="${TMPDIR:-/data/local/tmp}/.slotrep.$$"
+  mkdir -p "${tmp%/*}" 2>/dev/null
+  slot_candidates "$moddir" > "$tmp"
+  while read -r role d name; do
+    case "$role" in
+      latin) c_latin=$((c_latin+1)) ;; cjk) c_cjk=$((c_cjk+1)) ;; main) c_main=$((c_main+1)) ;;
+      lang) c_lang=$((c_lang+1)) ;; sym) c_sym=$((c_sym+1)) ;; italic) c_italic=$((c_italic+1)) ;;
+      serif) c_serif=$((c_serif+1)) ;; mono) c_mono=$((c_mono+1)) ;; clock) c_clock=$((c_clock+1)) ;;
+      display) c_display=$((c_display+1)) ;;
+    esac
+  done < "$tmp"
+  rm -f "$tmp"
+  echo "latin=$c_latin cjk=$c_cjk main=$c_main | 保留：lang=$c_lang sym=$c_sym italic=$c_italic serif=$c_serif mono=$c_mono clock=$c_clock display=$c_display"
+}
