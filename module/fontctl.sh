@@ -550,18 +550,12 @@ case "${1:-}" in
             case "$4" in 0|1) ;; *) echo "ERROR:取值只能是 0 或 1"; exit 1 ;; esac ;;
           mount_mode)
             case "$4" in self|manager) ;; *) echo "ERROR:取值只能是 self 或 manager"; exit 1 ;; esac ;;
-          update_mirror)
-            case "$4" in
-              off) ;;
-              https://*) case "$4" in *[!A-Za-z0-9./:_-]*) echo "ERROR:镜像地址含非法字符"; exit 1 ;; esac ;;
-              *) echo "ERROR:镜像地址需以 https:// 开头（不用请填 off）"; exit 1 ;;
-            esac ;;
           *) echo "ERROR:未知设置项"; exit 1 ;;
         esac
         cfg_set "$3" "$4"; echo "OK"
         ;;
       *)
-        echo "keep_lang=$(cfg_get keep_lang 1) keep_special=$(cfg_get keep_special 1) mount_mode=$(mount_mode) update_mirror=$(cfg_get update_mirror off)"
+        echo "keep_lang=$(cfg_get keep_lang 1) keep_special=$(cfg_get keep_special 1) mount_mode=$(mount_mode)"
         ;;
     esac
     ;;

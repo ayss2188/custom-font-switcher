@@ -8,7 +8,7 @@ OLD="/data/adb/modules/$MODID"
 
 ui_print "*****************************************"
 ui_print "  自定义字体切换模块 $(sed -n 's/^version=//p' "$MODPATH/module.prop")"
-ui_print "  默认不替换字体 · 中英文可分别选择"
+ui_print "  默认不替换字体 · 导入自己的字体一键切换"
 ui_print "*****************************************"
 
 . "$MODPATH/common.sh"
@@ -72,7 +72,7 @@ ui_print "更新 / 重装模块不会丢失字体库和设置"
 ui_print "===================================="
 ui_print "使用方法：在模块管理器打开【WebUI】"
 ui_print "  1. 导入自己的 TTF/OTF 字体（可多选）"
-ui_print "  2. 点选字体，或中英文分别选择"
+ui_print "  2. 点选字体卡片切换"
 ui_print "  3. 重启生效；选「无字体」即恢复默认"
 if [ "$RM" = magisk ]; then
   ui_print " "

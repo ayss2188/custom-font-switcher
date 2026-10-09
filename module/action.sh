@@ -37,7 +37,6 @@ echo "正在检查更新..."
 eval "$(sh "$MODDIR/update.sh" check 2>/dev/null)"
 if [ -z "$NEW_CODE" ]; then
   echo "检查失败：$ERR"
-  echo "（国内网络可在 WebUI「检查更新」里设置下载镜像）"
 elif [ "$HAS" = 1 ]; then
   echo "发现新版本：$NEW_VER（当前 $CUR_VER）"
   echo "请在 WebUI 里点「下载并安装」，或在管理器里更新。"

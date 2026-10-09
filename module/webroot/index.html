@@ -216,10 +216,6 @@
   .banner.warn { border-color: var(--warn); background: transparent; }
   .banner.warn button { border-color: var(--warn); color: var(--warn); }
   .value.warn { color: var(--warn); }
-  .combo-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 8px; box-shadow: var(--shadow); }
-  .combo-box .lbl { font-size: 12px; color: var(--text-dim); margin: 0 0 6px; }
-  .combo-box select.txt { margin-bottom: 10px; }
-  .combo-box .g-btn { width: 100%; }
   .changelog { white-space: pre-wrap; font-size: 12px; line-height: 1.6; max-height: 46vh; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 10px; margin-bottom: 12px; color: var(--text); }
   .foot { text-align: center; color: var(--text-dim); font-size: 11px; margin-top: 18px; }
   .banner button {
@@ -291,7 +287,7 @@ try {
   <div class="header fade">
     <div>
       <h1>自定义字体切换模块</h1>
-      <div class="subtitle">默认不替换字体 · 中英文可分别选择 · 重启生效</div>
+      <div class="subtitle">默认不替换字体 · 重启生效</div>
     </div>
     <button class="theme-btn" id="themeBtn" onclick="cycleTheme()" aria-label="切换主题">🌓 自动</button>
   </div>
@@ -340,15 +336,6 @@ try {
   <div id="fontList"></div>
   <button class="batch-btn" id="batchBtn" style="display:none" onclick="batchDelete()">删除选中 (0)</button>
 
-  <div class="section-title fade"><span>中英文分别选择</span></div>
-  <div class="combo-box fade">
-    <div class="lbl">中文字体（中文槽位和中英混合主槽位）</div>
-    <select class="txt" id="comboCjk"></select>
-    <div class="lbl">英文 / 数字字体（Roboto、Google Sans 等拉丁槽位）</div>
-    <select class="txt" id="comboLat"></select>
-    <button class="g-btn primary-blue" id="comboBtn" onclick="applyCombo()">应用组合</button>
-  </div>
-  <div class="g-hint">适合「中文用 A 字体、英文数字用 B 字体」。两个选同一个字体等于普通切换。注意：中英混合的系统主字体只能用中文字体，所以部分界面里的英文仍会显示中文字体自带的英文。</div>
 
   <div class="section-title fade" style="--d:.08s"><span>导入字体</span></div>
   <button class="import-main fade" style="--d:.1s" id="importBtn" onclick="openBrowser()">📂 选择字体文件（可多选）</button>
@@ -417,10 +404,7 @@ try {
     <button class="g-btn" onclick="showChangelog()">更新日志</button>
     <button class="g-btn" id="installBtn" onclick="installUpdate()" disabled>下载并安装</button>
   </div>
-  <div class="btn-row fade">
-    <button class="g-btn" onclick="setMirror()">下载镜像：<span id="mirrorLabel">不使用</span></button>
-  </div>
-  <div class="g-hint fade">在手机上直接从 GitHub 下载新版刷机包，校验后用当前 Root 管理器安装，字体库和设置会保留，安装完重启生效。国内网络连不上 GitHub 时可设置镜像。</div>
+  <div class="g-hint fade">在手机上直接从 GitHub 下载新版刷机包，校验后用当前 Root 管理器安装，字体库和设置会保留，安装完重启生效。</div>
 
   <div class="divider"></div>
 
@@ -490,9 +474,8 @@ const MODDIR = "/data/adb/modules/custom_font_switcher";
 const LIB = "/data/adb/custom_font_lib";
 const NONE_LABEL = "无字体（系统默认）";
 const ROM_NAMES = {hyperos:"澎湃OS/HyperOS/MIUI", coloros:"ColorOS/OPPO/一加/realme", originos:"OriginOS/vivo/iQOO", flyme:"Flyme/魅族", samsung:"三星 One UI（通用适配）", honor:"荣耀 MagicOS（通用适配）", huawei:"华为 EMUI/鸿蒙（通用适配）", nothing:"Nothing OS（通用适配）", aosp:"原生/类原生/谷歌Pixel"};
-const BIG_FONT = 20 * 1048576;     // 超过这个体积给出提示
 const HUGE_FONT = 30 * 1048576;    // 超过这个体积应用前要确认
-const SCOPE_TEXT = {all: "中英文", latin: "仅英文/数字", cjk: "仅中文", combo: "中英分别"};
+const SCOPE_TEXT = {all: "中英文", latin: "仅英文/数字", cjk: "仅中文"};
 const THEME_LABELS = {auto:"🌓 自动", light:"☀️ 浅色", dark:"🌙 深色"};
 
 let cbCounter = 0, busy = false, themePref = "auto", toastTimer = null;
@@ -679,9 +662,8 @@ function makeCard(id, name, metaText, f) {
   if (f) {
     const sc = scopeOf(f);
     const addTag = (text, cls) => { const t = document.createElement("span"); t.className = "tag" + (cls ? " " + cls : ""); t.textContent = text; meta.append(t); };
-    addTag(sc ? SCOPE_TEXT[sc] : "覆盖未知", sc ? "t-info" : "");
+    if (sc) addTag(SCOPE_TEXT[sc], "t-info");
     if (f.meta.vf === "1") addTag("可变");
-    if (f.size >= BIG_FONT) addTag("大文件", "t-warn");
   }
   info.append(n, meta);
   card.append(info);
@@ -742,7 +724,6 @@ function render() {
   }
 
   updateBatchBtn();
-  renderCombo();
 
   const hint = document.getElementById("rebootHint");
   hint.textContent = hasPending
@@ -793,37 +774,6 @@ function setCardBusy(card, on) {
   card.classList.add("busy");
 }
 
-/* ---------- 中英文分别选择 ---------- */
-function renderCombo() {
-  const cur = selIds(pendingId);
-  const fill = (elId, want, fallback) => {
-    const sel = document.getElementById(elId);
-    const keep = sel.value;
-    sel.textContent = "";
-    fonts.forEach(f => { const o = document.createElement("option"); o.value = f.id; o.textContent = f.name; sel.append(o); });
-    const pick = [want, keep, fallback].find(v => v && fonts.some(f => f.id === v));
-    if (pick) sel.value = pick;
-  };
-  fill("comboCjk", cur[0], (fonts.find(f => f.meta && f.meta.cjk === "1") || {}).id);
-  fill("comboLat", cur[1] || cur[0], (fonts.find(f => f.meta && f.meta.cjk !== "1" && f.meta.latin === "1") || {}).id);
-  document.getElementById("comboBtn").disabled = fonts.length === 0;
-}
-
-async function applyCombo() {
-  const c = document.getElementById("comboCjk").value, l = document.getElementById("comboLat").value;
-  if (!c || !l) { showToast("请先导入字体"); return; }
-  const fc = fonts.find(f => f.id === c), fl = fonts.find(f => f.id === l);
-  if (c !== l && fc && fc.meta.cjk === "0") {
-    const go = await dialog({title: "中文字体可能没有中文", msg: "「" + fc.name + "」检测不到常用汉字，作为中文字体时中文会回退到系统字体。仍要应用吗？", okText: "仍然应用"});
-    if (!go) return;
-  }
-  if (c !== l && fl && fl.meta.latin === "0") {
-    const go = await dialog({title: "英文字体可能不完整", msg: "「" + fl.name + "」缺少部分英文字母或数字。仍要应用吗？", okText: "仍然应用"});
-    if (!go) return;
-  }
-  await selectFont(c === l ? c : c + "+" + l);
-}
-
 /* ---------- 切换 / 重命名 / 删除 ---------- */
 async function selectFont(id) {
   if (busy) return;
@@ -872,7 +822,7 @@ async function editFont(id) {
       label: "替换范围",
       value: cur,
       options: [
-        ["auto", "自动（" + (auto ? SCOPE_TEXT[auto] : "覆盖未知，按中英文") + "）"],
+        ["auto", "自动（" + (auto ? SCOPE_TEXT[auto] : "按中英文") + "）"],
         ["all", "中英文全部"],
         ["latin", "仅英文/数字"],
         ["cjk", "仅中文"]
@@ -1023,7 +973,7 @@ async function probeFont(path) {
   return meta;
 }
 
-// 导入后读取覆盖范围并写入元数据；失败不影响导入（按"覆盖未知"处理）
+// 导入后读取覆盖范围并写入元数据；失败不影响导入（按中英文处理）
 async function probeAndSave(id) {
   try {
     const m = await probeFont(`${LIB}/${id}.ttf`);
@@ -1227,7 +1177,7 @@ async function onFilePicked(input) {
 }
 
 /* ---------- 替换范围设置 / 诊断 ---------- */
-const settings = {keep_lang: "1", keep_special: "1", mount_mode: "self", update_mirror: "off"};
+const settings = {keep_lang: "1", keep_special: "1", mount_mode: "self"};
 let mountMode = "self";
 async function loadSettings() {
   try {
@@ -1236,7 +1186,6 @@ async function loadSettings() {
   } catch (e) {}
   ["keep_lang", "keep_special"].forEach(k => document.getElementById("sw_" + k).classList.toggle("on", settings[k] === "1"));
   document.getElementById("sw_mount_mode").classList.toggle("on", settings.mount_mode !== "manager");
-  setValue("mirrorLabel", settings.update_mirror && settings.update_mirror !== "off" ? settings.update_mirror.replace(/^https:\/\//, "") : "不使用");
 }
 async function toggleSetting(key) {
   if (busy) return;
@@ -1419,24 +1368,6 @@ async function installUpdate() {
   } finally { busy = false; }
 }
 
-async function setMirror() {
-  if (busy) return;
-  const cur = settings.update_mirror && settings.update_mirror !== "off" ? settings.update_mirror : "";
-  const r = await dialog({
-    title: "下载镜像",
-    msg: "国内连不上 GitHub 时填写镜像前缀，例如 https://ghfast.top 。留空表示直连 GitHub。镜像由第三方提供，下载后仍会校验 sha256。",
-    input: cur,
-    okText: "保存"
-  });
-  if (r === null) return;
-  const v = r.trim() || "off";
-  try {
-    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh settings set update_mirror ${shq(v)}`);
-    showToast(out.indexOf("OK") === 0 ? "已保存" : out.replace(/^ERROR:/, ""));
-  } catch (e) { showToast("保存失败：" + errText(e)); }
-  await loadSettings();
-}
-
 /* ---------- 初始化 ---------- */
 (function initTheme() {
   let saved = "auto";
@@ -1462,7 +1393,8 @@ refreshGoogle();
   const curVer = () => document.getElementById("curVerLabel").textContent;
   if (Date.now() - last > 86400000 || !(cached && cached.NEW_CODE)) setTimeout(() => checkUpdate(false), 1500);
   else setTimeout(() => {
-    if (cached.HAS === "1" && curVer() === cached.NEW_VER) cached.HAS = "0";
+    // 模块版本变了（刚更新过），旧缓存作废，重新检查
+    if (cached.CUR_VER !== curVer()) { checkUpdate(false); return; }
     renderUpdate(cached);
   }, 800);
 })();

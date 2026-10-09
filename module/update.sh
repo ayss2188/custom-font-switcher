@@ -7,9 +7,6 @@
 #   sh update.sh check       输出 CUR_VER= CUR_CODE= NEW_VER= NEW_CODE= HAS= ERR=
 #   sh update.sh changelog   输出更新日志正文
 #   sh update.sh install     下载新版刷机包、校验后用当前 Root 管理器安装（重启生效）
-#
-# 国内访问 GitHub 慢时，可设置镜像前缀（WebUI 里设置，或 fontctl.sh settings set update_mirror <地址>），
-# 例如 https://ghfast.top —— 会把请求地址变成 https://ghfast.top/https://raw.githubusercontent.com/...
 
 MODDIR=$(cd "$(dirname "$0")" && pwd)
 . "$MODDIR/common.sh"
@@ -18,19 +15,10 @@ mkdir -p "$TMP" 2>/dev/null
 
 prop() { sed -n "s/^$1=//p" "$MODDIR/module.prop" 2>/dev/null | head -n1 | tr -d '\r'; }
 
-with_mirror() {
-  local m
-  m=$(cfg_get update_mirror off)
-  case "$m" in
-    https://*) echo "${m%/}/$1" ;;
-    *) echo "$1" ;;
-  esac
-}
-
 # fetch <地址> <输出文件>：curl 优先，其次管理器自带 busybox 的 wget
 fetch() {
   local url bb
-  url=$(with_mirror "$1")
+  url="$1"
   rm -f "$2"
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL --connect-timeout 15 -m 300 -o "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
@@ -56,7 +44,7 @@ load_json() {
     *) ERR="module.prop 里没有配置 updateJson"; return 1 ;;
   esac
   case "$url" in *__REPO__*) ERR="作者还没有配置 GitHub 仓库地址"; return 1 ;; esac
-  fetch "$url" "$TMP/update.json" || { ERR="无法连接 GitHub（可设置下载镜像后重试）"; return 1; }
+  fetch "$url" "$TMP/update.json" || { ERR="无法连接 GitHub，请检查网络后重试"; return 1; }
   NEW_VER=$(jstr version "$TMP/update.json")
   NEW_CODE=$(jnum versionCode "$TMP/update.json")
   ZIP_URL=$(jstr zipUrl "$TMP/update.json")
@@ -91,10 +79,10 @@ case "${1:-check}" in
     load_json || { echo "ERROR:$ERR"; exit 1; }
     [ "$NEW_CODE" -gt "${CUR_CODE:-0}" ] 2>/dev/null || [ "$2" = force ] || { echo "ERROR:已是最新版本"; exit 1; }
     ZIP="$TMP/module.zip"
-    fetch "$ZIP_URL" "$ZIP" || { echo "ERROR:下载刷机包失败（可设置下载镜像后重试）"; exit 1; }
+    fetch "$ZIP_URL" "$ZIP" || { echo "ERROR:下载刷机包失败，请检查网络后重试"; exit 1; }
 
     # 校验：是 zip、体积合理、sha256 一致、模块 id 一致
-    [ "$(head -c 2 "$ZIP")" = PK ] || { rm -f "$ZIP"; echo "ERROR:下载的文件不是 zip（镜像可能返回了错误页面）"; exit 1; }
+    [ "$(head -c 2 "$ZIP")" = PK ] || { rm -f "$ZIP"; echo "ERROR:下载的文件不是 zip（网络可能返回了错误页面）"; exit 1; }
     [ "$(wc -c < "$ZIP")" -gt 10240 ] || { rm -f "$ZIP"; echo "ERROR:下载的文件不完整"; exit 1; }
     if [ -n "$SHA" ] && command -v sha256sum >/dev/null 2>&1; then
       [ "$(sha256sum "$ZIP" | cut -d' ' -f1)" = "$SHA" ] || { rm -f "$ZIP"; echo "ERROR:校验失败（sha256 不一致），已取消安装"; exit 1; }
