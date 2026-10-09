@@ -23,7 +23,7 @@
 - **可变字体友好**：导入可变字体（Variable Font）时，系统调节字体粗细会在 wght 轴上平滑过渡；静态字体则各字重外观相同；
 - **自动体检**：导入时自动读取字体的字符覆盖范围，判断是「中英文」「仅英文/数字」还是「仅中文」，并据此决定替换哪些字体槽，避免英文字体把中文换成方块。
 
-### 2. 中英文分别选择（v3 新增）
+### 2. 中英文分别选择
 
 很多人喜欢「中文用 A 字体、英文数字用 B 字体」。现在可以直接在 WebUI 里分别指定：
 
@@ -54,16 +54,16 @@
 
 刷入后 `module.prop` 描述会直接显示「识别到的系统」和「当前生效的字体」，一眼确认适配结果。
 
-### 4. 模块自带挂载：不再需要元模块（v3 新增）
+### 4. 模块自带挂载：不再需要元模块
 
-旧版在 KernelSU / APatch 上必须先装元模块（如 Hybrid Mount）才能挂载字体。v3 起模块**自己完成挂载**：
+以往的字体模块在 KernelSU / APatch 上必须先装元模块（如 Hybrid Mount）才能挂载字体。本模块**自己完成挂载**：
 
 - **Magisk**：在 post-fs-data 阶段挂载；
 - **KernelSU / APatch**：在 post-mount 阶段挂载（在其他模块之后，不容易被覆盖）；
 - 能覆盖 `my_product`、`mi_ext` 等厂商分区里的字体槽，这些分区很多元模块并不支持；
 - WebUI 状态栏会显示「实际挂载：成功 N 个」，诊断报告里还有「实际生效检测」，挂没挂上一目了然。
 
-如果你的管理器比较特殊、自带挂载不工作，可以在设置里改回「交给管理器挂载」（旧版方式）。
+如果你的管理器比较特殊、自带挂载不工作，可以在设置里改回「交给管理器挂载」（传统方式）。
 
 ### 5. 安全设计
 
@@ -81,7 +81,7 @@ Chrome、Gmail 等 Google 应用有时会通过 GMS 的 FontsProvider 下载官�
 - **效果**：Chrome、Gmail 等 Google 应用的英文数字回退到系统字体（即你选的字体），开启后立即生效，无需重启；
 - **可逆**：随时一键「关闭兼容」；**卸载模块时会自动恢复**，且只恢复本模块自己停用过的组件。
 
-### 7. GitHub 在线更新（v3 新增）
+### 7. GitHub 在线更新
 
 - WebUI 里可以**检查更新、查看更新日志、一键下载并安装**，不用再去网盘找新版；
 - 下载后自动校验 sha256 和模块 ID，校验不通过不会安装；
@@ -102,7 +102,7 @@ Chrome、Gmail 等 Google 应用有时会通过 GMS 的 FontsProvider 下载官�
 ## 二、刷前准备与避坑指南（必看！）
 
 - **Root 权限环境**：支持 Magisk（v20.4+）/ KernelSU / APatch。
-- **不再需要元模块**：v3 自带挂载，KernelSU / APatch 用户无需先装 Hybrid Mount 等元模块。
+- **不需要元模块**：模块自带挂载，KernelSU / APatch 用户无需先装 Hybrid Mount 等元模块。
 - **KernelSU / APatch 用户建议关闭「默认卸载模块」**：打开管理器设置，找到【默认卸载模块】并关闭，避免部分应用被隔离后看到的是系统默认字体。
 - **停用其他字体模块**：多个字体模块会互相覆盖，刷入前请先停用。
 - **Magisk 用户**：Magisk 没有 WebUI 入口，需要安装 [KsuWebUI](https://github.com/5ec1cff/KsuWebUIStandalone)（或 WebUI X）来打开管理界面。
@@ -212,12 +212,12 @@ docs/                  使用教程、酷安发帖文案
 
 发布新版本：
 
-1. 修改 `module/module.prop` 里的 `version`（如 `v3.1`）和 `versionCode`（必须比上一版大，如 `310`）；
-2. 在 `CHANGELOG.md` 顶部加上 `## v3.1` 段落；
+1. 修改 `module/module.prop` 里的 `version`（如 `v1.1`）和 `versionCode`（必须比上一版大，如 `110`）；
+2. 在 `CHANGELOG.md` 顶部加上 `## v1.1` 段落；
 3. 把修改上传到 GitHub；
 4. 打开仓库 **Actions → Release → Run workflow**。GitHub 会自动打包、发布 Release，并回写 `update.json`，几分钟后手机上的 WebUI 和管理器就能检测到更新。
 
-（会用 git 的话，也可以直接推送标签：`git tag v3.1 && git push origin main v3.1`。）
+（会用 git 的话，也可以直接推送标签：`git tag v1.1 && git push origin main v1.1`。）
 
 本地打包：双击「本地打包.bat」（或 `sh scripts/build.sh`），输出在 `dist/`。
 
