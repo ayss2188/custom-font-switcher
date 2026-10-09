@@ -609,7 +609,7 @@ case "${1:-}" in
     list_conflicts
     ;;
   report)
-    # 有 diag.sh 时，报告就是「一键体检」（结论在最上面 + 9 节明细）
+    # 有 diag.sh 时，报告就是「一键体检」（结论在最上面 + 10 节明细）
     if [ -f "$MODDIR/diag.sh" ]; then
       if [ "$2" = save ]; then sh "$MODDIR/diag.sh" save; else sh "$MODDIR/diag.sh" full; fi
     elif [ "$2" = save ]; then

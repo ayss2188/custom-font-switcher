@@ -1036,6 +1036,15 @@ case "$MODE" in
   bg)
     # 后台生成（立刻返回，WebUI 的 JS 不会被长命令卡住；生成期间弹窗可随时关闭）
     mkdir -p "$LIB" 2>/dev/null
+    # 已经在跑就别再起一个（两个同时写同一个文件会互相踩）
+    if [ -f "$LIB/.diag.state" ]; then
+      st=$(sed -n 's/^state=//p' "$LIB/.diag.state" 2>/dev/null | head -n1 | tr -d '[:space:]')
+      age=$(( $(date +%s 2>/dev/null || echo 0) - $(stat -c %Y "$LIB/.diag.state" 2>/dev/null || echo 0) ))
+      if [ "$st" = running ] && [ "$age" -lt 180 ] 2>/dev/null; then
+        echo "OK:running"
+        exit 0
+      fi
+    fi
     printf 'state=running\n' > "$LIB/.diag.state" 2>/dev/null
     if command -v setsid >/dev/null 2>&1; then
       setsid sh "$MODDIR/diag.sh" build >/dev/null 2>&1 &

@@ -4,8 +4,12 @@
 MODDIR=${0%/*}
 . "$MODDIR/common.sh"
 
+# 等开机完成，最多等 10 分钟（避免极端情况下这个循环永远挂着，心跳也就永远不写）
+i=0
 while [ "$(getprop sys.boot_completed)" != "1" ]; do
   sleep 1
+  i=$((i+1))
+  [ "$i" -ge 600 ] && break
 done
 
 rm -f "$MODDIR/.booting"

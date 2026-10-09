@@ -29,19 +29,21 @@ http_size() {
   echo "${n:-0}"
 }
 
-# fetch <地址> <输出文件>：curl 优先，其次管理器自带 busybox 的 wget
+# fetch <地址> <输出文件> [最长秒数]
+# 注意超时：检查更新/更新日志用短超时（否则网络差时会把 WebUI 卡住好几分钟），
+# 下载刷机包才用长超时。
 fetch() {
-  local url bb
-  url="$1"
+  local url bb mt
+  url="$1"; mt="${3:-60}"
   rm -f "$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 15 -m 300 -o "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    curl -fsSL --connect-timeout 8 -m "$mt" -o "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
   fi
   bb=$(find_busybox)
   if [ -n "$bb" ]; then
-    "$bb" wget -q -T 30 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
   fi
-  command -v wget >/dev/null 2>&1 && wget -q -T 30 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+  command -v wget >/dev/null 2>&1 && wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
   rm -f "$2"
   return 1
 }
@@ -58,7 +60,7 @@ load_json() {
     *) ERR="module.prop 里没有配置 updateJson"; return 1 ;;
   esac
   case "$url" in *__REPO__*) ERR="作者还没有配置 GitHub 仓库地址"; return 1 ;; esac
-  fetch "$url" "$TMP/update.json" || { ERR="无法连接 GitHub，请检查网络后重试"; return 1; }
+  fetch "$url" "$TMP/update.json" 20 || { ERR="无法连接 GitHub，请检查网络后重试"; return 1; }
   NEW_VER=$(jstr version "$TMP/update.json")
   NEW_CODE=$(jnum versionCode "$TMP/update.json")
   ZIP_URL=$(jstr zipUrl "$TMP/update.json")
@@ -86,26 +88,36 @@ case "${1:-check}" in
   changelog)
     load_json || { echo "ERROR:$ERR"; exit 1; }
     [ -n "$LOG_URL" ] || { echo "ERROR:update.json 里没有 changelog 地址"; exit 1; }
-    fetch "$LOG_URL" "$TMP/changelog.md" || { echo "ERROR:下载更新日志失败"; exit 1; }
+    fetch "$LOG_URL" "$TMP/changelog.md" 25 || { echo "ERROR:下载更新日志失败"; exit 1; }
     head -c 30000 "$TMP/changelog.md"
     ;;
   install)
     load_json || { echo "ERROR:$ERR"; exit 1; }
     [ "$NEW_CODE" -gt "${CUR_CODE:-0}" ] 2>/dev/null || [ "$2" = force ] || { echo "ERROR:已是最新版本"; exit 1; }
     ZIP="$TMP/module.zip"
-    rm -f "$ZIP" "$STATE" 2>/dev/null
+    rm -f "$ZIP" "$STATE" "$TMP/dl.rc" 2>/dev/null
     TOTAL=$(http_size "$ZIP_URL")
     prog download 0 "$TOTAL" "正在下载刷机包"
-    # 后台下载 + 每秒刷新进度（WebUI 读 $STATE 画进度条）
-    fetch "$ZIP_URL" "$ZIP" &
+    # 后台下载 + 每秒刷新进度。
+    # 注意：不能用 kill -0 判断子进程是否结束 —— 子进程变成僵尸时 kill -0 仍返回成功，
+    # 会死循环卡住（表现为"进度条一直转圈，更新不动"）。改成看结束标记文件。
+    ( fetch "$ZIP_URL" "$ZIP" 300; echo $? > "$TMP/dl.rc" ) &
     DLPID=$!
-    while kill -0 "$DLPID" 2>/dev/null; do
+    waited=0
+    while [ ! -f "$TMP/dl.rc" ]; do
       cur=$(wc -c < "$ZIP" 2>/dev/null | tr -d ' \n')
       prog download "${cur:-0}" "$TOTAL" "正在下载刷机包"
       sleep 1
+      waited=$((waited + 1))
+      if [ "$waited" -ge 600 ]; then
+        kill "$DLPID" 2>/dev/null
+        break
+      fi
     done
     wait "$DLPID" 2>/dev/null
-    if [ ! -s "$ZIP" ]; then
+    rc=$(cat "$TMP/dl.rc" 2>/dev/null)
+    rm -f "$TMP/dl.rc" 2>/dev/null
+    if [ ! -s "$ZIP" ] || { [ -n "$rc" ] && [ "$rc" != 0 ]; }; then
       prog error 0 "$TOTAL" "下载失败"
       echo "ERROR:下载刷机包失败，请检查网络后重试"; exit 1
     fi

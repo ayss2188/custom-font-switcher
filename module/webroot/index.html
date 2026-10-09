@@ -478,6 +478,21 @@ try {
 
   <div class="toast" id="toast"></div>
 
+  <!-- 重启遮罩：独立于提示条，不会被后台进度提示覆盖 -->
+  <div class="modal-mask" id="rebootMask">
+    <div class="modal">
+      <h3 id="rebootTitle">正在重启…</h3>
+      <div class="loading-box" id="rebootLoading"><span class="spin"></span><span id="rebootText">正在发送重启命令，请稍候…</span></div>
+      <div class="g-hint" id="rebootFallback" style="display:none">
+        重启命令没有生效（可能被系统拦住了）。请到 Root 管理器的模块页点「重启」，
+        或长按电源键选择重启；重启后新版本才会生效。
+      </div>
+      <div class="btn-row" id="rebootBtns" style="display:none">
+        <button class="g-btn primary-blue" onclick="document.getElementById('rebootMask').classList.remove('show');rebooting=false;">知道了</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-mask" id="modalMask">
     <div class="modal">
       <h3 id="modalTitle"></h3>
@@ -501,7 +516,7 @@ const HUGE_FONT = 30 * 1048576;    // 超过这个体积应用前要确认
 const SCOPE_TEXT = {all: "中英文", latin: "仅英文/数字", cjk: "仅中文"};
 const THEME_LABELS = {auto:"🌓 自动", light:"☀️ 浅色", dark:"🌙 深色"};
 
-let cbCounter = 0, busy = false, themePref = "auto", toastTimer = null;
+let cbCounter = 0, busy = false, themePref = "auto", toastTimer = null, rebooting = false;
 let fonts = [];            // [{id,name,size}]
 let activeId = "none", pendingId = "none";
 let manageMode = false;
@@ -528,11 +543,26 @@ const baseName = p => p.split("/").pop();
 const stripExt = n => n.replace(/\.[^.]+$/, "");
 
 function showToast(msg, sticky) {
+  if (rebooting && !msg.startsWith("正在重启")) return;   // 重启中不让后台进度提示抢提示条
   const t = document.getElementById("toast");
   t.textContent = msg;
   t.classList.add("show");
   if (toastTimer) clearTimeout(toastTimer);
   if (!sticky) toastTimer = setTimeout(() => t.classList.remove("show"), 2800);
+}
+
+function clearToast() {
+  const t = document.getElementById("toast");
+  if (t) t.classList.remove("show");
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+}
+
+// 后台轮询任务的统一登记处：重启/离开页面前可以把它们全停掉，避免抢界面
+let bgStops = [];
+function regBgStop(fn) { if (typeof fn === "function") bgStops.push(fn); }
+function stopAllBg() {
+  bgStops.forEach(f => { try { f(); } catch (e) {} });
+  bgStops = [];
 }
 
 function setValue(id, text) {
@@ -1305,22 +1335,48 @@ async function showReport() {
   void ta.offsetWidth; ta.classList.add("pop");
 }
 async function saveReport() {
+  if (busy) return;               // 防止连点起两个后台任务
+  busy = true;
   try {
     showToast("正在生成完整报告（一般几秒到十几秒）...", true);
     await ksuExec(`sh ${MODDIR}/fontctl.sh diag bg`);
     const kv = await waitDiagDone(120000, "quiet", (st, secs) => {
+      if (rebooting || secs % 2) return;   // 每 2 秒才刷一次提示，别刷屏
       showToast("正在生成完整报告：" + (st.phase || "准备中") + "（已用 " + secs + " 秒）...", true);
     });
     if (kv.state === "done") showToast("已保存到 " + (kv.saved || "Download/字体体检报告.txt"));
     else if (kv.state === "error") showToast("保存失败：无法写入 Download");
     else showToast("生成超时，稍后到 Download/字体体检报告.txt 看看");
   } catch (e) { showToast("保存失败：" + errText(e)); }
+  finally { busy = false; }
 }
 
 /* ---------- 重启 / 谷歌兼容 ---------- */
+// 重启：先停掉所有后台轮询（它们会抢提示条），再用独立遮罩显示进度，
+// 并依次尝试 3 种重启方式；8 秒还没重启就明确提示用户手动重启。
 async function doReboot() {
-  showToast("即将重启...");
-  try { await ksuExec("reboot"); } catch (e) { showToast("重启命令执行失败：" + errText(e)); }
+  if (rebooting) return;
+  rebooting = true;
+  stopAllBg();
+  clearToast();
+  const mask = document.getElementById("rebootMask");
+  document.getElementById("rebootTitle").textContent = "正在重启…";
+  document.getElementById("rebootLoading").style.display = "flex";
+  setValue("rebootText", "正在发送重启命令，请稍候…");
+  document.getElementById("rebootFallback").style.display = "none";
+  document.getElementById("rebootBtns").style.display = "none";
+  mask.classList.add("show");
+  // 8 秒没重启 = 命令被拦住了，给出明确指引（不依赖 ksuExec 是否返回）
+  setTimeout(() => {
+    if (!rebooting) return;
+    if (!mask.classList.contains("show")) return;
+    document.getElementById("rebootTitle").textContent = "重启命令没有生效";
+    document.getElementById("rebootLoading").style.display = "none";
+    document.getElementById("rebootFallback").style.display = "block";
+    document.getElementById("rebootBtns").style.display = "flex";
+  }, 8000);
+  const CMD = "svc power reboot 2>/dev/null || reboot 2>/dev/null || /system/bin/reboot 2>/dev/null || setprop sys.powerctl reboot";
+  try { await ksuExec(CMD); } catch (e) { setValue("rebootText", "发送重启命令失败：" + errText(e)); }
 }
 
 async function refreshGoogle() {
@@ -1521,9 +1577,19 @@ async function installUpdate() {
   btn.disabled = true;
   showToast("正在下载并安装，请勿离开页面...", true);
   const stopPoll = startUpdateProgress();
+  regBgStop(stopPoll);
+  // 看门狗：万一 update.sh 卡住不返回（网络问题等），2 分半后给出明确提示，
+  // 不要让人一直看着转圈不知道发生什么
+  let done = false;
+  const watchdog = setTimeout(() => {
+    if (done || rebooting) return;
+    updProg("已经等了 2 分半还没结束，可能是网络太慢或 GitHub 连不上。可以关掉页面重开，或到 Root 管理器里手动安装新版；什么都没装上的话不影响现在使用。", 0.9);
+    showToast("更新等了太久，请看页面上的提示", true);
+  }, 150000);
   await nextPaint();
   try {
     const out = (await ksuExec(`sh ${MODDIR}/update.sh install`)).trim();
+    done = true;
     const last = out.split("\n").pop();
     if (last.indexOf("OK:") === 0) {
       const ver = last.slice(3) || updateInfo.NEW_VER;
@@ -1537,14 +1603,16 @@ async function installUpdate() {
       const msg = last.replace(/^ERROR:/, "");
       updProg("更新失败：" + msg, 0);
       showToast("更新失败：" + msg);
+      btn.disabled = false;
       setTimeout(hideUpdProg, 8000);
     }
   } catch (e) {
+    done = true;
     updProg("更新失败：" + errText(e), 0);
     showToast("更新失败：" + errText(e));
     btn.disabled = false;
     setTimeout(hideUpdProg, 8000);
-  } finally { stopPoll(); busy = false; }
+  } finally { clearTimeout(watchdog); stopPoll(); busy = false; }
 }
 
 /* ---------- 初始化 ---------- */
