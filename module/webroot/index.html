@@ -177,9 +177,16 @@
   /* 弹窗 */
   .modal-mask {
     position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.55);
-    display: none; align-items: center; justify-content: center; padding: 24px;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+    opacity: 0; visibility: hidden; transition: opacity .22s ease, visibility .22s;
   }
-  .modal-mask.show { display: flex; }
+  .modal-mask.show { opacity: 1; visibility: visible; }
+  .modal-mask .modal { transform: translateY(18px) scale(.96); transition: transform .28s cubic-bezier(.22,.8,.34,1); }
+  .modal-mask.show .modal { transform: none; }
+  .loading-box { display: flex; align-items: center; justify-content: center; gap: 10px; height: 46vh; color: var(--pending-blue); font-size: 13px; font-weight: 600; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+  .loading-box.small { height: 120px; }
+  .pop { animation: popIn .32s cubic-bezier(.22,.8,.34,1) both; }
+  @keyframes popIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
   .modal { width: 100%; max-width: 360px; background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 18px; }
   .modal h3 { margin: 0 0 8px; font-size: 16px; }
   .modal p { margin: 0 0 12px; font-size: 13px; color: var(--text-dim); line-height: 1.55; word-break: break-all; }
@@ -230,8 +237,8 @@
   .link-btn:disabled { opacity: .5; }
 
   /* 文件浏览器（全屏面板） */
-  .sheet { position: fixed; inset: 0; z-index: 15; background: var(--bg); display: none; flex-direction: column; }
-  .sheet.show { display: flex; }
+  .sheet { position: fixed; inset: 0; z-index: 15; background: var(--bg); display: flex; flex-direction: column; transform: translateY(100%); visibility: hidden; transition: transform .3s cubic-bezier(.22,.8,.34,1), visibility .3s; }
+  .sheet.show { transform: none; visibility: visible; }
   .sheet-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px; }
   .sheet-title { font-size: 16px; font-weight: 600; flex: 1; }
   .sheet-x { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 15px; cursor: pointer; }
@@ -256,11 +263,14 @@
   .tag { font-size: 11px; border-radius: 6px; padding: 1px 6px; background: var(--card-press); color: var(--text-dim); white-space: nowrap; }
   .tag.t-warn { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
   .tag.t-info { background: transparent; border: 1px solid var(--pending-blue); color: var(--pending-blue); }
-  .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 8px; cursor: pointer; }
+  .switch-row { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 8px; cursor: pointer; transition: transform .16s ease, background .22s ease, border-color .22s ease; }
+  .switch-row:active { transform: scale(.98); background: var(--card-press); }
+  .switch-row.loading { pointer-events: none; border-color: var(--pending-blue); }
+  .switch-row .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--card); color: var(--pending-blue); font-size: 13px; font-weight: 600; animation: popIn .25s ease both; }
   .switch-row .t { font-size: 14px; font-weight: 600; }
   .switch-row .d { font-size: 11px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
-  .sw { flex-shrink: 0; width: 44px; height: 26px; border-radius: 13px; background: var(--border); position: relative; transition: background .2s; }
-  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .sw { flex-shrink: 0; width: 44px; height: 26px; border-radius: 13px; background: var(--border); position: relative; transition: background .25s ease; }
+  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .28s cubic-bezier(.22,.8,.34,1); }
   .sw.on { background: var(--pending-blue); }
   .sw.on::after { transform: translateX(18px); }
   select.txt { width: 100%; margin-bottom: 12px; }
@@ -435,7 +445,8 @@ try {
   <div class="modal-mask" id="reportMask">
     <div class="modal">
       <h3>诊断报告</h3>
-      <textarea class="report" id="reportText" readonly></textarea>
+      <div class="loading-box" id="reportLoading"><span class="spin"></span><span>正在生成诊断报告…</span></div>
+      <textarea class="report" id="reportText" readonly style="display:none"></textarea>
       <div class="btn-row">
         <button class="g-btn" onclick="saveReport()">保存到 Download</button>
         <button class="g-btn primary-blue" onclick="document.getElementById('reportMask').classList.remove('show')">关闭</button>
@@ -446,6 +457,7 @@ try {
   <div class="modal-mask" id="logMask">
     <div class="modal">
       <h3>更新日志</h3>
+      <div class="loading-box small" id="logLoading" style="display:none"><span class="spin"></span><span>读取中…</span></div>
       <div class="changelog" id="logText"></div>
       <div class="btn-row">
         <button class="g-btn primary-blue" onclick="document.getElementById('logMask').classList.remove('show')">关闭</button>
@@ -1189,6 +1201,8 @@ async function loadSettings() {
 }
 async function toggleSetting(key) {
   if (busy) return;
+  const row = document.querySelector(`.switch-row[onclick*="${key}"]`);
+  const sw = row && row.querySelector('.sw');
   let nv;
   if (key === "mount_mode") {
     nv = settings.mount_mode === "manager" ? "self" : "manager";
@@ -1213,26 +1227,41 @@ async function toggleSetting(key) {
       if (!ok) return;
     }
   }
+  // 立即翻转开关给出视觉反馈，后台失败时再翻回
+  if (sw) sw.classList.toggle("on");
+  if (row) {
+    row.classList.add("loading");
+    const ov = document.createElement("div");
+    ov.className = "overlay";
+    ov.innerHTML = '<span class="spin"></span><span>' + (pendingId !== "none" ? "正在重新生成..." : "正在保存...") + '</span>';
+    row.appendChild(ov);
+  }
   busy = true;
+  let success = false;
   try {
     await ksuExec(`sh ${MODDIR}/fontctl.sh settings set ${key} ${nv}`);
     if (pendingId !== "none") {
-      showToast("已修改，正在重新生成...", true);
       const out = await ksuExec(`sh ${MODDIR}/fontctl.sh reapply`);
       const m = out.match(/^OK:(.*):(\d+):(\w+)\s*$/m);
       showToast(m ? "已重新生成：" + m[2] + " 个槽位，重启后生效" : "重新生成失败：" + out.replace(/^ERROR:/, ""));
     } else showToast("已修改");
+    success = true;
   } catch (e) { showToast("修改失败：" + errText(e)); }
+  if (!success && sw) sw.classList.toggle("on"); // 回滚
+  if (row) { row.classList.remove("loading"); const ov = row.querySelector(".overlay"); if (ov) ov.remove(); }
   busy = false;
   await loadSettings();
   await refreshAll();
 }
 async function showReport() {
-  const ta = document.getElementById("reportText");
-  ta.value = "生成中...";
+  const ta = document.getElementById("reportText"), ld = document.getElementById("reportLoading");
+  ta.style.display = "none"; ta.classList.remove("pop"); ld.style.display = "flex";
   document.getElementById("reportMask").classList.add("show");
+  await nextPaint();
   try { ta.value = (await ksuExec(`sh ${MODDIR}/fontctl.sh report`)).trim(); }
   catch (e) { ta.value = "生成失败：" + errText(e); }
+  ld.style.display = "none"; ta.style.display = "block"; ta.scrollTop = 0;
+  void ta.offsetWidth; ta.classList.add("pop");
 }
 async function saveReport() {
   try {
@@ -1335,11 +1364,13 @@ function renderUpdate(u) {
 }
 
 async function showChangelog() {
-  const box = document.getElementById("logText");
-  box.textContent = "读取中...";
+  const box = document.getElementById("logText"), ld = document.getElementById("logLoading");
+  box.textContent = ""; box.style.display = "none"; box.classList.remove("pop"); ld.style.display = "flex";
   document.getElementById("logMask").classList.add("show");
+  await nextPaint();
   try { box.textContent = (await ksuExec(`sh ${MODDIR}/update.sh changelog`)).trim() || "（空）"; }
   catch (e) { box.textContent = "读取失败：" + errText(e); }
+  ld.style.display = "none"; box.style.display = "block"; void box.offsetWidth; box.classList.add("pop");
 }
 
 async function installUpdate() {

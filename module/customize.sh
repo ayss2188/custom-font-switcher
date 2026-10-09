@@ -68,7 +68,7 @@ CONFLICTS=$(sh "$MODPATH/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr 
 ui_print " "
 ui_print "===================================="
 ui_print "字体库已有：$LIB_COUNT 个字体（$LIB）"
-ui_print "更新 / 重装模块不会丢失字体库和设置"
+ui_print "更新模块不会丢失字体库；卸载模块会一并删除"
 ui_print "===================================="
 ui_print "使用方法：在模块管理器打开【WebUI】"
 ui_print "  1. 导入自己的 TTF/OTF 字体（可多选）"
