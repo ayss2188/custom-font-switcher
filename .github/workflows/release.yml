@@ -1,0 +1,92 @@
+name: Release
+
+# 两种触发方式（任选其一）：
+#   1. 网页上点：Actions → Release → Run workflow（推荐，不需要会 git）
+#   2. 推送 v* 标签（例如 git tag v1.1 && git push origin v1.1）
+# 自动完成：
+#   1. 打包刷机包 custom-font-switcher.zip
+#   2. 发布到 GitHub Releases（标签 = module.prop 里的 version，更新说明取自 CHANGELOG.md 对应段落）
+#   3. 回写 main 分支的 update.json（版本号、下载地址、sha256），手机端即可检测到更新
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 检查版本号
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(sed -n 's/^version=//p' module/module.prop | tr -d '\r')
+          CODE=$(sed -n 's/^versionCode=//p' module/module.prop | tr -d '\r')
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "$VER" ]; then
+            echo "::error::标签 ${GITHUB_REF_NAME} 与 module.prop 里的 version=$VER 不一致"
+            exit 1
+          fi
+          if grep -q '__REPO__' module/module.prop; then
+            echo "::error::module.prop 里还是 __REPO__ 占位符，请把它改成 你的用户名/仓库名"
+            exit 1
+          fi
+          if gh release view "$VER" >/dev/null 2>&1; then
+            echo "::error::Release $VER 已经存在。发新版前请先把 module.prop 里的 version 和 versionCode 改大"
+            exit 1
+          fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+
+      - name: 打包
+        run: |
+          # 网页上编辑过的文件可能带 Windows 换行，统一转成 LF
+          find module -type f \( -name '*.sh' -o -name '*.prop' -o -name '*.list' -o -name '*.html' -o -name '*.py' -o -name 'update-binary' -o -name 'updater-script' \) \
+            -exec sed -i 's/\r$//' {} +
+          sh scripts/build.sh
+          sha256sum dist/custom-font-switcher.zip | cut -d' ' -f1 > dist/sha256.txt
+          echo "sha256: $(cat dist/sha256.txt)"
+
+      - name: 提取本版更新说明
+        run: |
+          VER="${{ steps.ver.outputs.ver }}"
+          awk -v v="## $VER" '
+            $0 == v { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > dist/notes.md
+          [ -s dist/notes.md ] || echo "见 CHANGELOG.md" > dist/notes.md
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.ver.outputs.ver }}"
+          gh release create "$VER" dist/custom-font-switcher.zip \
+            --target main \
+            --title "自定义字体切换模块 $VER" \
+            --notes-file dist/notes.md
+
+      - name: 回写 update.json
+        run: |
+          VER="${{ steps.ver.outputs.ver }}"
+          CODE="${{ steps.ver.outputs.code }}"
+          SHA=$(cat dist/sha256.txt)
+          REPO="${GITHUB_REPOSITORY}"
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/%s/releases/download/%s/custom-font-switcher.zip",\n  "changelog": "https://raw.githubusercontent.com/%s/main/CHANGELOG.md",\n  "sha256": "%s"\n}\n' \
+            "$VER" "$CODE" "$REPO" "$VER" "$REPO" "$SHA" > update.json
+          cat update.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add update.json
+          git commit -m "update.json: $VER" || echo "update.json 无变化"
+          git push origin HEAD:main
