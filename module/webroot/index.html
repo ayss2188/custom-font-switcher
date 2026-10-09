@@ -825,30 +825,12 @@ async function editFont(id) {
   if (busy) return;
   const f = fonts.find(x => x.id === id);
   if (!f) return;
-  const cur = (f.meta && (f.meta.scope === "all" || f.meta.scope === "latin" || f.meta.scope === "cjk")) ? f.meta.scope : "auto";
-  const auto = autoScope(f.meta || {});
-  const r = await dialog({
-    title: "编辑字体",
-    input: f.name,
-    select: {
-      label: "替换范围",
-      value: cur,
-      options: [
-        ["auto", "自动（" + (auto ? SCOPE_TEXT[auto] : "按中英文") + "）"],
-        ["all", "中英文全部"],
-        ["latin", "仅英文/数字"],
-        ["cjk", "仅中文"]
-      ]
-    },
-    okText: "保存"
-  });
-  if (!r) return;
+  const r = await dialog({ title: "编辑字体", input: f.name, okText: "保存" });
+  if (r === null) return;
   busy = true;
   try {
-    if (r.text && r.text !== f.name) await ksuExec(`sh ${MODDIR}/fontctl.sh rename ${shq(id)} ${shq(r.text)}`);
-    if (r.sel !== cur) await ksuExec(`sh ${MODDIR}/fontctl.sh setmeta ${shq(id)} scope=${r.sel}`);
-    showToast(r.sel !== cur && isLocked(id) ? "已保存，正在按新范围重新生成..." : "已保存");
-    if (r.sel !== cur && selIds(pendingId).length === 1 && pendingId === id) await ksuExec(`sh ${MODDIR}/fontctl.sh reapply`);
+    if (r && r !== f.name) await ksuExec(`sh ${MODDIR}/fontctl.sh rename ${shq(id)} ${shq(r)}`);
+    showToast("已保存");
   } catch (e) { showToast("保存失败：" + errText(e)); }
   busy = false;
   await refreshAll();

@@ -182,7 +182,35 @@ python optimize_font.py 合集.ttc -o out.ttf --face 0            # 从 TTC 合�
 
 ---
 
-## 七、免责声明
+## 七、开发者：发布新版本
+
+仓库结构：
+
+```text
+module/                刷机包内容（打包时整个目录打进 zip）
+update.json            在线更新信息（发布时由 GitHub Actions 自动回写）
+CHANGELOG.md           更新日志（WebUI 里「更新日志」读取的就是它）
+设置仓库地址.bat         首次设置仓库地址（双击运行）
+本地打包.bat             在电脑上打包 zip（双击运行）
+.github/workflows/     自动发布
+```
+
+首次使用：双击「设置仓库地址.bat」，输入 `你的用户名/custom-font-switcher`。
+
+发布新版本：
+
+1. 修改 `module/module.prop` 里的 `version`（如 `v1.1`）和 `versionCode`（必须比上一版大，如 `110`）；
+2. 在 `CHANGELOG.md` 顶部加上 `## v1.1` 段落；
+3. 把修改上传到 GitHub；
+4. 打开仓库 **Actions → Release → Run workflow**。GitHub 会自动打包、发布 Release，并回写 `update.json`，几分钟后手机上的 WebUI 和管理器就能检测到更新。
+
+（会用 git 的话，也可以直接推送标签：`git tag v1.1 && git push origin main v1.1`。）
+
+本地打包：双击「本地打包.bat」（或 `sh scripts/build.sh`），输出在 `dist/`。
+
+---
+
+## 八、免责声明
 
 - 本模块仅供机友交流学习与美化测试，请勿用于任何商业用途；
 - 本模块不附带任何字体，请自行确认所用字体的版权与授权，**不要在 Issue 中上传无授权的商业字体**；
