@@ -1,0 +1,7 @@
+# 刷机脚本在 Android 上运行，必须保持 LF 换行
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.ttf binary
+*.otf binary
+*.zip binary
+*.bat text eol=crlf

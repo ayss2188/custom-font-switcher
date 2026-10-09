@@ -1,0 +1,6 @@
+dist/
+*.ttf
+*.otf
+*.ttc
+.DS_Store
+Thumbs.db
