@@ -259,7 +259,8 @@ mount_result() {
   local f="$MODDIR/mount.state"
   [ -f "$f" ] || return 0
   [ "$(sed -n 's/^boot=//p' "$f")" = "$(boot_id)" ] || return 0
-  echo "$(sed -n 's/^ok=//p' "$f") $(sed -n 's/^fail=//p' "$f") $(sed -n 's/^stage=//p' "$f")"
+  # ok fail stage same skip —— same/skip 一定要带上，否则界面上"成功 18"看着像丢了 6 个槽位
+  echo "$(sed -n 's/^ok=//p' "$f") $(sed -n 's/^fail=//p' "$f") $(sed -n 's/^stage=//p' "$f") $(sed -n 's/^same=//p' "$f") $(sed -n 's/^skip=//p' "$f")"
 }
 
 refresh_prop() {
@@ -473,6 +474,7 @@ case "${1:-}" in
     echo "RM=$(root_manager)"
     echo "V=$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null)"
     echo "MO=$(mount_result | tr ' ' ',')"
+    echo "VF=$(payload_verify "$MODDIR" | tr ' ' ',')"
     if [ -f "$MODDIR/mount_missed" ]; then echo "MM=1"; else echo "MM=0"; fi
     echo "CF=$(list_conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')"
     ;;
@@ -594,10 +596,10 @@ case "${1:-}" in
     n=0
     pm=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/payload.mode")
     [ "$pm" = manager ] && [ -s "$MODDIR/slots.map" ] || { echo "OK:0"; exit 0; }
-    while read -r id rel; do
+    while read -r id rel src; do
       id_ok "$id" || continue
       case "$rel" in ""|/*|*..*) continue ;; esac
-      src="$LIB/$id.ttf"
+      [ -n "$src" ] || src="$LIB/$id.ttf"
       dst="$MODDIR/$(mgr_path "$rel")"
       [ -f "$dst" ] || continue
       [ "$(stat -c %i "$src" 2>/dev/null)" = "$(stat -c %i "$dst" 2>/dev/null)" ] && continue

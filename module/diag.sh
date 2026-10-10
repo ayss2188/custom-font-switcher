@@ -294,8 +294,15 @@ case "$($GP persist.sys.safemode 2>/dev/null)$($GP ro.sys.safemode 2>/dev/null)"
   *1*) G_SAFE=1 ;;
 esac
 G_MAGISK=0
-if command -v magisk >/dev/null 2>&1 || [ -e /data/adb/magisk ] || [ -e /data/adb/magisk.db ]; then
+MAGISK_LEFT=0
+# Magisk 只有在「真的在跑」时才会让 KernelSU 跳过模块脚本：
+#   能看到 magisk 命令（在 PATH 里），或者脚本环境里有 MAGISK_VER。
+# 只看到 /data/adb/magisk 目录、magisk.db 属于卸载残留（KernelSU 用户很常见），
+# 以前把它们也算成"检测到 Magisk"，会在完全正常的机器上报 ❌，纯属吓人。
+if command -v magisk >/dev/null 2>&1 || [ -n "${MAGISK_VER:-}" ]; then
   G_MAGISK=1
+elif [ -e /data/adb/magisk ] || [ -e /data/adb/magisk.db ]; then
+  MAGISK_LEFT=1
 fi
 G_NMOD=0; G_NDIS=0
 for d in /data/adb/modules/*/; do
@@ -321,6 +328,7 @@ MS_BOOT=$(sed -n 's/^boot=//p' "$M/mount.state" 2>/dev/null)
 MS_OK=$(sed -n 's/^ok=//p' "$M/mount.state" 2>/dev/null)
 MS_FAIL=$(sed -n 's/^fail=//p' "$M/mount.state" 2>/dev/null)
 MS_SKIP=$(sed -n 's/^skip=//p' "$M/mount.state" 2>/dev/null)
+MS_SAME=$(sed -n 's/^same=//p' "$M/mount.state" 2>/dev/null)
 MS_STAGE=$(sed -n 's/^stage=//p' "$M/mount.state" 2>/dev/null)
 BEAT="$LIB/boot_events.log"
 MODE_FILE=$(tr -d '[:space:]' < "$M/payload.mode" 2>/dev/null)
@@ -376,11 +384,19 @@ PKG_FONT=""; PKG_DONE=0
 S_FONT=""; SFONT_DONE=0
 DFONT_LIST=""; DFONT_CFG=""; DFONT_DONE=0
 G_FLIP=0
-for _fd in /data/app/*font* /data/app/*monotype*; do
+# 字体包（flipfont）住的目录：注意现在应用装成 /data/app/~~<hash>==/<包名>-<hash>==/，
+# 只扫 /data/app/*font* 会漏掉（三星装字体包时全是这种路径）—— 所以多扫一层
+for _fd in /data/app/*font* /data/app/*monotype* /data/app/*/*font* /data/app/*/*monotype*; do
   [ -d "$_fd" ] && { G_FLIP=1; break; }
 done
+# /data/fonts：空目录（只有 config / files 而里面没字体）不算，否则会误报"它会盖过系统字体"
 G_DFONT=0
-[ -d /data/fonts ] && G_DFONT=1
+if [ -d /data/fonts ]; then
+  for _df in /data/fonts/*.ttf /data/fonts/*.otf /data/fonts/*.ttc \
+             /data/fonts/*/*.ttf /data/fonts/*/*.otf /data/fonts/*/*.ttc; do
+    [ -f "$_df" ] && { G_DFONT=1; break; }
+  done
+fi
 
 # 下面三个是"用到才算"的重活
 ensure_pkgs() {
@@ -474,15 +490,22 @@ SCOPE=$(eff_scope "$PEND")
 KL=$(cfg_get keep_lang 1); KS=$(cfg_get keep_special 1)
 subnote "计算槽位计划"
 plan_of() { # $1=scope $2=keep_lang $3=keep_special
-  local scope="$1" kl="$2" ks="$3" role d name
-  printf '%s\n' "$CANDS" | while read -r role d name; do
+  local scope="$1" kl="$2" ks="$3" role d name base
+  base=$(printf '%s\n' "$CANDS" | while read -r role d name; do
     [ -n "$role" ] || continue
     _role_wanted "$role" "$scope" "$kl" "$ks" || continue
     printf '%s %s/%s\n' "$role" "${d#/}" "$name"
-  done | sort -u -k2,2
+  done | sort -u -k2,2)
+  [ -n "$base" ] || return 0
+  printf '%s\n' "$base"
+  # 主题字体槽（/data/system/theme/fonts 里与上面同名的）——必须和 slot_plan 保持一致，
+  # 否则报告里的"计划槽位数"会比实际少几个。
+  theme_slots "$base"
 }
 PLAN_NOW=$(plan_of "$SCOPE" "$KL" "$KS")
 PLAN_MAX=$(plan_of all 0 0)
+# 计划里有几个主题字体槽（/data/system/theme/fonts 里与已选槽位同名的那些）
+MIUI_INPLAN=$(printf '%s\n' "$PLAN_NOW" | grep -c '^theme ' 2>/dev/null)
 APPLIED_LIST=$(cat "$M/slots.applied" 2>/dev/null)
 APPLIED_TTC=0
 if [ -n "$APPLIED_LIST" ] && [ "$TTCNUM" -gt 0 ]; then
@@ -614,7 +637,7 @@ do_mount_test() {
   # 只有实在没有系统槽位时才拿它来测。
   line=""
   _mt_id=""; _mt_rel=""
-  while read -r _mt_id _mt_rel; do
+  while read -r _mt_id _mt_rel _mt_src; do
     [ -n "$_mt_rel" ] || continue
     case "$_mt_rel" in data/*) continue ;; esac
     line="$_mt_id $_mt_rel"
@@ -694,9 +717,13 @@ conclusion() {
     echo "❌ 结论：系统当前处于安全模式（safemode=1）。"
     echo "   KernelSU 在安全模式下会跳过所有模块脚本，还会把全部模块禁用。"
     echo "   → 重启一次（开机时别按音量键），然后到管理器里重新启用模块。"
-  elif [ "$G_MAGISK" = 1 ]; then
+  elif [ "$G_MAGISK" = 1 ] && [ "$PFD_THIS" = 0 ] && [ -z "$MS_BOOT" ]; then
     echo "❌ 结论：机器上还检测到 Magisk。"
     echo "   KernelSU 一旦发现 Magisk，就会跳过全部模块脚本（post-fs-data / post-mount / service 都不跑）。"
+  elif [ "$G_MAGISK" = 1 ]; then
+    # 有 Magisk 的痕迹，但本模块脚本确实跑了 → 现在生效的是 KernelSU，不是冲突
+    echo "⚠ 结论：检测到 Magisk 与 KernelSU 共存，但本次开机的模块脚本确实执行了 ——"
+    echo "   说明当前生效的是 KernelSU，Magisk 只是残留，不影响字体替换（见第 1 节）。"
   elif [ "$MT_LEFT" = 1 ]; then
     echo "⚠ 结论：挂载测试成功，但测试用的挂载点卸载失败（已记录，重启后可恢复）。"
   elif [ "$PFD_THIS" = 0 ] && [ "$SVC_THIS" = 0 ]; then
@@ -708,6 +735,13 @@ conclusion() {
       echo "   连 mount_missed 都没有 → 模块脚本从来没被执行过（不是挂载失败）。"
     fi
     echo "   第 1 节的门禁都没命中时，看第 10 节的 ksud 日志、版本和 dmesg。"
+  elif [ "$PFD_THIS" != 0 ] && [ -z "$MS_BOOT" ] && [ -n "$PEND" ] && [ "$PEND" != none ] && \
+       [ "$ACT" != "$PEND" ] && newer_boot "$M/pending_font"; then
+    # 关键：本次开机时还没选字体（pending 是空的），是开机之后才选的 —— 这不是故障，重启一次就行。
+    # 以前这种情况会走到下面那条，报"❌ 挂载阶段没留下记录 / 需要改用其它挂载时机"，把人吓一跳。
+    echo "⏳ 结论：字体已经选好了，但「本次开机的时候还没选」，所以这次开机什么都没做。"
+    echo "   → 重启一次就生效（重启后什么都不用点，字体就该变了）。"
+    echo "   → 如果重启后还是没变，再看第 3 节（挂载是否成功）和第 6 节（中文是不是 .ttc）。"
   elif [ "$PFD_THIS" != 0 ] && [ -z "$MS_BOOT" ]; then
     echo "❌ 结论：开机脚本跑了，但「挂载阶段」没有留下任何记录。"
     echo "   结合第 3 节的实测结果一起看（实测${MT_RESULT}）。"
@@ -719,14 +753,18 @@ conclusion() {
     echo "❌ 结论：挂载失败 $MS_FAIL 个（成功 $MS_OK 个）。第 3 节有真实报错。"
   elif [ -n "$MS_BOOT" ] && [ "$MS_BOOT" = "$BOOTID" ] && [ "$VTOT" != 0 ] && [ "$VHIT" = "$VTOT" ]; then
     echo "✅ 结论：字体已成功挂载并生效（$VHIT/$VTOT）。"
-    if [ "$ZH_TTC" = 1 ] && [ "$APPLIED_TTC" = 0 ]; then
-      echo "⚠ 但中文多半没变：三星中文用的是 .ttc 合集（${TTCFIRST:-?}），"
-      echo "  本模块只支持单文件 .ttf/.otf，替换列表里不含它。见第 6 节。"
-    fi
   elif [ -n "$MS_BOOT" ] && [ "$MS_BOOT" = "$BOOTID" ]; then
     echo "⚠ 结论：有本次开机的挂载记录，但实际校验只有 $VHIT/$VTOT 生效。见第 3 节。"
   else
     echo "⚠ 结论：没找到明确的失败点。请看第 2 节执行痕迹、第 4 节候选槽位和第 10 节日志。"
+  fi
+  # 简中的"兜底字体"是 .ttc 合集，模块不动它。但注意别说成"中文一定不变"：
+  # 只要主字体家族（sans-serif / MiSansVF 这类）在替换列表里、且你的字体自带中文字形，
+  # 中文照样会变 —— .ttc 只在主字体缺字形、系统回落到它时才起作用。
+  if [ "$ZH_TTC" = 1 ] && [ "$APPLIED_TTC" = 0 ] && [ -n "$PEND" ] && [ "$PEND" != none ]; then
+    echo "ℹ 中文说明：本机简中的「兜底字体」是 .ttc 合集（${TTCFIRST:-?}），本模块不替换 .ttc。"
+    echo "   只要替换列表里的主字体自带中文字形，中文一般也会跟着变；"
+    echo "   只有主字体缺字形、系统回落到这个合集时，那一部分中文不会变。第 6 节有明细。"
   fi
   hr
   echo "本次开机: post-fs-data $([ "$PFD_THIS" = 0 ] && echo '未执行' || echo '已执行')   service $([ "$SVC_THIS" = 0 ] && echo '未执行' || echo '已执行')   实际生效 $VHIT/$VTOT"
@@ -745,8 +783,8 @@ conclusion() {
   echo "谷歌字体兼容: $(sh "$MODDIR/google_font.sh" status 2>/dev/null)   冲突模块: $(sh "$MODDIR/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')"
   if [ "$G_FLIP" = 1 ]; then
     echo "⚠ 另外：检测到「字体包 / 字体设置」相关项（见第 7 节）。"
-    echo "   如果他在 设置→显示→字体大小和样式 里选了非默认字体，系统会走字体包，"
-    echo "   这种情况下替换 /system/fonts 是无效的，需要先选回「默认」。"
+    echo "   如果你在 设置→显示→字体大小和样式 里选了非默认字体，系统会走字体包，"
+    echo "   这种情况下替换 /system/fonts 是无效的，需要先选回「默认」（或系统自带字体）再重启。"
   fi
   if [ "$G_DFONT" = 1 ]; then
     echo "⚠ 另外：存在 /data/fonts（Android 可更新字体），它会盖过 /system/fonts（见第 7 节）。"
@@ -754,8 +792,13 @@ conclusion() {
   if [ "$G_MIUI" = 1 ]; then
     echo "⚠ 另外：检测到 MIUI / HyperOS 个性字体（主题字体）：$MIUI_DIRS"
     echo "   共 $MIUI_FONT_N 个字体文件$([ -n "$MIUI_SHADOW" ] && echo "，其中与系统同名的：$MIUI_SHADOW")"
-    echo "   个性字体由主题机制接管，优先级高于 /system/fonts —— 只替换系统目录不会全面生效。"
-    echo "   → 设置 → 显示 → 字体大小和样式 切回「默认」（或小米兰亭Pro）后重启一次。"
+    if [ "${MIUI_INPLAN:-0}" -gt 0 ] 2>/dev/null; then
+      echo "   ✅ 与本次槽位同名的那 $MIUI_INPLAN 个已纳入替换（计划里的 theme 槽位）——"
+      echo "      这些名字不会再被主题字体盖住，不需要再去 设置 里切回默认。"
+    else
+      echo "   个性字体由主题机制接管，优先级高于 /system/fonts —— 只替换系统目录不会全面生效。"
+      echo "   → 设置 → 显示 → 字体大小和样式 切回「默认」（或小米兰亭Pro）后重启一次。"
+    fi
   fi
   if [ "$DATAFONT_N" -gt 0 ]; then
     echo "⚠ 另外：检测到「个性化字体」（放在 /data 上，优先级高于 /system/fonts）："
@@ -785,6 +828,7 @@ sec1() {
   echo "  modules_update  : $([ -d "$UPD" ] && echo "存在  $UPD" || echo 不存在)$([ "$IN_INSTALL" = 1 ] && echo ' （本次正在安装，必然存在，不作为依据）' || echo '')"
   echo "  Android 安全模式 : persist.sys.safemode=$($GP persist.sys.safemode 2>/dev/null)  ro.sys.safemode=$($GP ro.sys.safemode 2>/dev/null)"
   echo "  Magisk 共存     : command -v magisk = $(command -v magisk 2>/dev/null || echo 无)   /data/adb/magisk = $([ -e /data/adb/magisk ] && echo 有 || echo 无)   magisk.db = $([ -e /data/adb/magisk.db ] && echo 有 || echo 无)"
+  echo "                    判定: $([ "$G_MAGISK" = 1 ] && echo '★ Magisk 正在运行（会和 KernelSU 冲突）' || { [ "$MAGISK_LEFT" = 1 ] && echo '只是卸载残留（Magisk 没在运行，不影响本模块）' || echo '没有 Magisk'; })"
   echo "  Root 管理器     : $RM   (KSU=$KSU APATCH=$APATCH MAGISK_VER=$MAGISK_VER)"
   echo "  ksud            : $KSU_BIN  版本: $KSVER"
   echo "  late-load 模式  : KSU_LATE_LOAD=$KSU_LATE_LOAD   KSU_RUNTIME_MODE=$KSU_RUNTIME_MODE"
@@ -820,8 +864,11 @@ sec2() {
   fi
   echo "  mount.state    : $([ -f "$M/mount.state" ] && echo "有   写入于 $(mstamp "$M/mount.state")（$(since_txt "$M/mount.state")）" || echo 没有)"
   if [ -f "$M/mount.state" ]; then
-    echo "                   内容: boot=$MS_BOOT ok=$MS_OK fail=$MS_FAIL skip=$MS_SKIP stage=$MS_STAGE"
+    echo "                   内容: boot=$MS_BOOT ok=$MS_OK fail=$MS_FAIL skip=$MS_SKIP same=$MS_SAME stage=$MS_STAGE"
     echo "                   是否本次开机: $([ "$MS_BOOT" = "$BOOTID" ] && echo 是 || echo 否)"
+    echo "                   怎么读: ok=真挂上去的；same=检查时已经指向本模块文件、不用重复挂；"
+    echo "                           skip=文件当时不在；fail=挂载失败。"
+    echo "                           ok+same 才是「实际覆盖到的槽位」，所以 ok 比槽位总数少是正常的。"
   fi
   echo "  mount_missed   : $([ -f "$M/mount_missed" ] && echo "有 ★ 写入于 $(mstamp "$M/mount_missed")（$(since_txt "$M/mount_missed")）" || echo 没有)"
   echo "                   （若它存在且是「本次开机之前」写的 → 本次开机的 post-fs-data 没跑："
@@ -956,7 +1003,7 @@ sec6() {
     echo "      $L  $(size_kb "/system/fonts/$L")  faces=$(ttc_faces "/system/fonts/$L")  h=$(head -c 1048576 "/system/fonts/$L" 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)"
   done
   [ "$TTCNUM" = 0 ] && echo "      （无）"
-  echo "  简中 zh-Hans 是否指向 .ttc: $([ "$ZH_TTC" = 1 ] && echo '是 ★ 中文不会被本模块替换' || echo 否)"
+  echo "  简中 zh-Hans 是否指向 .ttc: $([ "$ZH_TTC" = 1 ] && echo '是 ★ 这是它的兜底字体（本模块不替换 .ttc；主字体家族被替换且含中文字形时，中文仍会变）' || echo 否)"
   for x in $XMLFOUND; do
     echo "  ---- ${x##*/} 里的 zh 相关 family ----"
     xmlnorm "$x" | grep -i -A 14 '<family[^>]*lang="zh' | head -n 60 | while IFS= read -r L; do echo "      $L"; done
@@ -1029,6 +1076,13 @@ sec7() {
       echo "      $L  $(size_kb "$L")  mtime=$(mstamp "$L")"
     done
     echo "      与系统字体同名的（会顶替系统字体）: ${MIUI_SHADOW:-无}"
+    if [ "${MIUI_INPLAN:-0}" -gt 0 ] 2>/dev/null; then
+      echo "      其中已纳入本模块替换的: $MIUI_INPLAN 个（名字与本次槽位相同，见计划里的 theme 行）"
+      echo "      说明: 这几个文件会被本模块一并替换，主题字体不再盖住它们。"
+    else
+      echo "      说明: 与本次槽位同名的会被本模块一并替换；不同名的不动（主题自带的东西）。"
+      echo "            如当前列表一个都没覆盖到，说明主题用的名字和系统槽位都不一样。"
+    fi
   else
     echo "      （未检测到个性字体，系统字体走 /system/fonts 等系统目录）"
   fi

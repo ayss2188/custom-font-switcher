@@ -351,6 +351,10 @@ try {
       <span class="value" id="mountLabel">-</span>
     </div>
     <div class="status-row">
+      <span class="label">实际生效（逐个核对）</span>
+      <span class="value" id="verifyLabel">-</span>
+    </div>
+    <div class="status-row">
       <span class="label">识别系统</span>
       <span class="value" id="romLabel">读取中...</span>
     </div>
@@ -726,9 +730,25 @@ function applyStatus(st) {
     if (g("PM") === "manager") setValue("mountLabel", "交给管理器挂载");
     else if (activeId === "none") setValue("mountLabel", "无需挂载");
     else if (mo[0] !== "") {
-      setValue("mountLabel", "自带挂载 成功 " + mo[0] + (+mo[1] ? " / 失败 " + mo[1] : ""));
-      ml.classList.add(+mo[1] ? "warn" : "ok");
+      // same/skip 必须一起显示：只显示"成功 18"会被当成"丢了 6 个槽位"
+      let txt = "自带挂载 成功 " + mo[0];
+      const same = +(mo[3] || 0), skip = +(mo[4] || 0);
+      if (+mo[1]) txt += " / 失败 " + mo[1];
+      if (same) txt += "，另 " + same + " 个已生效（无需重复挂）";
+      if (skip) txt += "，跳过 " + skip + " 个（文件当时不在）";
+      setValue("mountLabel", txt);
+      ml.classList.add((+mo[1] || skip) ? "warn" : "ok");
     } else { setValue("mountLabel", "本次开机未挂载"); ml.classList.add("warn"); }
+    // 逐个核对（按 inode 实测），这才是"有没有真的生效"的答案
+    const vf = g("VF").split(",");
+    const vl = document.getElementById("verifyLabel");
+    if (vl) {
+      vl.classList.remove("warn", "ok");
+      if (vf[0] !== "" && +vf[1] > 0) {
+        setValue("verifyLabel", vf[0] + " / " + vf[1] + " 个槽位");
+        vl.classList.add(vf[0] === vf[1] ? "ok" : "warn");
+      } else setValue("verifyLabel", "-");
+    }
     // 冲突模块（现在由 status 一起返回，不再单独发一次 shell）
     const cf = g("CF").trim();
     const cfNames = cf ? cf.split(/\s+/).filter(Boolean) : [];

@@ -193,7 +193,14 @@ _role_set() {
       ROLE=display; return ;;
   esac
   case "$l" in
-    *hans*|*hant*|*cjk*|*chinese*|*sc[-_.]*|*tc[-_.]*|*misansl3*|*misanstc*) ROLE=cjk; return ;;
+    # 繁体/香港专用的那一份，归到 lang（=「保留日韩及其他文字」管的范围）。
+    # 原因：很多用户导入的是"简体字库"或某字体的 SC 版，里面没有 靉/鶚/懞 这类繁体字；
+    # 而 MIUI 的 zh-Hant 家族正好指向 MiSansTCVF.ttf 这类文件 —— 一旦被顶掉，
+    # 后面没有别的兜底，那些字就变成方块。保持让它走系统字体最安全；
+    # 用户若确实想让繁体也换，把「保留日韩及其他文字的字体槽」关掉即可。
+    # 注意：这一组必须排在 `*hans*` 前面，否则 SourceHanSansHK 这类会被 hans 抢先吃掉。
+    *hant*|*tc[-_.]*|*tcvf*|*misanstc*|*traditional*|*big5*|*hk[-_.]*) ROLE=lang; return ;;
+    *hans*|*cjk*|*chinese*|*sc[-_.]*|*misansl3*) ROLE=cjk; return ;;
     roboto*|googlesans*|google-sans*|productsans*|*latin*|samsungone*|notosans-*|\
     miuiex*|mitype*|inter*|opensans*|lato*|sourcesans*|worksans*|nunito*) ROLE=latin; return ;;
   esac
@@ -206,8 +213,7 @@ slot_role() { _role_set "$(_lc "$1")"; echo "$ROLE"; }
 # 该角色在当前设置下是否参与替换
 _role_wanted() {
   local role="$1" scope="$2" keep_lang="$3" keep_special="$4"
-  case "$role" in
-    sym) return 1 ;;
+  case "$role" in    sym) return 1 ;;
     lang)
       # 其他文字体系只在"全部范围 + 明确关闭保留"时才会被替换（字体需自带这些文字）
       [ "$keep_lang" = 1 ] && return 1
@@ -250,13 +256,42 @@ slot_candidates() {
 # ---------------------------------------------------------------------------
 # 生成槽位计划
 # ---------------------------------------------------------------------------
+# 主题字体槽位（MIUI / HyperOS）：
+#   小米把"设置 → 显示 → 字体大小和样式"里选的字体放在 /data/system/theme/fonts/，
+#   **同名文件优先级高于 /system/fonts** —— 于是那几个名字（MiuiEx-*.ttf、Roboto-*.ttf）
+#   永远是主题字体，模块换了系统目录也看不到变化，报告只能让用户"切回默认再重启"。
+#   这里把这几个也纳入计划：只挑「名字和本次计划里已有槽位完全相同」的，
+#   覆盖范围跟用户的选择一致，不多碰主题自带的其他文件。
+#   注意：/data 上的文件在"交给管理器挂载"模式下挂不了（魔法挂载只覆盖系统分区），那种模式直接跳过。
+theme_slots() {
+  local base="$1" tdir names f n
+  tdir="$FSROOT/data/system/theme/fonts"
+  [ -d "$tdir" ] || return 0
+  [ "$(mount_mode 2>/dev/null)" = manager ] && return 0
+  names=$(printf '%s\n' "$base" | while read -r _r _p; do
+            [ -n "$_p" ] || continue
+            printf '%s\n' "${_p##*/}"
+          done | sort -u)
+  [ -n "$names" ] || return 0
+  for f in "$tdir"/*.ttf "$tdir"/*.TTF "$tdir"/*.otf "$tdir"/*.OTF; do
+    [ -f "$f" ] || continue
+    n=${f##*/}
+    case "$n" in *'*') continue ;; esac          # glob 没匹配到会原样留着
+    printf '%s\n' "$names" | grep -qxF "$n" || continue
+    printf 'theme data/system/theme/fonts/%s\n' "$n"
+  done
+}
+
 slot_plan() {
   local moddir="$1" scope="${2:-all}" keep_lang="${3:-1}" keep_special="${4:-1}"
-  local role d name
-  slot_candidates "$moddir" | while read -r role d name; do
-    _role_wanted "$role" "$scope" "$keep_lang" "$keep_special" || continue
-    printf '%s %s/%s\n' "$role" "${d#/}" "$name"
-  done | sort -u -k2,2
+  local role d name base
+  base=$(slot_candidates "$moddir" | while read -r role d name; do
+           _role_wanted "$role" "$scope" "$keep_lang" "$keep_special" || continue
+           printf '%s %s/%s\n' "$role" "${d#/}" "$name"
+         done | sort -u -k2,2)
+  [ -n "$base" ] || return 0
+  printf '%s\n' "$base"
+  theme_slots "$base"
 }
 
 # 诊断：按角色统计设备上"候选且存在"的槽位数量

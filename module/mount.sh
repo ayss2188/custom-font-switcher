@@ -27,11 +27,15 @@ payload_mount() {
   local moddir="$1" id rel src dst err ok=0 fail=0 skip=0 same=0
   local map="$moddir/slots.map"
   [ -s "$map" ] || return 0
-  while read -r id rel || [ -n "$rel" ]; do
+  while read -r id rel src || [ -n "$rel" ]; do
     rel=$(printf '%s' "$rel" | tr -d '\r')
     case "$id" in ""|*[!A-Za-z0-9_]*) continue ;; esac
     case "$rel" in ""|/*|*..*) continue ;; esac
-    src="$LIB/$id.ttf"; dst="/$rel"
+    # 第三个字段 = 这个槽位挂哪个文件（.ttc 槽位挂的是包好的"多 face TTC"）；
+    # 老格式只有两个字段，那就用字体库里的 $id.ttf
+    [ -n "$src" ] || src="$LIB/$id.ttf"
+    src=$(printf '%s' "$src" | tr -d '\r')
+    dst="/$rel"
     if [ ! -f "$src" ] || [ ! -f "$dst" ]; then
       skip=$((skip+1)); continue
     fi
@@ -73,9 +77,12 @@ payload_verify() {
   local moddir="$1" id rel a b n=0 hit=0 mode
   mode=$(tr -d '[:space:]' 2>/dev/null < "$moddir/payload.mode")
   [ -s "$moddir/slots.map" ] || { echo "0 0"; return 0; }
-  while read -r id rel || [ -n "$rel" ]; do
+  while read -r id rel src || [ -n "$rel" ]; do
     rel=$(printf '%s' "$rel" | tr -d '\r')
     case "$rel" in ""|/*|*..*) continue ;; esac
+    # 第三个字段才是真正挂上去的文件（.ttc 槽位挂的是包好的多 face TTC）
+    [ -n "$src" ] || src="$LIB/$id.ttf"
+    src=$(printf '%s' "$src" | tr -d '\r')
     n=$((n+1))
     if [ "$mode" = manager ]; then
       # 管理器挂载会经过 overlay/tmpfs，inode 不同，只能比较大小
@@ -83,7 +90,7 @@ payload_verify() {
       b=$(stat -L -c '%s' "/$rel" 2>/dev/null)
     else
       # bind mount 后两边的 设备号:inode 完全一致
-      a=$(stat -L -c '%d:%i' "$LIB/$id.ttf" 2>/dev/null)
+      a=$(stat -L -c '%d:%i' "$src" 2>/dev/null)
       b=$(stat -L -c '%d:%i' "/$rel" 2>/dev/null)
     fi
     [ -n "$a" ] && [ "$a" = "$b" ] && hit=$((hit+1))
