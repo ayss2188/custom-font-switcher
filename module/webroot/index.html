@@ -399,11 +399,11 @@ try {
 
   <div class="section-title fade"><span>替换范围（高级）</span></div>
   <div class="switch-row fade" onclick="toggleSetting('keep_lang')">
-    <div><div class="t">保留日韩及其他文字的字体槽</div><div class="d">推荐开启。关闭后这些槽位也会换成你的字体，字体若没有对应文字会显示方块。</div></div>
+    <div><div class="t">保留繁体 / 日文 / 韩文字体槽</div><div class="d">开着（推荐）：繁体、日文、韩文继续用系统字体，显示正常。<b>想让繁体也用你的字体，就关掉它</b> —— 但你的字体缺哪个字，哪个字就会变方块（简体字库常缺「靉」「鶚」这类冷门繁体）。</div></div>
     <div class="sw on" id="sw_keep_lang"></div>
   </div>
   <div class="switch-row fade" onclick="toggleSetting('keep_special')">
-    <div><div class="t">保留衬线 / 等宽 / 时钟 / 展示 / 斜体槽</div><div class="d">推荐开启。避免终端、锁屏时钟、斜体等被统一成同一个字体。</div></div>
+    <div><div class="t">保留衬线 / 等宽 / 时钟 / 斜体等特殊槽</div><div class="d">开着（推荐）：终端等宽字、锁屏时钟、衬线、斜体继续用系统字体，避免全文都变成一个样。<b>想让这些也用你的字体，就关掉它。</b></div></div>
     <div class="sw on" id="sw_keep_special"></div>
   </div>
   <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
@@ -730,12 +730,12 @@ function applyStatus(st) {
     if (g("PM") === "manager") setValue("mountLabel", "交给管理器挂载");
     else if (activeId === "none") setValue("mountLabel", "无需挂载");
     else if (mo[0] !== "") {
-      // same/skip 必须一起显示：只显示"成功 18"会被当成"丢了 6 个槽位"
-      let txt = "自带挂载 成功 " + mo[0];
+      // 这行只报挂载动作本身，写短一点（一行放得下）；"到底生效没有"由下面那行逐个核对负责
+      let txt = "成功 " + mo[0];
       const same = +(mo[3] || 0), skip = +(mo[4] || 0);
-      if (+mo[1]) txt += " / 失败 " + mo[1];
-      if (same) txt += "，另 " + same + " 个已生效（无需重复挂）";
-      if (skip) txt += "，跳过 " + skip + " 个（文件当时不在）";
+      if (+mo[1]) txt += "，失败 " + mo[1];
+      if (same) txt += "，已就位 " + same;
+      if (skip) txt += "，跳过 " + skip;
       setValue("mountLabel", txt);
       ml.classList.add((+mo[1] || skip) ? "warn" : "ok");
     } else { setValue("mountLabel", "本次开机未挂载"); ml.classList.add("warn"); }
