@@ -154,14 +154,107 @@ $_ST_T
   done
   printf '%s' "$_ST_OUT"
 }
-# TTC 合集头：'ttcf' + version + numFonts(偏移 8，4 字节小端)
+# TTC 合集头：'ttcf' + 主版本 + 次版本 + numFonts(偏移 8，4 字节**大端**)
+# ⚠ 不能直接用 `od -tu4`：那是按本机字节序读的，字节会颠倒 —— face 数 5 会显示成 83886080
+#   （真机报告里就是这么错的），按大端自己算才对。
 ttc_faces() {
-  local n
-  n=$(od -An -tu4 -j8 -N4 "$1" 2>/dev/null | tr -d ' \n')
-  [ -n "$n" ] || n=$(od -An -tx1 -j8 -N4 "$1" 2>/dev/null | tr -d ' \n')
-  echo "${n:-?}"
+  local b
+  b=$(od -An -tu1 -j8 -N4 "$1" 2>/dev/null)
+  set -- $b
+  [ $# -ge 4 ] || { echo "?"; return 0; }
+  echo $(( $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 ))
 }
 ttc_tag() { head -c 4 "$1" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n'; }
+
+# ---------------------------------------------------------------------------
+# 读一个 .ttc（或单文件字体）里第 N 号 face 的 PostScript 名（nameID=6；没有就退回家族名 nameID=1）
+#
+# 用途：诊断里把"原合集"和"我们生成的合集"每号 face 的名字并排打出来 ——
+# 真机反馈"中文没变"时，一眼就能看出是我们合成的合集结构不对，还是系统不认它。
+# 纯 shell + od（不起 Python），单文件字体当成只有 0 号 face。
+# ---------------------------------------------------------------------------
+ttc_face_name() {
+  local f="$1" i="${2:-0}" fo nt at tag off len b p so cnt rec nid plid slen soff
+  local tbh tb bytes j c out="" want=0 pick=0 want_plid=0 fb_off="" fb_len=0 fb_plid=0
+  [ -f "$f" ] || { echo "?"; return 0; }
+  fo=0
+  if [ "$(head -c 4 "$f" 2>/dev/null)" = ttcf ]; then
+    b=$(od -An -tu1 -j$(( 12 + 4 * i )) -N4 "$f" 2>/dev/null); set -- $b
+    [ $# -ge 4 ] || { echo "?"; return 0; }
+    fo=$(( $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 ))
+    [ "$fo" -ge 12 ] 2>/dev/null || { echo "?"; return 0; }
+  fi
+  b=$(od -An -tu1 -j$(( fo + 4 )) -N2 "$f" 2>/dev/null); set -- $b
+  [ $# -ge 2 ] || { echo "?"; return 0; }
+  nt=$(( $1 * 256 + $2 ))
+  [ "$nt" -ge 1 ] && [ "$nt" -le 512 ] 2>/dev/null || { echo "?"; return 0; }
+  # 一次把整个表目录读出来，在 shell 里找 tag = "name"（6e 61 6d 65）的那条
+  bytes=$(od -An -tu1 -j"$fo" -N$(( 12 + 16 * nt )) "$f" 2>/dev/null | tr -s ' \n' ' ')
+  set -- $bytes
+  # 跳过 face 头 12 字节
+  j=0; while [ "$j" -lt 12 ] && [ $# -gt 0 ]; do shift; j=$((j+1)); done
+  tag=""; off=""; len=""
+  c=0
+  while [ "$c" -lt "$nt" ] && [ $# -ge 16 ]; do
+    if [ "$1" = 110 ] && [ "$2" = 97 ] && [ "$3" = 109 ] && [ "$4" = 101 ]; then
+      shift 8
+      off=$(( $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 )); shift 4
+      len=$(( $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 )); shift 4
+      tag=name
+      break
+    fi
+    j=0; while [ "$j" -lt 16 ] && [ $# -gt 0 ]; do shift; j=$((j+1)); done
+    c=$((c+1))
+  done
+  [ "$tag" = name ] || { echo "?"; return 0; }
+  # name 表头：format(2) count(2) stringOffset(2)
+  b=$(od -An -tu1 -j"$off" -N6 "$f" 2>/dev/null); set -- $b
+  [ $# -ge 6 ] || { echo "?"; return 0; }
+  cnt=$(( $3 * 256 + $4 ))
+  so=$(( $5 * 256 + $6 ))
+  [ "$cnt" -ge 1 ] && [ "$cnt" -le 400 ] 2>/dev/null || { echo "?"; return 0; }
+  tb=$(od -An -tu1 -j$(( off + 6 )) -N$(( 12 * cnt )) "$f" 2>/dev/null | tr -s ' \n' ' ')
+  # 一条 name 记录 12 字节：platformID(2) encodingID(2) languageID(2) nameID(2) length(2) offset(2)
+  # 只要 nameID=6（PostScript 名）；优先 Windows(3) / Unicode(0) 平台 —— 这两个都是 UTF-16BE
+  set -- $tb
+  c=0
+  while [ "$c" -lt "$cnt" ] && [ $# -ge 12 ]; do
+    plid=$(( $1 * 256 + $2 ))
+    nid=$(( $7 * 256 + $8 ))
+    slen=$(( $9 * 256 + ${10} ))
+    # 注意：位置参数 ≥10 必须写 ${11} —— 写成 $11 会被当成 ${1} 后面跟一个字面量 1（踩过）
+    soff=$(( ${11} * 256 + ${12} ))
+    if [ "$nid" = 6 ]; then
+      case "$plid" in
+        3|0) pick=$(( off + so + soff )); want=$slen; want_plid=$plid; break ;;
+        *) [ -z "$fb_off" ] && { fb_off=$(( off + so + soff )); fb_len=$slen; fb_plid=$plid; } ;;
+      esac
+    fi
+    j=0; while [ "$j" -lt 12 ] && [ $# -gt 0 ]; do shift; j=$((j+1)); done
+    c=$((c+1))
+  done
+  if [ -z "$pick" ] && [ -n "$fb_off" ]; then pick=$fb_off; want=$fb_len; want_plid=$fb_plid; fi
+  [ -n "$pick" ] && [ "${want:-0}" -gt 0 ] 2>/dev/null || { echo "?"; return 0; }
+  [ "$want" -le 128 ] 2>/dev/null || want=128
+  b=$(od -An -tu1 -j"$pick" -N"$want" "$f" 2>/dev/null)
+  # platformID 3 / 0 都是 UTF-16BE：ASCII 字符是 (0, 码) 成对，跳过高字节；
+  # 非 ASCII 用 ? 代替。八进制转义用纯 shell 算（每个字符起一个 printf 进程太慢）。
+  j=0
+  for v in $b; do
+    case "$want_plid" in
+      3|0)
+        j=$((j+1))
+        [ $(( j % 2 )) = 1 ] && continue ;;
+    esac
+    if [ "$v" -ge 32 ] && [ "$v" -lt 127 ]; then
+      if [ "$v" = 37 ]; then out="$out%%"; else out="$out\\$(( v / 64 ))$(( (v / 8) % 8 ))$(( v % 8 ))"; fi
+    else
+      out="$out?"
+    fi
+  done
+  [ -n "$out" ] || out="?"
+  printf "$out"
+}
 # 文件首 4 字节（十六进制）：一个 od 进程，空格用 shell 去掉（以前是 head|od|tr 三个进程）
 magic4() { local m; m=$(od -An -tx1 -N4 "$1" 2>/dev/null); set -- $m; printf '%s' "$1$2$3$4"; }
 
@@ -372,6 +465,8 @@ SYSFONT_N=$(printf '%s\n' "$SYSFONTS" | grep -c . )
 TTC_LIST=$(printf '%s\n' "$SYSFONTS" | grep -i '\.ttc$')
 TTCNUM=$(printf '%s\n' "$TTC_LIST" | grep -c . )
 TTCFIRST=$(printf '%s\n' "$TTC_LIST" | head -n1)
+# 合集替换当前是否生效（auto 时三星会自动开，见 common.sh 的 ttc_enabled）
+TTC_ON=$(ttc_effective 2>/dev/null); [ -n "$TTC_ON" ] || TTC_ON=0
 ZH_TTC=0
 for x in $XMLFOUND; do
   xmlnorm "$x" | grep -i 'zh-Hans' | grep -qi '\.ttc' && ZH_TTC=1
@@ -730,7 +825,8 @@ conclusion() {
     echo "❌ 结论：没有任何一次开机留下「脚本执行过」的痕迹。"
     if [ -f "$M/mount_missed" ]; then
       echo "   但存在 mount_missed（$(mstamp "$M/mount_missed")，$(since_txt "$M/mount_missed")）："
-      echo "   说明某次开机脚本跑过，只是「挂载阶段」被跳过了（管理器没有 post-mount 阶段）。"
+      echo "   说明某次开机脚本跑过，但「挂载」没有执行 —— 最常见的原因是 Root 管理器在开机时"
+      echo "   没有运行模块脚本（例如临时 root：重启后需要重新激活的那种），其次才是模块被停用。"
     else
       echo "   连 mount_missed 都没有 → 模块脚本从来没被执行过（不是挂载失败）。"
     fi
@@ -758,11 +854,12 @@ conclusion() {
   else
     echo "⚠ 结论：没找到明确的失败点。请看第 2 节执行痕迹、第 4 节候选槽位和第 10 节日志。"
   fi
-  # 简中的"兜底字体"是 .ttc 合集，模块不动它。但注意别说成"中文一定不变"：
-  # 只要主字体家族（sans-serif / MiSansVF 这类）在替换列表里、且你的字体自带中文字形，
-  # 中文照样会变 —— .ttc 只在主字体缺字形、系统回落到它时才起作用。
+  # 简中的"兜底字体"是 .ttc 合集。默认（三星）会把它替换掉，用户也可以在设置里关掉。
+  # 但注意别说成"中文一定不变"：只要主字体家族（sans-serif / MiSansVF 这类）在替换列表里、
+  # 且你的字体自带中文字形，中文照样会变 —— .ttc 只在主字体缺字形、系统回落到它时才起作用。
   if [ "$ZH_TTC" = 1 ] && [ "$APPLIED_TTC" = 0 ] && [ -n "$PEND" ] && [ "$PEND" != none ]; then
-    echo "ℹ 中文说明：本机简中的「兜底字体」是 .ttc 合集（${TTCFIRST:-?}），本模块不替换 .ttc。"
+    echo "ℹ 中文说明：本机简中的「兜底字体」是 .ttc 合集（${TTCFIRST:-?}），本次没有替换它。"
+    [ "$TTC_ON" = 1 ] || echo "   → 想让中文也用你的字体：到「替换范围（高级）」里打开「替换 .ttc 合集」，重启一次即可。"
     echo "   只要替换列表里的主字体自带中文字形，中文一般也会跟着变；"
     echo "   只有主字体缺字形、系统回落到这个合集时，那一部分中文不会变。第 6 节有明细。"
   fi
@@ -795,10 +892,45 @@ conclusion() {
     if [ "${MIUI_INPLAN:-0}" -gt 0 ] 2>/dev/null; then
       echo "   ✅ 与本次槽位同名的那 $MIUI_INPLAN 个已纳入替换（计划里的 theme 槽位）——"
       echo "      这些名字不会再被主题字体盖住，不需要再去 设置 里切回默认。"
+      echo "      ⚠ 但注意：这样一来你在 设置 里选的那个字体（如「小米兰亭 Pro」）也失效了，"
+      echo "        如果它本来是用来调「字体粗细」的，粗细会跟着失效（普通字体没有字重轴）。"
     else
-      echo "   个性字体由主题机制接管，优先级高于 /system/fonts —— 只替换系统目录不会全面生效。"
-      echo "   → 设置 → 显示 → 字体大小和样式 切回「默认」（或小米兰亭Pro）后重启一次。"
+      echo "   本模块**默认不替换**这里（设置里的选择优先）——「也替换设置里选的字体」开关是关的。"
+      echo "   · 如果你在 设置 里选过字体（尤其「小米兰亭 Pro」这种用来调粗细的可变字体），这样正好："
+      echo "     你选的字体照常生效、粗细照常能调，本模块只负责系统目录里的那些槽位。"
+      echo "   · 如果你希望模块连这里一起接管（省得去 设置 里切回默认），把那个开关打开即可 ——"
+      echo "     代价是设置里选的字体会失效。"
     fi
+  fi
+  # ---------------------------------------------------------------------------
+  # 「字体粗细」相关的关键警告：本机原字体是可变字体（带字重轴），而用户字体是单字重
+  #  —— 这是真机上"以前能调粗细、现在调不动了"的根本原因，必须在结论区直接说清楚。
+  #  系统实现粗细靠的是可变字体的 wght 轴；换成普通单字重字体后那个轴就不存在了。
+  # ---------------------------------------------------------------------------
+  _vfn=0; _vflist=""
+  if [ -s "$MODDIR/slots.map" ]; then
+    while IFS= read -r _a _rel _c; do
+      [ -n "$_rel" ] || continue
+      case "$_rel" in ""|/*|*..*) continue ;; esac
+      [ -f "/$_rel" ] || continue
+      case "$(sfnt_tags "/$_rel" 2>/dev/null)" in
+        *fvar*)
+          _vfn=$((_vfn + 1))
+          [ "$_vfn" -le 4 ] && _vflist="$_vflist ${_rel##*/}"
+          ;;
+      esac
+      [ "$_vfn" -ge 30 ] && break
+    done < "$MODDIR/slots.map"
+  fi
+  _myvf=""
+  _myp=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/pending_font")
+  case "$_myp" in ""|none) ;; *) _myvf=$(sed -n 's/^vf=//p' "$LIB/$_myp.meta" 2>/dev/null | tail -n1) ;; esac
+  if [ "$_vfn" -gt 0 ] 2>/dev/null && [ "$_myvf" != 1 ]; then
+    echo "⚠ 重点：本机有 $_vfn 个槽位原本是【可变字体】（带字重轴）:$_vflist"
+    echo "   而当前字体是单字重 —— 替换后系统设置里的「字体粗细」调节会失效："
+    echo "   系统实现粗细靠的就是可变字体的字重轴，普通字体没有这个轴。"
+    echo "   · 想继续能调粗细：导入一个可变字体（文件名常带 VF / Variable，界面会标「可变」）"
+    echo "   · 只是想让「加粗」真的变粗：把同族的 Bold 一起导入（本版支持多字重配对）"
   fi
   if [ "$DATAFONT_N" -gt 0 ]; then
     echo "⚠ 另外：检测到「个性化字体」（放在 /data 上，优先级高于 /system/fonts）："
@@ -891,12 +1023,40 @@ sec2() {
 }
 
 # ---------------------------------------------------------------------------
+# 列出"盖在字体文件上面的挂载"（判断有没有生效、有没有别的模块在压我们）
+#
+# 老写法是 `mount | grep -c '/system/fonts/'`，会严重低估，两个原因都踩过：
+#   1) 只数了 /system/fonts —— 真机上还有 /product/fonts 这些厂商目录。
+#      真机实例：24 个槽位全挂上了，这里只显示 6（那 6 个刚好都在 /system/fonts）。
+#   2) Magisk 上 /system 常是 /system_root/system 的**符号链接**，挂载表里写的是展开后的路径。
+# 所以这里：任意字体目录都算（*/fonts/*），匹配不上再把挂载点展开符号链接判一次。
+# 只看文件名是字体扩展名的挂载点，免得把几百条无关挂载都拉进来。
+# ---------------------------------------------------------------------------
+font_overlay_list() {
+  local mnt r
+  "$MO" 2>/dev/null | while IFS= read -r L; do
+    case "$L" in *' on '*' type '*) ;; *) continue ;; esac
+    mnt=$(printf '%s' "$L" | sed 's/^.* on //; s/ type .*$//')
+    case "${mnt##*/}" in
+      *.ttf|*.TTF|*.otf|*.OTF|*.ttc|*.TTC) ;;
+      *) continue ;;
+    esac
+    case "$mnt" in
+      */fonts/*) printf '%s\n' "$L"; continue ;;
+    esac
+    r=$(readlink -f "$mnt" 2>/dev/null)
+    case "$r" in */fonts/*) printf '%s\n' "$L" ;; esac
+  done
+}
+
 sec3() {
   echo
   echo "【3】挂载现状 + 实机挂载能力实测"
   hr
-  echo "  /system/fonts 上层挂载点数量: $("$MO" 2>/dev/null | grep -c '/system/fonts/')"
-  "$MO" 2>/dev/null | grep '/system/fonts/' | head -n 8 | while IFS= read -r L; do echo "      $L"; done
+  echo "  字体文件被上层挂载覆盖的条数: $(font_overlay_list | grep -c . )"
+  font_overlay_list | head -n 8 | while IFS= read -r L; do echo "      $L"; done
+  echo "  （口径：所有字体目录都算，且把挂载点展开符号链接后再判）"
+  echo "  （老写法只数 /system/fonts，遇到 /product/fonts 或 /system 是符号链接时会严重低估）"
   echo "  实际生效校验   : $VHIT / $VTOT"
   echo "  实测：$MT_RESULT"
   [ -n "$MT_SRC" ] && echo "      源文件   : $MT_SRC  ($(size_kb "$MT_SRC"))"
@@ -996,14 +1156,50 @@ sec6() {
   echo "【6】字体配置：中文与主字体指向哪个文件、引用的文件是否存在"
   hr
   echo "  /system/fonts 文件总数: $SYSFONT_N"
-  echo "  .ttc 合集清单（本模块不支持替换）:"
+  echo "  .ttc 合集清单（$([ "$TTC_ON" = 1 ] && echo '本模块会替换：把你的字体包成同 face 数的合集顶上' || echo '本次未启用替换')）:"
   printf '%s\n' "$TTC_LIST" | while IFS= read -r L; do
     [ -n "$L" ] || continue
     # TTC 一般有几十 MB：这里只读前 1 MB（h: 头哈希）就够标识，诊断靠 faces/size，不靠全量哈希
     echo "      $L  $(size_kb "/system/fonts/$L")  faces=$(ttc_faces "/system/fonts/$L")  h=$(head -c 1048576 "/system/fonts/$L" 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)"
   done
   [ "$TTCNUM" = 0 ] && echo "      （无）"
-  echo "  简中 zh-Hans 是否指向 .ttc: $([ "$ZH_TTC" = 1 ] && echo '是 ★ 这是它的兜底字体（本模块不替换 .ttc；主字体家族被替换且含中文字形时，中文仍会变）' || echo 否)"
+  echo "  简中 zh-Hans 是否指向 .ttc: $([ "$ZH_TTC" = 1 ] && echo "是 ★ 这是它的兜底字体（$([ "$TTC_ON" = 1 ] && echo '本模块会把你的字体包成同 face 数的合集替换它，中文也会变' || echo '当前未启用合集替换：主字体家族被替换且含中文字形时中文仍会变')）" || echo 否)"
+  # ---- 把每号 face 的 PostScript 名连成一行（最多 6 号，够看清结构）----
+  face_names_line() {
+    local f="$1" n="${2:-0}" i=0 o=""
+    [ "$n" -ge 1 ] 2>/dev/null || { printf '?'; return 0; }
+    [ "$n" -gt 6 ] 2>/dev/null && n=6
+    while [ "$i" -lt "$n" ]; do
+      o="$o$(ttc_face_name "$f" "$i")"
+      i=$((i+1))
+      [ "$i" -lt "$n" ] && o="$o | "
+    done
+    printf '%s' "$o"
+  }
+  # 模块自己判的合集替换方案（换了哪几号 face、凭什么）。上面那份 fonts.xml 在报告里被截断过，
+  # 光看它看不出判断结果 —— 这一段是"现场结论"，出问题先看这里。
+  if [ -f "$LIB/ttc.log" ]; then
+    echo "  ---- 合集替换决策（模块实际怎么判的）----"
+    sed 's/^/      /' "$LIB/ttc.log" 2>/dev/null | head -n 20
+    echo "      （via=xml = 按字体配置判的；via=fallback = 配置里没找到中文引用、按惯例兜底）"
+  fi
+  # ---- 原合集 vs 我们生成的：每号 face 的 PostScript 名 ----
+  # 真机说"中文没变"时，这里一眼能看出是【结构不对】还是【我们造的名字系统不认】：
+  # 换掉的那几号会带着"用户字体自己的名字"，保留的那几号还是原合集的（如 NotoSansCJKjp-Regular）。
+  if [ -s "$M/slots.map" ] && grep -q '\.ttc' "$M/slots.map" 2>/dev/null; then
+    echo "  ---- 合集 face 名单：原样 vs 我们生成的（每号最多列 6 个）----"
+    grep '\.ttc' "$M/slots.map" 2>/dev/null | head -n 3 | while read -r _id rel src; do
+      [ -f "/$rel" ] || continue
+      _n=$(ttc_faces "/$rel" 2>/dev/null)
+      echo "      原   ${rel##*/}（${_n} face）"
+      echo "           $(face_names_line "/$rel" "$_n")"
+      if [ -n "$src" ] && [ -f "$src" ]; then
+        _n2=$(ttc_faces "$src" 2>/dev/null)
+        echo "      我们 ${src##*/}（${_n2} face）"
+        echo "           $(face_names_line "$src" "$_n2")"
+      fi
+    done
+  fi
   for x in $XMLFOUND; do
     echo "  ---- ${x##*/} 里的 zh 相关 family ----"
     xmlnorm "$x" | grep -i -A 14 '<family[^>]*lang="zh' | head -n 60 | while IFS= read -r L; do echo "      $L"; done

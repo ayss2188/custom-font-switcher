@@ -364,11 +364,16 @@ try {
     ⚠ 检测到上次选字体后没能正常开机，已自动恢复为「无字体」。建议换一个字体再试。
     <br><button onclick="ackRescue()">知道了</button>
   </div>
+  <div class="banner" id="stoppedBanner">
+    🛑 <b>本模块曾连续两次开机失败，已自动停用</b>（写入了禁用标记），所以手机当时能正常开机。
+    你这次是重新启用后进来的 —— <b>请先换一个字体、或把「替换范围」调小</b>再应用，避免再次开不了机。
+    <br><button onclick="ackStopped()">知道了</button>
+  </div>
   <div class="banner warn" id="conflictBanner">
     ⚠ 检测到其他字体模块：<b id="conflictNames"></b>。多个字体模块会互相覆盖，建议在管理器里停用它们后重启。
   </div>
   <div class="banner warn" id="missedBanner">
-    ⚠ 本次开机没有执行自带挂载，你的 Root 管理器可能不支持 post-mount 阶段。可在下方「替换范围（高级）」里改为「交给管理器挂载」后再试。
+    ⚠ 本次开机没有执行自带挂载。最常见的原因是 Root 管理器在开机时没有运行模块脚本（例如临时 root：重启后需要重新激活的那种），也可能是模块被停用或进了安全模式。可先重启一次；仍不行就在下方「替换范围（高级）」里改为「交给管理器挂载」再试。
   </div>
   <div class="banner" id="updateBanner">
     发现新版本 <b id="updateBannerVer"></b>，可在页面下方「模块更新」里下载安装。
@@ -409,6 +414,14 @@ try {
   <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
     <div><div class="t">模块自带挂载（推荐）</div><div class="d">不需要元模块，能覆盖 my_product、mi_ext 等厂商分区。关闭后交给 Root 管理器 / 元模块挂载（传统方式）。</div></div>
     <div class="sw on" id="sw_mount_mode"></div>
+  </div>
+  <div class="switch-row fade" onclick="toggleSetting('ttc_replace')">
+    <div><div class="t">替换 .ttc 合集（三星 / 魅族等机型的中文）</div><div class="d">部分机型的中文来自 .ttc 合集（如 SECCJK-Regular.ttc、NotoSansCJK-Regular.ttc），普通替换影响不到它 —— 表现是"英文变了、中文没变"。开着（<b>这类机型会自动打开</b>）会把你的字体包成同样 face 数的合集顶上去，只换中文那几号，日文/韩文保持原样，且不修改任何系统配置。<b>你的字体如果缺中文字形，中文会变方块，那就关掉它。</b></div></div>
+    <div class="sw" id="sw_ttc_replace"></div>
+  </div>
+  <div class="switch-row fade" onclick="toggleSetting('theme_fonts')">
+    <div><div class="t">也替换「设置里选的字体」（主题 / 字体样式）</div><div class="d">MIUI / HyperOS（<code>/data/system/theme/fonts</code>）、三星（<code>/data/overlays/font</code>）、vivo（<code>/data/vfonts</code>）都会把你「设置 → 字体样式」里选的字体放在单独目录，<b>那里的文件优先级高于系统字体目录</b>。<b>本项默认关闭</b>：<br>· <b>关</b>（推荐）：你在设置里选什么就是什么 —— 尤其「小米兰亭 Pro」这种<b>靠它才能调字体粗细</b>的可变字体，关着才不会被换掉；<br>· <b>开</b>：这些目录也换成你的字体，好处是不用再去设置里切回「默认」；代价是设置里选的那个字体失效、粗细可能一起失效。<br>例外：vivo 的 <code>/system/fonts/VivoFont.ttf</code> 是指向该目录的符号链接，它本身仍按普通槽位替换。</div></div>
+    <div class="sw" id="sw_theme_fonts"></div>
   </div>
   <div class="g-hint">修改后会按当前选择自动重新生成，重启生效。</div>
   <div class="btn-row">
@@ -701,10 +714,42 @@ async function refreshAll() {
       return {id, name: p.join("|") || id, size, meta};
     });
     applyStatus(st);
+    // 老版本导入的字体没有族键（多字重配对要靠它），顺手补一次；
+    // 每个字体只试一次，失败就算了（不影响使用，只是不参与配对）。
+    if (await backfillFam()) render();
   } catch (e) {
     setValue("activeLabel", "无法读取（请在支持WebUI的模块管理器中打开）");
     setValue("romLabel", "无法读取");
   }
+}
+
+// 给"没有族键"的老字体补 fam（同一族的多个字重就是这样被认出来的）
+const famTried = new Set();
+async function backfillFam() {
+  const todo = fonts.filter(f => !f.meta.fam && !famTried.has(f.id));
+  if (!todo.length) return false;
+  let changed = false;
+  for (const f of todo) {
+    famTried.add(f.id);
+    try {
+      const m = await probeFont(`${LIB}/${f.id}.ttf`);
+      if (m && m.fam) {
+        const kv = Object.entries(m).map(([k, v]) => k + "=" + v).join(" ");
+        await ksuExec(`sh ${MODDIR}/fontctl.sh setmeta ${shq(f.id)} ${kv}`);
+        Object.assign(f.meta, m);
+        changed = true;
+      }
+    } catch (e) { /* 单个失败不影响其他 */ }
+  }
+  return changed;
+}
+
+// 导入后告诉用户配对结果：同族的多份文件会自动各就各位（粗体用 Bold 那份）
+function pairHint(m, before) {
+  if (!m || !m.fam) return "";
+  const n = (before || []).filter(x => x.meta && x.meta.fam === m.fam).length + 1;
+  if (n < 2) return "";
+  return "\n已和同族的 " + n + " 个字重自动配对：系统要粗体会用 Bold 那份，要细体会用 Light 那份（不用手动设置）";
 }
 
 // 只刷新顶部状态（不重新拉字体列表），开关类操作后用它，避免连发多个 shell 调用把界面卡住
@@ -720,6 +765,7 @@ function applyStatus(st) {
     const nSlots = g("N").trim();
     setValue("slotLabel", nSlots && +nSlots > 0 ? nSlots + " 个" : "0（未替换）");
     document.getElementById("rescueBanner").classList.toggle("show", g("X") === "1");
+    document.getElementById("stoppedBanner").classList.toggle("show", g("RS") === "1");
     document.getElementById("missedBanner").classList.toggle("show", g("MM") === "1");
     setValue("romLabel", ROM_NAMES[rom] || rom || "未知");
     setValue("curVerLabel", g("V") || "-");
@@ -727,17 +773,30 @@ function applyStatus(st) {
     const mo = g("MO").split(",");
     const ml = document.getElementById("mountLabel");
     ml.classList.remove("warn", "ok");
+    // ⚠️ 判"这次开机到底挂没挂"不能看 mo[0] 是不是空串。
+    //    MO = "ok fail stage same skip"，而 mount_result 是 echo "$ok $fail $stage $same $skip"：
+    //    当 ok=0（本次开机没有新的绑定动作 —— 槽位早就挂好了，或计划里的槽位都被跳过）时，
+    //    整个字符串**以空格开头**，split 后 mo[0] === "" → 会误报"本次开机未挂载"。
+    //    真机上就是这个后果：字体明明生效了，界面却说没挂载，用户以为更新失败。
+    //    正确判据：ok / same / fail / skip 只要有一个非 0，就说明本次开机确实跑过挂载
+    //    （= mount.state 是本次开机写的）。
+    const moOk = +(mo[0] || 0), moFail = +(mo[1] || 0);
+    const moSame = +(mo[3] || 0), moSkip = +(mo[4] || 0);
     if (g("PM") === "manager") setValue("mountLabel", "交给管理器挂载");
     else if (activeId === "none") setValue("mountLabel", "无需挂载");
-    else if (mo[0] !== "") {
+    else if (moOk || moSame || moFail || moSkip) {
       // 这行只报挂载动作本身，写短一点（一行放得下）；"到底生效没有"由下面那行逐个核对负责
-      let txt = "成功 " + mo[0];
-      const same = +(mo[3] || 0), skip = +(mo[4] || 0);
-      if (+mo[1]) txt += "，失败 " + mo[1];
-      if (same) txt += "，已就位 " + same;
-      if (skip) txt += "，跳过 " + skip;
+      const parts = [];
+      if (moOk) parts.push("成功 " + moOk);
+      if (moSame) parts.push("已就位 " + moSame);
+      if (moFail) parts.push("失败 " + moFail);
+      if (moSkip) parts.push("跳过 " + moSkip);
+      let txt;
+      if (moOk || moFail) txt = parts.join("，");
+      else txt = "本次开机未改动（" + parts.join("，") + "）";
       setValue("mountLabel", txt);
-      ml.classList.add((+mo[1] || skip) ? "warn" : "ok");
+      // 只有"失败"才是真故障，才标黄；"已就位 / 跳过"是正常的中间状态，不要吓用户
+      ml.classList.add(moFail ? "warn" : "ok");
     } else { setValue("mountLabel", "本次开机未挂载"); ml.classList.add("warn"); }
     // 逐个核对（按 inode 实测），这才是"有没有真的生效"的答案
     const vf = g("VF").split(",");
@@ -799,6 +858,12 @@ function makeCard(id, name, metaText, f) {
   if (f) {
     const addTag = (text, cls) => { const t = document.createElement("span"); t.className = "tag" + (cls ? " " + cls : ""); t.textContent = text; meta.append(t); };
     if (f.meta.vf === "1") addTag("可变");
+    else if (f.meta.wght) addTag("字重 " + f.meta.wght);
+    // 多字重配对：同族有几个字重，一眼看得出"加粗会不会真的变粗"
+    if (f.meta.fam) {
+      const sib = fonts.filter(x => x.meta.fam === f.meta.fam);
+      if (sib.length > 1) addTag("同族 " + sib.length + " 个字重", "ok");
+    }
   }
   info.append(n, meta);
   card.append(info);
@@ -984,6 +1049,11 @@ async function ackRescue() {
   try { await ksuExec(`sh ${MODDIR}/fontctl.sh ack`); } catch (e) {}
   document.getElementById("rescueBanner").classList.remove("show");
 }
+// "曾被自动停用"的提示：看到并点了"知道了"就清掉（说明用户已经知道原因了）
+async function ackStopped() {
+  try { await ksuExec(`sh ${MODDIR}/fontctl.sh ack-stopped`); } catch (e) {}
+  document.getElementById("stoppedBanner").classList.remove("show");
+}
 
 /* ---------- 导入 ---------- */
 /* ---------- 字体体检：读取 cmap，判断覆盖范围 / 是否可变 / 字重 ---------- */
@@ -992,6 +1062,8 @@ const PROBES = {
   latin:  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
   digits: "0123456789",
   han:    "的一是不了人我在有他这中大来上国个到说们为子和你地出道也时年得就那要下以生会自着去之过家学对可她里后小",
+  // 繁体单独探：只有简体字库的字体，繁体那一号槽位/合集就该保留系统字体，否则会出方块
+  hant:   "臺灣體國學會發現點說這麼樣龍馬車門風雲飛鳥書寫語言",
   kana:   "あいうえおかきくけこさしすせそアイウエオカキクケコ",
   hangul: "한국어글자가나다라마바사아자차카타파하"
 };
@@ -1058,6 +1130,39 @@ function cmapLookup(buf) {
   return null;
 }
 
+// 从 name 表取"族名"，再压成一个只含 ASCII 的族键（meta_set 只收 [A-Za-z0-9_.-]，
+// 而族名常带空格甚至是中文）。同一个族的多个字重会算出同一个键 —— 多字重配对就靠它。
+function famKeyFromName(buf) {
+  if (!buf || buf.length < 6) return "";
+  const cnt = u16(buf, 2), so = u16(buf, 4);
+  let fam = "", typo = "";
+  for (let i = 0; i < cnt; i++) {
+    const o = 6 + i * 12;
+    if (o + 12 > buf.length) break;
+    const pid = u16(buf, o), nid = u16(buf, o + 6), len = u16(buf, o + 8), off = u16(buf, o + 10);
+    if (nid !== 1 && nid !== 16) continue;
+    if (pid !== 3 && pid !== 0 && pid !== 1) continue;
+    const s = so + off;
+    if (s + len > buf.length || len > 200) continue;
+    let t = "";
+    if (pid === 3 || pid === 0) {                    // UTF-16BE
+      for (let k = 0; k + 1 < len; k += 2) t += String.fromCharCode(u16(buf, s + k));
+    } else {                                          // Mac Roman ≈ ASCII
+      for (let k = 0; k < len; k++) t += String.fromCharCode(buf[s + k]);
+    }
+    t = t.replace(/\u0000/g, "").trim();
+    if (!t) continue;
+    if (nid === 16) typo = t; else if (!fam) fam = t;
+  }
+  const name = typo || fam;
+  if (!name) return "";
+  const ascii = name.replace(/[^A-Za-z0-9_.-]/g, "");
+  if (ascii.length >= 2) return ascii.slice(0, 40).toLowerCase();
+  let h = 0;                                          // 纯中文族名：退化成哈希（同族算出来一样）
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return "h" + h.toString(36);
+}
+
 // 返回元数据对象；失败/不支持时抛出错误
 async function probeFont(path) {
   const head = await readHex(path, 0, 12);
@@ -1076,13 +1181,23 @@ async function probeFont(path) {
   if (tables["COLR"] || tables["CBDT"] || tables["sbix"]) meta.color = 1;
   if (tables["maxp"]) meta.glyphs = u16(await readHex(path, tables["maxp"].off + 4, 2), 0);
   if (tables["OS/2"]) meta.wght = u16(await readHex(path, tables["OS/2"].off + 4, 2), 0);
+  if (tables["name"]) {
+    // 族键：多字重配对的分组依据（同一族的 Regular/Bold/Light 会算出同一个值）
+    try {
+      const nb = await readHex(path, tables["name"].off, Math.min(tables["name"].len, 64 * 1024));
+      const k = famKeyFromName(nb);
+      if (k) meta.fam = k;
+    } catch (e) { /* 没有族名也不影响导入 */ }
+  }
   if (tables["cmap"]) {
     const buf = await readHex(path, tables["cmap"].off, Math.min(tables["cmap"].len, 4 * 1024 * 1024));
     const has = cmapLookup(buf);
     if (has) {
       const ratio = s => { const cps = Array.from(s); return cps.filter(c => has(c.codePointAt(0))).length / cps.length; };
       meta.latin = ratio(PROBES.latin) >= 0.95 && ratio(PROBES.digits) >= 0.99 ? 1 : 0;
+      meta.digits = meta.latin;                      // 数字并进 latin 判定，但单独记一份给界面显示
       meta.cjk = ratio(PROBES.han) >= 0.9 ? 1 : 0;
+      meta.hant = ratio(PROBES.hant) >= 0.8 ? 1 : 0;
       meta.kana = ratio(PROBES.kana) >= 0.8 ? 1 : 0;
       meta.hangul = ratio(PROBES.hangul) >= 0.8 ? 1 : 0;
     }
@@ -1096,7 +1211,46 @@ async function probeAndSave(id) {
     const m = await probeFont(`${LIB}/${id}.ttf`);
     const kv = Object.entries(m).map(([k, v]) => k + "=" + v).join(" ");
     await ksuExec(`sh ${MODDIR}/fontctl.sh setmeta ${shq(id)} ${kv}`);
-  } catch (e) { /* 忽略 */ }
+    return m;                                  // 给界面显示"这个字体覆盖了哪些文字"
+  } catch (e) { return null; }
+}
+// 同族一共有几个字重（含它自己）。>1 就说明"加粗/细体"能各就各位。
+function sibCount(m, before) {
+  if (!m || !m.fam) return 1;
+  return (before || []).filter(x => x.meta && x.meta.fam === m.fam).length + 1;
+}
+
+// 字重提示：这一条直接回答"为什么用模块调粗细没效果"
+//   · 已经同族配对（有 Bold/Light 等多份）→ 交给 pairHint 说，这里不再多嘴
+//   · 可变字体（有 fvar / wght 轴）→ 系统的「字体粗细」滑杆对它有效
+//   · 静态单字重（绝大多数网上下的字体）→ 滑杆和加粗都不会有变化，这是**字体本身的限制**：
+//     系统要 weight=700 时会去同一族里找"700 那份文件"，而我们一个字体铺满了所有槽位，
+//     拿到的还是同一份，所以看不出加粗。主题包（MTZ）之所以能加粗，通常是它额外带了一份 Bold。
+function weightHint(m, before) {
+  if (!m || m.latin === undefined) return "";
+  if (sibCount(m, before) > 1) return "";
+  if (m.vf === 1) return "\n这个字体是可变字体：系统的「字体粗细」调节对它有效";
+  if (m.wght === undefined) return "";   // 老版本导入的字体没采过字重，不猜
+  const w = String(m.wght);
+  return "\n只有一个字重（wght=" + w + "）：系统的「加粗 / 粗细调节」不会有变化（字体本身的限制，" +
+         "不是模块坏了；主题包 MTZ 能加粗通常是因为它另带了一份 Bold，本模块也支持这样配对）";
+}
+
+// 导入完把覆盖范围直接说清楚：缺哪种文字，对应的槽位就会自动保留（不会出方块）
+function coverageText(m, before) {
+  if (!m || m.latin === undefined) return "";
+  const y = v => (v ? "✓" : "✗");
+  let s = "该字体：英文 " + y(m.latin) + "  数字 " + y(m.digits === undefined ? m.latin : m.digits)
+        + "  简体 " + y(m.cjk) + "  繁体 " + y(m.hant)
+        + "  日文 " + y(m.kana) + "  韩文 " + y(m.hangul);
+  const keep = [];
+  if (!m.cjk) keep.push("简体/繁体");
+  else if (!m.hant) keep.push("繁体");
+  if (!m.kana) keep.push("日文");
+  if (!m.hangul) keep.push("韩文");
+  if (keep.length) s += "\n缺 " + keep.join("、") + " → 对应槽位会自动保留系统字体，不会出现方块";
+  else s += "\n六项齐全，全部槽位都会用这个字体";
+  return s + weightHint(m, before) + pairHint(m, before);
 }
 function setImporting(on) {
   ["importBtn", "sysPickBtn"].forEach(i => { document.getElementById(i).disabled = on; });
@@ -1116,7 +1270,7 @@ function summarize(ok, fails) {
 async function importMany(items) {
   if (busy || !items.length) return;
   busy = true; setImporting(true);
-  let ok = 0; const fails = [];
+  let ok = 0; const fails = []; let lastMeta = null;
   try {
     for (let i = 0; i < items.length; i++) {
       const [path, name] = items[i];
@@ -1124,14 +1278,15 @@ async function importMany(items) {
       await nextPaint();
       try {
         const out = await ksuExec(`sh ${MODDIR}/fontctl.sh import ${shq(path)} ${shq(stripExt(name))}`);
-        if (out.indexOf("OK:") === 0) { ok++; setProgress("检查字体覆盖范围：" + name, (i + 1) / items.length); await probeAndSave(out.trim().slice(3)); }
+        if (out.indexOf("OK:") === 0) { ok++; setProgress("检查字体覆盖范围：" + name, (i + 1) / items.length); lastMeta = await probeAndSave(out.trim().slice(3)); }
         else fails.push(name + "：" + out.replace(/^ERROR:/, ""));
       } catch (e) {
         fails.push(name + "：" + errText(e));
       }
     }
     setProgress("完成", 1);
-    showToast(summarize(ok, fails));
+    // 只导一个时，顺手把"覆盖了哪些文字"说清楚（用户最关心的就是这个）
+    showToast(summarize(ok, fails) + (ok === 1 && lastMeta ? "\n" + coverageText(lastMeta, fonts) : ""));
   } finally {
     busy = false; setImporting(false);
     await refreshAll();
@@ -1264,7 +1419,7 @@ async function onFilePicked(input) {
   input.value = "";
   if (!list.length || busy) return;
   busy = true; setImporting(true);
-  let ok = 0; const fails = [];
+  let ok = 0; const fails = []; let lastMeta = null;
   try {
     for (let k = 0; k < list.length; k++) {
       const file = list[k];
@@ -1279,14 +1434,14 @@ async function onFilePicked(input) {
           setProgress(tag + "传输 " + file.name + " " + fmtSize(done) + "/" + fmtSize(file.size), done / file.size);
         }
         const out = await ksuExec(`sh ${MODDIR}/fontctl.sh upload-finish ${file.size} ${shq(stripExt(file.name))}`);
-        if (out.indexOf("OK:") === 0) { ok++; await probeAndSave(out.trim().slice(3)); }
+        if (out.indexOf("OK:") === 0) { ok++; lastMeta = await probeAndSave(out.trim().slice(3)); }
         else fails.push(file.name + "：" + out.replace(/^ERROR:/, ""));
       } catch (e) {
         fails.push(file.name + "：" + errText(e));
         try { await ksuExec(`rm -f ${LIB}/.upload.part`); } catch (_) {}
       }
     }
-    showToast(summarize(ok, fails));
+    showToast(summarize(ok, fails) + (ok === 1 && lastMeta ? "\n" + coverageText(lastMeta, fonts) : ""));
   } finally {
     busy = false; setImporting(false);
     await refreshAll();
@@ -1294,14 +1449,14 @@ async function onFilePicked(input) {
 }
 
 /* ---------- 替换范围设置 / 诊断 ---------- */
-const settings = {keep_lang: "1", keep_special: "1", mount_mode: "self"};
+const settings = {keep_lang: "1", keep_special: "1", mount_mode: "self", ttc_replace: "0", theme_fonts: "0"};
 let mountMode = "self";
 async function loadSettings() {
   try {
     const out = await ksuExec(`sh ${MODDIR}/fontctl.sh settings`);
     (out.match(/(\w+)=(\S+)/g) || []).forEach(kv => { const i = kv.indexOf("="); settings[kv.slice(0, i)] = kv.slice(i + 1); });
   } catch (e) {}
-  ["keep_lang", "keep_special"].forEach(k => document.getElementById("sw_" + k).classList.toggle("on", settings[k] === "1"));
+  ["keep_lang", "keep_special", "ttc_replace", "theme_fonts"].forEach(k => document.getElementById("sw_" + k).classList.toggle("on", settings[k] === "1"));
   document.getElementById("sw_mount_mode").classList.toggle("on", settings.mount_mode !== "manager");
 }
 async function toggleSetting(key) {
@@ -1316,6 +1471,26 @@ async function toggleSetting(key) {
         title: "改为交给管理器挂载？",
         msg: "字体文件会放进模块的 system 目录，由 Root 管理器挂载。KernelSU / APatch 需要先装好元模块（如 Hybrid Mount）；my_product、mi_ext 等厂商分区的字体槽可能无法生效。仅在自带挂载不工作时使用。",
         okText: "改用管理器挂载", danger: true
+      });
+      if (!ok) return;
+    }
+  } else if (key === "theme_fonts") {
+    nv = settings[key] === "1" ? "0" : "1";
+    if (nv === "1") {
+      const ok = await dialog({
+        title: "也替换设置里选的字体？",
+        msg: "系统会把你「设置 → 字体样式」里选的字体放在单独目录（MIUI/HyperOS：/data/system/theme/fonts，三星：/data/overlays/font，vivo：/data/vfonts），那里的优先级高于系统字体。\n\n打开后：这些文件也会被换成你的字体 —— 好处是不用再去设置里切回默认；代价是你在设置里选的那个字体会失效。\n\n注意：如果你选的是「小米兰亭 Pro」这类可变字体（靠它调「字体粗细」），打开后粗细就调不动了 —— 普通字体没有字重轴。",
+        okText: "仍然打开", danger: true
+      });
+      if (!ok) return;
+    }
+  } else if (key === "ttc_replace") {
+    nv = settings[key] === "1" ? "0" : "1";
+    if (nv === "1") {
+      const ok = await dialog({
+        title: "打开「替换 .ttc 合集」？",
+        msg: "这台机器上的中文来自 .ttc 合集，普通替换影响不到它（所以你会看到「英文变了、中文没变」）。\n\n打开后会把你的字体包成同样 face 数的合集顶上去，改完需要重启一次。\n\n你的字体如果没有中文字形，中文会显示成方块 —— 那就回到这里关掉开关、再重启一次即可完全恢复（不会损坏系统文件）。",
+        okText: "打开", danger: true
       });
       if (!ok) return;
     }
