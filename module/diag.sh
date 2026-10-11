@@ -1144,12 +1144,25 @@ conclusion() {
     echo "   厂商会把那份字体写到这个目录（真机例子：Flyme 的 using_font_name=静静字体 → flymeFont.ttf）。"
     echo "   它到底会不会盖过 /system/fonts —— **各机型不一样，本报告不替你下结论**；"
     echo "   想自己确认：看第 3 节的「框架读取的路径」是不是 /system/fonts 里的文件（是 → 我们已生效）。"
-    if [ "$(cfg_get theme_fonts 0)" = 1 ]; then
-      echo "   ✅ 你已经打开「也替换设置里选的字体」→ 这个目录里的字体也会换成你的字体（上面的「本次是否替换」=是 就是接了）。"
+    # 1.0.8：魅族这类目录已改成**自动接管**（不再要用户点开关）。报告要说清"这次到底接没接"。
+    _tf_on=否
+    [ "$(cfg_get theme_fonts auto)" = 0 ] || {
+      case "$(cfg_get theme_fonts auto)" in
+        1) _tf_on=是 ;;
+        *) _theme_auto_ok 2>/dev/null && _tf_on=是 ;;
+      esac
+    }
+    if [ "$_tf_on" = 是 ]; then
+      echo "   ✅ 本次会替换它（自动）：这个目录里的字体也会换成你的字体 ——"
+      echo "      你在主题商店下免费主题生成的那份 flymeFont.ttf，也会跟着变成你的字体，"
+      echo "      不用再自己改名覆盖、也不用额外刷一次。"
+      echo "      上面「被保留的槽位」里如果没有它，就说明已经接上了。"
     else
-      echo "   ℹ 本模块默认【不动它】（保护你在主题/设置里的选择，跟 MIUI「字体粗细」那条教训同一个规矩）："
-      echo "     · 想手动换：用文件管理器把自己的字体改名成 flymeFont.ttf 覆盖它，重启即可"
-      echo "     · 想让模块接管：界面 →「也替换「设置里选的字体」（主题 / 字体样式）」打开，重启一次"
+      echo "   ℹ 本次【不动它】。原因可能是："
+      echo "      · 你把「模块自带挂载」关了（交给管理器挂载时，/data 上的文件挂不了）；或"
+      echo "      · 你在设置里手动关过「设置里选的字体」那一项；或"
+      echo "      · 本机没检出这个目录。"
+      echo "      想让它接管：界面里把「设置里选的字体没被换掉？」打开，重启一次。"
     fi
   fi
   echo "===== 结论结束，下面是原始数据（给作者看）====="
@@ -1329,6 +1342,26 @@ sec4() {
     [ -n "$L" ] || continue
     printf '%s\n' "$PLAN_NOW" | grep -qxF "$L" || echo "      $L"
   done
+  # 1.0.8：说清"为什么没换"。最常见的两种：
+  #   ① 自动让路 —— 字体里没有那一类字形（韩文/日文/繁体），留下系统字体是为了不出方块；
+  #   ② 用户自己关过开关，或范围选得小。
+  #   ★ 用户看不懂内部名词，所以这里只写"哪一类文字/哪个地方"+"你的字体里没有"。
+  if [ "${SLOT_AUTO_RESERVE:-1}" = 1 ] && [ -n "${SEL_FONT:-}" ]; then
+    note=""
+    # 这里不用 meta_get（它定义在 fontctl.sh，诊断脚本不加载那个）：直接自己读 meta 文件，
+    # 少一层依赖，报告这一节也不会因为"少了某个文件"而塌掉。
+    _mh() { [ -n "${LIB:-}" ] && [ -f "$LIB/$SEL_FONT.meta" ] && \
+            [ "$(sed -n "s/^$1=//p" "$LIB/$SEL_FONT.meta" 2>/dev/null | tail -n1 | tr -d '\r\n')" = 1 ]; }
+    _mh hangul || note="${note}韩文 "
+    _mh kana   || note="${note}日文 "
+    _mh hant   || note="${note}繁体 "
+    _mh cjk    || note="${note}中文 "
+    if [ -n "$note" ]; then
+      echo "  为什么有些没换：你的字体里没有这些字形 → ${note}"
+      echo "      （这是自动的：缺哪一类就只留哪一类，其余照常换。想连缺字的也强行替换，"
+      echo "        可打开界面里「日文 / 韩文 / 繁体出现方块？」那个开关）"
+    fi
+  fi
   echo "  实际写入 slots.applied 的槽位:"
   printf '%s\n' "$APPLIED_LIST" | while IFS= read -r L; do [ -n "$L" ] && echo "      $L"; done
   echo "  已应用槽位里是否包含 .ttc 合集: $APPLIED_TTC 个（设备上共 $TTCNUM 个 .ttc）"
