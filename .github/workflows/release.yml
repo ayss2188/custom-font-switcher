@@ -76,17 +76,60 @@ jobs:
             --title "自定义字体切换模块 $VER" \
             --notes-file dist/notes.md
 
-      - name: 回写 update.json
+      - name: 回写 update.json（+ 生成本版短更新日志）
+        env:
+          # 下面"5 次都推不上去"时要撤回 Release，需要 token
+          GH_TOKEN: ${{ github.token }}
         run: |
           VER="${{ steps.ver.outputs.ver }}"
           CODE="${{ steps.ver.outputs.code }}"
           SHA=$(cat dist/sha256.txt)
           REPO="${GITHUB_REPOSITORY}"
-          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/%s/releases/download/%s/custom-font-switcher.zip",\n  "changelog": "https://raw.githubusercontent.com/%s/main/CHANGELOG.md",\n  "sha256": "%s"\n}\n' \
-            "$VER" "$CODE" "$REPO" "$VER" "$REPO" "$SHA" > update.json
+          # 管理器弹窗和 WebUI 的「更新日志」只读 update.json 里的 changelog 地址，所以：
+          #   1) 这个地址**不能用 raw.githubusercontent.com** —— 国内经常连不上，
+          #      弹窗会显示 Not Found。改用 jsDelivr CDN，同一份文件国内外都取得到。
+          #      每个版本是一个新文件名，所以不存在"CDN 缓存里还是旧内容"的问题。
+          #   2) 只放**本版**的短日志（20 行以内），弹窗才看得完；
+          #      完整更新日志仍在 CHANGELOG.md 和 Release 页。
+          head -n 20 dist/notes.md > "UPDATE-$VER.md"
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/%s/releases/download/%s/custom-font-switcher.zip",\n  "changelog": "https://cdn.jsdelivr.net/gh/%s@main/UPDATE-%s.md",\n  "sha256": "%s"\n}\n' \
+            "$VER" "$CODE" "$REPO" "$VER" "$REPO" "$VER" "$SHA" > update.json
           cat update.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add update.json
+          git add update.json "UPDATE-$VER.md"
           git commit -m "update.json: $VER" || echo "update.json 无变化"
-          git push origin HEAD:main
+          # 推 main 可能被"你正在上传文件"顶掉（non-fast-forward）——
+          # 这一步要是失败，update.json 就永远停在旧版本，所有用户都收不到更新
+          #（v1.0.5 发布时真出过这个事）。所以失败就 rebase 重试几次。
+          #
+          # ⚠ 重试必须带"最终失败判定"：以前循环里只有 break、循环结束后什么都不判，
+          #   5 次全失败时这一步**仍然是绿的**、工作流显示成功，而用户一个都收不到更新 ——
+          #   加了重试反而比不加更难发现（不加的时候 push 失败会直接把步骤标红）。
+          #   （2026-10-11 姊妹项目同步时抓到：B 类"静默失败"）
+          ok=0
+          for i in 1 2 3 4 5; do
+            if git push origin HEAD:main; then ok=1; break; fi
+            echo "推送失败，第 $i 次重试..."
+            git pull --rebase origin main || true
+            sleep 5
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::update.json 没能推上去 —— 所有用户都收不到更新（这一步必须红）"
+            # 顺带把刚建的 Release 撤回：它是在这一步**之前**建的（见上面"发布 Release"那一步），
+            # 不撤回的话，你修好问题重跑工作流会卡在"Release 已经存在"上，只能手动删 tag。
+            # 推不上去时这个 Release 对用户本来就是不可见的（管理器只读 update.json），撤掉是安全的。
+            gh release delete "$VER" --yes --cleanup-tag || true
+            exit 1
+          fi
+
+      - name: 让 jsDelivr 立刻刷新缓存
+        # 更新检查地址走 jsDelivr（raw.githubusercontent.com 在国内经常连不上）。
+        # jsDelivr 对 @main 有缓存，刚发的版本可能要等几小时才生效 —— 主动 purge 一下就立刻可见。
+        run: |
+          VER="${{ steps.ver.outputs.ver }}"
+          for f in "update.json" "UPDATE-$VER.md"; do
+            echo "purge $f"
+            curl -sS --max-time 20 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" || true
+            echo
+          done
