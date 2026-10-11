@@ -54,17 +54,23 @@ jobs:
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
 
       - name: 打包
+        id: build
         run: |
+          VER=$(sed -n 's/^version=//p' module/module.prop | tr -d '\r')
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
           find module -type f \( -name '*.sh' -o -name '*.prop' -o -name '*.list' -o -name '*.html' -o -name '*.py' -o -name 'update-binary' -o -name 'updater-script' \) \
             -exec sed -i 's/\r$//' {} +
-          # 包里那份更新日志必须是 CHANGELOG.md 的副本（离线时界面/弹窗读它）。
-          # 2026-10-12 真踩过：改完 CHANGELOG 忘了同步 module/changelog.md，
-          # 结果包里带的是旧草稿（四处核验时才发现）。这里自动同步 + 下面校验，双保险。
+          # 包里那份更新日志 = **完整 CHANGELOG**（含历史），界面里能滚动看全部历史。
+          # 2026-10-12 曾把这里改成"只截本版那一段"，结果历史全没了（作者立刻指出）——
+          #   历史必须保留。当时看到的"包里是下一版日志"是因为**并行开发**：
+          #   发 1.0.7 之前 CHANGELOG 顶部已经写好了 1.0.8 的段落。
+          #   正常发版时 顶部 == 本次发布 == 用户装的那一版，三者一致，不会有这个问题。
           cp -f CHANGELOG.md module/changelog.md
           if ! cmp -s CHANGELOG.md module/changelog.md; then
             echo "::error::module/changelog.md 与 CHANGELOG.md 不一致（包里会带错更新日志）"
             exit 1
           fi
+          echo "包内更新日志：完整 CHANGELOG（$(wc -l < module/changelog.md) 行）"
           sh scripts/build.sh
           sha256sum dist/custom-font-switcher.zip | cut -d' ' -f1 > dist/sha256.txt
           echo "构建产物 sha256: $(cat dist/sha256.txt)"
@@ -136,3 +142,17 @@ jobs:
             echo "::error::账本没能推上去 —— 所有用户都收不到更新（这一步必须红）"
             exit 1
           fi
+
+      - name: 主动刷新 CDN 缓存（让用户几分钟内就收到更新，而不是等 12 小时）
+        # 背景：CDN 会缓存 update.json，内容虽然更新了，用户读到的还是旧那份（实测卡了 3 小时以上）。
+        #   2026-10-12 实测：purge 之后立刻回源 —— purge 前给的是 v1.0.6（age=11555），
+        #   purge 后马上变成 v1.0.7（age=0）。所以这一步是真管用的，加上它用户几分钟就能看到更新。
+        # 注意：这一步**必须在账本提交之后**跑，否则刷掉的是旧内容，等于白刷。
+        # 老教程里写过"purge 刷不掉"，那是**另一种情况**（分支别名被钉在旧提交）；文件内容更新是有效的。
+        run: |
+          for f in "update.json" "UPDATE-${{ steps.ver.outputs.ver }}.md"; do
+            echo "→ purge $f"
+            curl -sS --max-time 25 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" || true
+            echo
+          done
+          echo "刷新完成。若某个文件是新生成的（此前没被缓存过），purge 会报找不到 —— 属正常。"
