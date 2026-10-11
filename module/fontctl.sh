@@ -384,7 +384,9 @@ make_plan() {
   local sel="$1" out="$2" scope kl ks
   _eff_scope "$sel"          # 不用 $(...)：SCOPE_VIA 要留在当前 shell 里给决策记录用
   scope="$EFF_SCOPE"
-  kl=$(cfg_get keep_lang 1); ks=$(cfg_get keep_special 1)
+  kl=$(cfg_get keep_lang 0); ks=$(cfg_get keep_special 0)
+  # 1.0.8 起默认"全替换"（0）；自动让路（字体缺字形时保留那部分）在 slot_plan 里做。
+  SEL_FONT="$sel"            # 给 slot_plan/_meta_have 用：拿这个字体的 meta 判字形覆盖
   if [ "$scope" = combo ]; then
     slot_plan "$MODDIR" all "$kl" "$ks" > "$out"
   else
@@ -556,7 +558,7 @@ do_apply() {
     scope="$PLAN_SCOPE"
     {
       echo "time=$(date '+%m-%d %H:%M:%S' 2>/dev/null) rom=$(_rom_cached) ttc=$(ttc_effective) mode=$mode sel=$sel"
-      echo "plan=$(grep -c . "$plan" 2>/dev/null) scope=$scope 判定依据=${SCOPE_VIA:-?} keep_lang=$(cfg_get keep_lang 1) keep_special=$(cfg_get keep_special 1)"
+      echo "plan=$(grep -c . "$plan" 2>/dev/null) scope=$scope 判定依据=${SCOPE_VIA:-?} keep_lang=$(cfg_get keep_lang 0) keep_special=$(cfg_get keep_special 0)"
     } > "$LIB/ttc.log" 2>/dev/null
     if [ ! -s "$plan" ]; then
       rm -f "$plan"
@@ -699,7 +701,7 @@ do_report() {
     [ -f "$LIB/$id.ttf" ] || continue
     echo "  $(name_of "$id"): $(( $(wc -c < "$LIB/$id.ttf") / 1024 )) KB | 范围 $(effective_scope "$id") | 元数据 $(meta_compact "$id")"
   done
-  echo "设置: keep_lang=$(cfg_get keep_lang 1) keep_special=$(cfg_get keep_special 1) mount_mode=$(mount_mode)"
+  echo "设置: keep_lang=$(cfg_get keep_lang 0) keep_special=$(cfg_get keep_special 0) mount_mode=$(mount_mode)"
   echo "字体库: $(ls "$LIB"/f*.ttf 2>/dev/null | wc -l) 个，占用 $(du -sk "$LIB" 2>/dev/null | cut -f1) KB"
   echo "---- 槽位 ----"
   echo "字体目录: $(slot_dirs | tr '\n' ' ')"
@@ -864,7 +866,7 @@ case "${1:-}" in
         ;;
       *)
         # ttc_replace 回显的是**生效值**：这类机型即使没手动设过，界面开关也该是亮的
-        echo "keep_lang=$(cfg_get keep_lang 1) keep_special=$(cfg_get keep_special 1) mount_mode=$(mount_mode) ttc_replace=$(ttc_effective) theme_fonts=$(cfg_get theme_fonts 0)"
+        echo "keep_lang=$(cfg_get keep_lang 0) keep_special=$(cfg_get keep_special 0) mount_mode=$(mount_mode) ttc_replace=$(ttc_effective) theme_fonts=$(cfg_get theme_fonts 0)"
         ;;
     esac
     ;;
