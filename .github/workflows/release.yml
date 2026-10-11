@@ -70,6 +70,17 @@ jobs:
             echo "::error::module/changelog.md 与 CHANGELOG.md 不一致（包里会带错更新日志）"
             exit 1
           fi
+          # ★ 防线：CHANGELOG 顶部的版本必须 == 本次发布的版本。
+          # 2026-10-12 踩过：发 1.0.7 时 CHANGELOG 顶部已经写了 1.0.8（并行开发），
+          #   结果 1.0.7 的包里，用户看到的"更新日志"开头是下一版的内容。
+          #   这里直接拦住：顶部不是本版 → 报红，让你先决定"是改日志还是改版本号"。
+          TOP=$(grep -m1 '^## ' CHANGELOG.md | sed 's/^##[[:space:]]*//')
+          if [ "$TOP" != "$VER" ]; then
+            echo "::error::CHANGELOG.md 顶部是「$TOP」，但你正在发「$VER」—— 包里的日志会错位。"
+            echo "         要么把 ## $VER 挪到最上面，要么先别把下一版写进 CHANGELOG。"
+            exit 1
+          fi
+          echo "日志顶部版本校验通过：$TOP"
           echo "包内更新日志：完整 CHANGELOG（$(wc -l < module/changelog.md) 行）"
           sh scripts/build.sh
           sha256sum dist/custom-font-switcher.zip | cut -d' ' -f1 > dist/sha256.txt
@@ -121,9 +132,12 @@ jobs:
             *) echo "::error::算不出线上附件指纹（SHA='$SHA'）—— 拒绝写账本"; exit 1 ;;
           esac
           echo "线上附件指纹：$SHA"
-          head -n 20 dist/notes.md > "UPDATE-$VER.md"
-          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/%s/releases/download/%s/custom-font-switcher.zip",\n  "changelog": "https://cdn.jsdelivr.net/gh/%s@main/UPDATE-%s.md",\n  "sha256": "%s"\n}\n' \
-            "$VER" "$CODE" "$REPO" "$VER" "$REPO" "$VER" "$SHA" > update.json
+          head -n 20 dist/notes.md > "UPDATE-$VER.md"   # 保留：Release 页的短说明
+          # ★ 账本里的 changelog 指向 **CHANGELOG.md（完整历史）**，不指向按版本命名的短日志。
+          # 为什么（作者要求，2026-10-12）：管理器点更新时弹的窗、以及界面的「更新日志」，
+          #   都应该能看到**历史**；短日志只有本版那一小段，用户翻不到以前的改动。
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/%s/releases/download/%s/custom-font-switcher.zip",\n  "changelog": "https://cdn.jsdelivr.net/gh/%s@main/CHANGELOG.md",\n  "sha256": "%s"\n}\n' \
+            "$VER" "$CODE" "$REPO" "$VER" "$REPO" "$SHA" > update.json
           cat update.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
