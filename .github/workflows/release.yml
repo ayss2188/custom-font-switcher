@@ -1,12 +1,18 @@
 name: Release
 
 # 两种触发方式（任选其一）：
-#   1. 网页上点：Actions → Release → Run workflow（推荐，不需要会 git）
+#   1. 网页上点：Actions -> Release -> Run workflow（推荐，不需要会 git）
 #   2. 推送 v* 标签（例如 git tag v1.1 && git push origin v1.1）
-# 自动完成：
-#   1. 打包刷机包 custom-font-switcher.zip
-#   2. 发布到 GitHub Releases（标签 = module.prop 里的 version，更新说明取自 CHANGELOG.md 对应段落）
-#   3. 回写 main 分支的 update.json（版本号、下载地址、sha256），手机端即可检测到更新
+#
+# 发版铁律（2026-10-12 用一次真事故换来的）：一个版本只发一次。
+#   发布成功之后不要再重跑这个工作流 —— 重跑会把同一版本号下的附件换成新文件，
+#   而用户手里/缓存里的账本还指着上一个包 => "看得到更新、点了却装不上"（v1.0.6 就是这么坏的）。
+#   要改内容就发下一个版本号（v1.0.8），而不是重发 v1.0.7。
+#
+# 这个工作流做三件事：
+#   1. 打包（用 module\ 里的源码打刷机包）
+#   2. 建 Release（附件只传这一次）
+#   3. 从**线上附件**回读指纹，写出 update.json 并提交（账本里记的指纹永远等于实物）
 on:
   workflow_dispatch:
   push:
@@ -49,12 +55,19 @@ jobs:
 
       - name: 打包
         run: |
-          # 网页上编辑过的文件可能带 Windows 换行，统一转成 LF
           find module -type f \( -name '*.sh' -o -name '*.prop' -o -name '*.list' -o -name '*.html' -o -name '*.py' -o -name 'update-binary' -o -name 'updater-script' \) \
             -exec sed -i 's/\r$//' {} +
+          # 包里那份更新日志必须是 CHANGELOG.md 的副本（离线时界面/弹窗读它）。
+          # 2026-10-12 真踩过：改完 CHANGELOG 忘了同步 module/changelog.md，
+          # 结果包里带的是旧草稿（四处核验时才发现）。这里自动同步 + 下面校验，双保险。
+          cp -f CHANGELOG.md module/changelog.md
+          if ! cmp -s CHANGELOG.md module/changelog.md; then
+            echo "::error::module/changelog.md 与 CHANGELOG.md 不一致（包里会带错更新日志）"
+            exit 1
+          fi
           sh scripts/build.sh
           sha256sum dist/custom-font-switcher.zip | cut -d' ' -f1 > dist/sha256.txt
-          echo "sha256: $(cat dist/sha256.txt)"
+          echo "构建产物 sha256: $(cat dist/sha256.txt)"
 
       - name: 提取本版更新说明
         run: |
@@ -66,7 +79,7 @@ jobs:
           ' CHANGELOG.md > dist/notes.md
           [ -s dist/notes.md ] || echo "见 CHANGELOG.md" > dist/notes.md
 
-      - name: 发布 Release
+      - name: 发布 Release（附件只上传这一次）
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -76,21 +89,32 @@ jobs:
             --title "自定义字体切换模块 $VER" \
             --notes-file dist/notes.md
 
-      - name: 回写 update.json（+ 生成本版短更新日志）
+      - name: 回读线上附件取指纹 + 写出账本并提交
+        # 指纹必须来自**线上附件本身**（用户真正下载到的东西），不能信"构建时算过的值"。
+        # 账本文件名就用标准那一个：update.json（module.prop 里指的就是它）。
+        id: ledger
         env:
-          # 下面"5 次都推不上去"时要撤回 Release，需要 token
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -e
           VER="${{ steps.ver.outputs.ver }}"
           CODE="${{ steps.ver.outputs.code }}"
-          SHA=$(cat dist/sha256.txt)
           REPO="${GITHUB_REPOSITORY}"
-          # 管理器弹窗和 WebUI 的「更新日志」只读 update.json 里的 changelog 地址，所以：
-          #   1) 这个地址**不能用 raw.githubusercontent.com** —— 国内经常连不上，
-          #      弹窗会显示 Not Found。改用 jsDelivr CDN，同一份文件国内外都取得到。
-          #      每个版本是一个新文件名，所以不存在"CDN 缓存里还是旧内容"的问题。
-          #   2) 只放**本版**的短日志（20 行以内），弹窗才看得完；
-          #      完整更新日志仍在 CHANGELOG.md 和 Release 页。
+          SHA=$(gh api "repos/$REPO/releases/tags/$VER" --jq '.assets[0].digest' 2>/dev/null | sed 's/^sha256://')
+          case "$SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) echo "用 API 给的 digest：$SHA" ;;
+            *)
+              echo "拿不到 digest 字段，改为下载线上附件自行计算"
+              rm -f dist/published.zip
+              gh release download "$VER" -p custom-font-switcher.zip -O dist/published.zip --clobber
+              SHA=$(sha256sum dist/published.zip | cut -d' ' -f1)
+              ;;
+          esac
+          case "$SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "::error::算不出线上附件指纹（SHA='$SHA'）—— 拒绝写账本"; exit 1 ;;
+          esac
+          echo "线上附件指纹：$SHA"
           head -n 20 dist/notes.md > "UPDATE-$VER.md"
           printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/%s/releases/download/%s/custom-font-switcher.zip",\n  "changelog": "https://cdn.jsdelivr.net/gh/%s@main/UPDATE-%s.md",\n  "sha256": "%s"\n}\n' \
             "$VER" "$CODE" "$REPO" "$VER" "$REPO" "$VER" "$SHA" > update.json
@@ -98,15 +122,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add update.json "UPDATE-$VER.md"
-          git commit -m "update.json: $VER" || echo "update.json 无变化"
-          # 推 main 可能被"你正在上传文件"顶掉（non-fast-forward）——
-          # 这一步要是失败，update.json 就永远停在旧版本，所有用户都收不到更新
-          #（v1.0.5 发布时真出过这个事）。所以失败就 rebase 重试几次。
-          #
-          # ⚠ 重试必须带"最终失败判定"：以前循环里只有 break、循环结束后什么都不判，
-          #   5 次全失败时这一步**仍然是绿的**、工作流显示成功，而用户一个都收不到更新 ——
-          #   加了重试反而比不加更难发现（不加的时候 push 失败会直接把步骤标红）。
-          #   （2026-10-11 姊妹项目同步时抓到：B 类"静默失败"）
+          git commit -m "更新账本：$VER" || echo "没有变化"
+          # 推 main 可能被"你正在上传文件"顶掉（non-fast-forward）。这一步失败 = 用户收不到更新，
+          #   所以重试必须带"最终失败判定"（以前只 break 不判定，5 次全失败还是绿的）。
           ok=0
           for i in 1 2 3 4 5; do
             if git push origin HEAD:main; then ok=1; break; fi
@@ -115,21 +133,6 @@ jobs:
             sleep 5
           done
           if [ "$ok" != 1 ]; then
-            echo "::error::update.json 没能推上去 —— 所有用户都收不到更新（这一步必须红）"
-            # 顺带把刚建的 Release 撤回：它是在这一步**之前**建的（见上面"发布 Release"那一步），
-            # 不撤回的话，你修好问题重跑工作流会卡在"Release 已经存在"上，只能手动删 tag。
-            # 推不上去时这个 Release 对用户本来就是不可见的（管理器只读 update.json），撤掉是安全的。
-            gh release delete "$VER" --yes --cleanup-tag || true
+            echo "::error::账本没能推上去 —— 所有用户都收不到更新（这一步必须红）"
             exit 1
           fi
-
-      - name: 让 jsDelivr 立刻刷新缓存
-        # 更新检查地址走 jsDelivr（raw.githubusercontent.com 在国内经常连不上）。
-        # jsDelivr 对 @main 有缓存，刚发的版本可能要等几小时才生效 —— 主动 purge 一下就立刻可见。
-        run: |
-          VER="${{ steps.ver.outputs.ver }}"
-          for f in "update.json" "UPDATE-$VER.md"; do
-            echo "purge $f"
-            curl -sS --max-time 20 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" || true
-            echo
-          done
