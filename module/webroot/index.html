@@ -404,23 +404,23 @@ try {
 
   <div class="section-title fade"><span>替换范围（高级）</span></div>
   <div class="switch-row fade" onclick="toggleSetting('keep_lang')">
-    <div><div class="t">保留繁体 / 日文 / 韩文字体槽</div><div class="d">开着（推荐）：繁体、日文、韩文继续用系统字体，显示正常。<b>想让繁体也用你的字体，就关掉它</b> —— 但你的字体缺哪个字，哪个字就会变方块（简体字库常缺「靉」「鶚」这类冷门繁体）。</div></div>
-    <div class="sw on" id="sw_keep_lang"></div>
+    <div><div class="t">日文 / 韩文 / 繁体出现方块？</div><div class="d">方块（□）= 你的字体里没有那个字。<br>开：这些字保持系统字体显示，方块消失。<br>关：连它们也一起换 —— 字体缺字的地方就会是方块。</div></div>
+    <div class="sw" id="sw_keep_lang"></div>
   </div>
   <div class="switch-row fade" onclick="toggleSetting('keep_special')">
-    <div><div class="t">保留衬线 / 等宽 / 时钟 / 斜体等特殊槽</div><div class="d">开着（推荐）：终端等宽字、锁屏时钟、衬线、斜体继续用系统字体，避免全文都变成一个样。<b>想让这些也用你的字体，就关掉它。</b><br>（这两个「保留……」开关都关掉，则<b>替换得最全面</b>；代价是覆盖范围更大 —— 日韩、繁体、衬线、等宽、时钟也会变成你的字体，你的字体里缺哪个字，那个字就可能显示成方块。）</div></div>
-    <div class="sw on" id="sw_keep_special"></div>
+    <div><div class="t">时钟、代码、斜体那些没跟着变？</div><div class="d">开：这些地方也换成你的字体（推荐 —— 全局都变才整齐）。<br>关：这些地方保持系统字体。<br><span style="opacity:.75">只有你发现"它们变了反而不好"时才关。</span></div></div>
+    <div class="sw" id="sw_keep_special"></div>
   </div>
   <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
-    <div><div class="t">模块自带挂载（推荐）</div><div class="d">不需要元模块，能覆盖 my_product、mi_ext 等厂商分区。关闭后交给 Root 管理器 / 元模块挂载（传统方式）。</div></div>
+    <div><div class="t">报告说"0 生效"？</div><div class="d">只有自带挂载不生效时才需要改。<br>关：交给 Root 管理器 / 元模块来挂（KernelSU / APatch 要先装元模块）。</div></div>
     <div class="sw on" id="sw_mount_mode"></div>
   </div>
   <div class="switch-row fade" onclick="toggleSetting('ttc_replace')">
-    <div><div class="t">替换 .ttc 合集（三星 / 魅族等机型的中文）</div><div class="d">部分机型的中文来自 .ttc 合集（如 SECCJK-Regular.ttc、NotoSansCJK-Regular.ttc），普通替换影响不到它 —— 表现是"英文变了、中文没变"。开着（<b>这类机型会自动打开</b>）会把你的字体包成同样 face 数的合集顶上去，只换中文那几号，日文/韩文保持原样，且不修改任何系统配置。<b>你的字体如果缺中文字形，中文会变方块，那就关掉它。</b></div></div>
+    <div><div class="t">英文变了、中文没变？</div><div class="d">有些机型的中文装在一个"合集"文件里，得单独处理才会变（三星、魅族这类）。<br>开：中文也换成你的字体（<b>本机需要的话会自动打开</b>）。<br>前提：你的字体得自带中文字形，否则中文会变方块。</div></div>
     <div class="sw" id="sw_ttc_replace"></div>
   </div>
   <div class="switch-row fade" onclick="toggleSetting('theme_fonts')">
-    <div><div class="t">也替换「设置里选的字体」（主题 / 字体样式）</div><div class="d">MIUI / HyperOS（<code>/data/system/theme/fonts</code>）、三星（<code>/data/overlays/font</code>）、vivo（<code>/data/vfonts</code>）都会把你「设置 → 字体样式」里选的字体放在单独目录，<b>那里的文件优先级高于系统字体目录</b>。<b>本项默认关闭</b>：<br>· <b>关</b>（推荐）：你在设置里选什么就是什么 —— 这些目录原样不动；<br>· <b>开</b>：这些目录里的字体<b>也一起换成你的字体</b>，也就是<b>替换得更全</b>，不用再去设置里切回「默认」；代价是设置里选的那个字体会失效。<br>例外：vivo 的 <code>/system/fonts/VivoFont.ttf</code> 是指向该目录的符号链接，它本身仍按普通槽位替换。</div></div>
+    <div><div class="t">设置里选的字体没被换掉？</div><div class="d">在「设置 → 字体样式」或主题商店里选过字体的机型，那份字体会被系统单独存一份、优先级更高。<br>开：那份也换成你的字体（<b>本机需要的话会自动打开</b>）。<br>代价：设置里选的那个字体会失效；想用「字体粗细」调粗细的话，就关掉它。</div></div>
     <div class="sw" id="sw_theme_fonts"></div>
   </div>
   <div class="g-hint">修改后会按当前选择自动重新生成，重启生效。</div>
@@ -1449,7 +1449,7 @@ async function onFilePicked(input) {
 }
 
 /* ---------- 替换范围设置 / 诊断 ---------- */
-const settings = {keep_lang: "1", keep_special: "1", mount_mode: "self", ttc_replace: "0", theme_fonts: "0"};
+const settings = {keep_lang: "0", keep_special: "0", mount_mode: "self", ttc_replace: "0", theme_fonts: "0"};
 let mountMode = "self";
 async function loadSettings() {
   try {
@@ -1469,7 +1469,7 @@ async function toggleSetting(key) {
     if (nv === "manager") {
       const ok = await dialog({
         title: "改为交给管理器挂载？",
-        msg: "字体文件会放进模块的 system 目录，由 Root 管理器挂载。KernelSU / APatch 需要先装好元模块（如 Hybrid Mount）；my_product、mi_ext 等厂商分区的字体槽可能无法生效。仅在自带挂载不工作时使用。",
+        msg: "只在你发现「自带挂载不生效」时才需要改。\n\n改完之后由 Root 管理器（或元模块）来挂字体：\n· KernelSU / APatch 需要先装好元模块（如 Hybrid Mount）；\n· 厂商分区（my_product、mi_ext 等）里的字体槽可能挂不上。",
         okText: "改用管理器挂载", danger: true
       });
       if (!ok) return;
@@ -1479,7 +1479,7 @@ async function toggleSetting(key) {
     if (nv === "1") {
       const ok = await dialog({
         title: "也替换设置里选的字体？",
-        msg: "系统会把你「设置 → 字体样式」里选的字体放在单独目录（MIUI/HyperOS：/data/system/theme/fonts，三星：/data/overlays/font，vivo：/data/vfonts），那里的优先级高于系统字体。\n\n打开后：这些目录里的字体也会一起换成你的字体 —— 也就是替换得更全，不用再去设置里切回「默认」。\n\n代价：设置里选的那个字体会失效（屏幕上显示的就是你的字体）。想还原：关掉这个开关，或者到设置里重新选一次。",
+        msg: "你在「设置 → 字体样式」或主题商店里选的字体，系统会单独存一份，优先于模块替换的那些。\n\n打开后：那份也换成你的字体，替换更全，不用再去设置里切回「默认」。\n\n代价：你在设置里选的那个字体会失效 —— 如果你用它调过「字体粗细」，打开后粗细也会调不动。\n\n想还原：关掉这个开关（或到设置里重新选一次）。",
         okText: "仍然打开", danger: true
       });
       if (!ok) return;
@@ -1489,20 +1489,20 @@ async function toggleSetting(key) {
     if (nv === "1") {
       const ok = await dialog({
         title: "打开「替换 .ttc 合集」？",
-        msg: "这台机器上的中文来自 .ttc 合集，普通替换影响不到它（所以你会看到「英文变了、中文没变」）。\n\n打开后会把你的字体包成同样 face 数的合集顶上去，改完需要重启一次。\n\n你的字体如果没有中文字形，中文会显示成方块 —— 那就回到这里关掉开关、再重启一次即可完全恢复（不会损坏系统文件）。",
+        msg: "你这台机器的中文装在一个合集文件里，普通替换够不到它 —— 所以会出现「英文变了、中文没变」。\n\n打开后：把你的字体按同样 face 数包成合集顶上去，重启生效。\n\n注意：你的字体得自带中文字形，否则中文会变方块（关掉这个开关、重启一次就能完全恢复，不会损坏系统文件）。",
         okText: "打开", danger: true
       });
       if (!ok) return;
     }
   } else {
     nv = settings[key] === "1" ? "0" : "1";
-    if (nv === "0") {
+    if (nv === "1" && key === "keep_lang") {
       const ok = await dialog({
-        title: "确认关闭保留？",
-        msg: key === "keep_lang"
-          ? "关闭后，日文/韩文/阿拉伯文等其他文字的字体槽也会被换成你的字体。如果你的字体没有这些文字，对应语言会显示方块。"
-          : "关闭后，衬线、等宽、时钟、展示和斜体槽位也会被换成你的字体，终端和锁屏时钟等可能变得不协调。",
-        okText: "关闭", danger: true
+        title: "这些字也换成你的字体？",
+        msg: "打开后：日文 / 韩文 / 繁体等也换成你的字体。\n\n"
+           + "如果你的字体没有这些字，对应的地方会显示成方块（□）。\n"
+           + "担心方块的话，保持关闭即可 —— 现在默认就是「字体里有的字全换、没有的自动用系统字体」。",
+        okText: "仍然打开", danger: true
       });
       if (!ok) return;
     }
