@@ -32,10 +32,22 @@ PART="$LIB/.upload.part"
 STORAGE=${STORAGE:-/data/media/0}
 [ -d "$STORAGE" ] || STORAGE=/storage/emulated/0
 
-. "$MODDIR/common.sh" 2>/dev/null
-. "$MODDIR/slots.sh" 2>/dev/null
-. "$MODDIR/mount.sh" 2>/dev/null
-. "$MODDIR/ttcwrap.sh" 2>/dev/null        # .ttc 合集替换（三星简中）需要它
+# ⚠ 这里的 `.` 不能写成 `. "$MODDIR/x.sh" 2>/dev/null`：
+#   POSIX 里 `.` 是**特殊内建**，打不开文件是**致命错误** —— `2>/dev/null` 只是把报错信息
+#   藏起来，挡不住它把整个脚本带走（实测 busybox sh：`. /不存在的文件 2>/dev/null` 之后
+#   后面的命令一行都不执行，退出码 2）。
+#   后果不是"少个功能"：fontctl.sh 是界面的唯一入口，它当场退出 = 卡片空白、切不了字体、
+#   诊断打不开、所有开关失效，而且用户拿不到任何线索。
+#   （2026-10-11 姊妹项目同步 v1.0.5 时抓到的，原来是 `. ... 2>/dev/null`）
+for _mf in common.sh slots.sh mount.sh; do
+  [ -f "$MODDIR/$_mf" ] || { echo "ERROR:模块文件缺失（$_mf）—— 请重新安装模块"; exit 3; }
+  . "$MODDIR/$_mf"
+done
+unset _mf
+# ttcwrap.sh（.ttc 合集生成器）是**可选**的：老包/不完整包里可能没有。
+# 缺了只是"合集替换"这条功能不可用，绝不能让整个 fontctl 退出 ——
+# apply 里会为这种槽位记一笔 via=no-generator（见下面的 .ttc 分支）。
+[ -f "$MODDIR/ttcwrap.sh" ] && . "$MODDIR/ttcwrap.sh"
 mkdir -p "$LIB" 2>/dev/null
 export TMPDIR="$LIB"
 
@@ -574,6 +586,14 @@ do_apply() {
       # 生成失败就跳过这个槽位、保持系统原样 —— 绝不挂一个坏文件上去。
       case "$rel" in
         *.ttc|*.TTC)
+          # 生成器不在（包不完整 / 老包）→ **明确记一笔再跳过**。
+          # 不这么写的话，用户看到的是"开关亮着、中文一点没变"，而报告里也看不出为什么
+          # （ttc_faces_of / isnum 都在 ttcwrap.sh 里，没它连 faces 都读不出来）。
+          if ! command -v ttc_wrap_mix >/dev/null 2>&1; then
+            printf '%s %s via=no-generator detail=缺少 ttcwrap.sh（包不完整，请重新安装模块）\n' \
+              "$id" "$rel" >> "$LIB/ttc.log" 2>/dev/null
+            continue
+          fi
           nf=$(ttc_faces_of "/$rel" 2>/dev/null)
           isnum "$nf" || continue
           [ "$nf" -ge 1 ] 2>/dev/null || continue
@@ -830,8 +850,8 @@ case "${1:-}" in
             case "$4" in 0|1) ;; *) echo "ERROR:取值只能是 0 或 1"; exit 1 ;; esac ;;
           theme_fonts)
             # 是否连"设置 → 字体样式"里选的字体（主题字体目录）也一起替换。
-            # 默认 0：换掉它就等于盖掉用户在设置里的选择，还会毁掉「字体粗细」调节
-            #（用户选小米兰亭 Pro 就是为了那个可变字重轴）—— 真机反馈过。
+            # 默认 0：换掉它就等于盖掉用户在设置里的选择 —— 用户明确反馈过"我在设置里选的
+            # 字体不该被动"。开着的好处是替换得更全（不用再去设置里切回「默认」）。
             case "$4" in 0|1) ;; *) echo "ERROR:取值只能是 0 或 1"; exit 1 ;; esac ;;
           ttc_replace)
             # auto = 交给自动判断（三星开、其它关）；界面上的开关写 0/1，写进去就是手动指定
@@ -843,7 +863,7 @@ case "${1:-}" in
         cfg_set "$3" "$4"; echo "OK"
         ;;
       *)
-        # ttc_replace 回显的是**生效值**：三星上即使没手动设过，界面开关也该是亮的
+        # ttc_replace 回显的是**生效值**：这类机型即使没手动设过，界面开关也该是亮的
         echo "keep_lang=$(cfg_get keep_lang 1) keep_special=$(cfg_get keep_special 1) mount_mode=$(mount_mode) ttc_replace=$(ttc_effective) theme_fonts=$(cfg_get theme_fonts 0)"
         ;;
     esac
@@ -873,7 +893,7 @@ case "${1:-}" in
     list_conflicts
     ;;
   report)
-    # 有 diag.sh 时，报告就是「一键体检」（结论在最上面 + 10 节明细）
+    # 有 diag.sh 时，报告就是「一键体检」（结论在最上面 + 11 节明细）
     if [ -f "$MODDIR/diag.sh" ]; then
       if [ "$2" = save ]; then sh "$MODDIR/diag.sh" save; else sh "$MODDIR/diag.sh" full; fi
     elif [ "$2" = save ]; then

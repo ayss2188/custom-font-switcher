@@ -11,7 +11,7 @@
 #
 # 用法：
 #   sh diag.sh brief     只打印结论（「操作」按钮 / 速查用）
-#   sh diag.sh full      打印完整报告（10 节，含原始配置与哈希清单）
+#   sh diag.sh full      打印完整报告（11 节，含原始配置与哈希清单）
 #   sh diag.sh install   生成完整报告并写入 Download，同时打印结论（「操作」按钮用）
 #   sh diag.sh save      生成完整报告并写入 Download，只输出 OK:<路径>
 #   sh diag.sh bg [force] [fast]  后台生成（WebUI 用；force = 强制重来，fast = 轻量口径）
@@ -34,9 +34,16 @@
 
 MODDIR=${0%/*}
 [ -n "$MODDIR" ] || MODDIR=/data/adb/modules/custom_font_switcher
-. "$MODDIR/common.sh" 2>/dev/null
-. "$MODDIR/slots.sh" 2>/dev/null
-. "$MODDIR/mount.sh" 2>/dev/null
+# ⚠ 别写成 `. "$MODDIR/x.sh" 2>/dev/null`：`.` 是特殊内建，**打不开文件会直接结束整个脚本**
+#   （`2>/dev/null` 只藏报错信息，挡不住它退出；实测退出码 2）。缺一个必需文件时，
+#   宁可给一句能看懂的话，也不要"报告打不开、用户不知道为什么"。
+for _df in common.sh slots.sh mount.sh; do
+  [ -f "$MODDIR/$_df" ] || { echo "ERROR:模块文件缺失（$_df）—— 报告无法生成，请重新安装模块"; exit 0; }
+  . "$MODDIR/$_df"
+done
+unset _df
+# ttcwrap.sh 是可选的（只影响 .ttc 合集那一块）；缺了不能把整个诊断带走
+[ -f "$MODDIR/ttcwrap.sh" ] && . "$MODDIR/ttcwrap.sh"
 
 LIB=${LIB:-/data/adb/custom_font_lib}
 SETTINGS=${SETTINGS:-$LIB/settings.conf}
@@ -714,6 +721,120 @@ dir_conclusion() {
 }
 
 # ---------------------------------------------------------------------------
+# 应用侧可见性：模块的挂载在「App 自己的进程里」还看不看得到
+#
+# 为什么需要这一节（真机反馈）：报告一路显示 71/71 全部生效，用户却说「只有桌面 /
+# 主界面变了，App 里没变」。原因是 KernelSU 系有个「卸载模块」机制：应用进程从 zygote
+# 派生时会切进自己的挂载命名空间，把模块挂载摘掉；内核里的默认值就是"卸"
+# （KernelSU 源码 policy/allowlist.c：default_non_root_profile.umount_modules = true），
+# 只有管理器自己、授予过 root 权限的 App、以及 uid 1000 这类系统进程不受影响。
+# 本脚本是 root 跑在全局命名空间里，看到的是全局真相 —— 所以**报告本身永远显示已生效**，
+# 必须进到 App 的命名空间里数一数才能判断，下面就是这件事。
+#
+# 依据（以后有人怀疑这段结论时，照着核对）：
+#   https://kernelsu.org/zh_CN/guide/app-profile.html      官方 App Profile 文档：默认卸载模块默认开
+#   kernel/feature/kernel_umount.c  只对 zygote 派生出来的应用进程下手；
+#                                   uid 1000/2000 这类不是 appuid，不卸；
+#                                   隔离进程（WebView 渲染进程）无条件卸
+#   kernel/policy/allowlist.c       default_non_root_profile.umount_modules = true；
+#                                   授予过 root 的 App（allow_su）不卸
+# ---------------------------------------------------------------------------
+AS_MINE=""; AS_LIST=""; AS_READ=0; AS_RISK=0; AS_HIDDEN=0
+AS_KREL=""; AS_FEATURE=""; AS_DOTUM=""; AS_METAUM=""
+
+# 关键文件完整性：缺哪个就列出来。
+#   缺 common/slots/mount = 整个模块不可用（fontctl.sh 会明确报错退出）；
+#   缺 ttcwrap.sh = 只是"合集替换"不可用 —— 但现象是"开关亮着、中文没变"，
+#   所以必须在报告里点名，否则作者和用户都会往挂载上找。
+# 用法：modfiles_check <目录>（输出"（齐全）"或" 缺xxx 缺yyy"）
+modfiles_check() {
+  local _d="$1" _f _miss=""
+  for _f in common.sh slots.sh mount.sh fontctl.sh; do
+    [ -f "$_d/$_f" ] || _miss="$_miss $_f"
+  done
+  [ -f "$_d/ttcwrap.sh" ] || _miss="$_miss ttcwrap.sh"
+  printf '%s' "${_miss:-（齐全）}"
+}
+
+# 谷歌字体兼容开关的中文说法（报告和结论区共用；别把英文原词直接甩给用户）
+gf_state_text() {
+  case "$1" in
+    on)      printf '已开启（本模块停用了 GMS 的下载字体组件）' ;;
+    off)     printf '未开启' ;;
+    foreign) printf '已被其它工具停用（不是本模块操作的，本模块不接管）' ;;
+    nogms)   printf '未安装 Google Play 服务（无需开启）' ;;
+    *)       printf '读取失败（未知）' ;;
+  esac
+}
+
+# 数一份 mountinfo 里有多少条"我们挂上去的"：源都在字体库目录，凭路径就能认出来
+# （.ttf 与 .ttc 合集槽位都算，源分别是 <id>.ttf / <id>.ttcN_x-y）
+as_count() { grep -c 'custom_font_lib/' "$1" 2>/dev/null; }
+
+app_side_probe() {
+  local p bn uid cmd c n=0 _ask _asv _asr _asmaj _asmin _asdu _asiu _asf
+  # 幂等：万一被调用两次（或同一个进程里重跑），不要累加上一轮的采样
+  AS_LIST=""; AS_READ=0; AS_HIDDEN=0
+  AS_MINE=$(as_count /proc/self/mountinfo)
+  # 内核版本：KernelSU 只在 5.10 及以上内核里真的执行卸载（更低版本这个开关只是配置项）
+  AS_KREL=$(uname -r 2>/dev/null | sed 's/^\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/')
+  _asmaj=${AS_KREL%%.*}; _asmin=${AS_KREL#*.}
+  case "$_asmaj" in ''|*[!0-9]*) _asmaj=0 ;; esac
+  case "$_asmin" in ''|*[!0-9]*) _asmin=0 ;; esac
+  if [ "$_asmaj" -gt 5 ] || { [ "$_asmaj" -eq 5 ] && [ "$_asmin" -ge 10 ]; }; then
+    [ "$RM" = ksu ] && AS_RISK=1
+  fi
+  # 管理器侧"卸载模块"的现场：原样列出（不猜文件格式，作者一眼就能看懂）
+  if [ -f /data/adb/ksu/.feature_config ]; then
+    AS_FEATURE=$(grep -a -i 'umount' /data/adb/ksu/.feature_config 2>/dev/null | head -n1)
+    [ -n "$AS_FEATURE" ] || AS_FEATURE="（文件在，但没有含 umount 的项）"
+  else
+    AS_FEATURE="（没有 /data/adb/ksu/.feature_config）"
+  fi
+  if [ -f /data/adb/ksu/.umount ]; then
+    AS_DOTUM=$(head -c 120 /data/adb/ksu/.umount 2>/dev/null | tr '\n' ' ')
+    [ -n "$AS_DOTUM" ] || AS_DOTUM="（空文件）"
+  else
+    AS_DOTUM="（没有 /data/adb/ksu/.umount）"
+  fi
+  # 元模块（Hybrid Mount 这类）自己也有"卸载/隐藏"开关，配置里叫 disable_umount
+  for _asf in /data/adb/hybrid-mount/config.toml /data/adb/hybrid_mount/config.toml /data/adb/magic_mount/config.toml; do
+    [ -f "$_asf" ] || continue
+    _asdu=$(sed -n 's/^[[:space:]]*disable_umount[[:space:]]*=[[:space:]]*//p' "$_asf" 2>/dev/null | head -n1)
+    _asiu=$(sed -n 's/^[[:space:]]*vfs_isolate_uids[[:space:]]*=[[:space:]]*//p' "$_asf" 2>/dev/null | head -n1)
+    AS_METAUM="$_asf  disable_umount=${_asdu:-未写}  vfs_isolate_uids=${_asiu:-未写}"
+    break
+  done
+  # 采样最多 3 个"普通 App"进程（uid 10000-19999）。
+  # 隔离进程（90000+，WebView 渲染进程）故意不要 —— KernelSU 对它们是无条件卸载的，
+  # 拿它们做对照会把"正常现象"误判成"模块没生效"。
+  # 用 /proc/* 而不是 /proc/[0-9]*：文件名通配里的方括号不是所有 sh 都支持
+  # （busybox-w32 就不支持，沙盒测试会走到字面量上），数字判断交给 case。
+  for p in /proc/*; do
+    bn=${p#/proc/}
+    case "$bn" in ''|*[!0-9]*) continue ;; esac
+    [ -r "$p/status" ] || continue
+    uid=""
+    while read -r _ask _asv _asr; do
+      case "$_ask" in Uid:) uid=$_asv; break ;; esac
+    done < "$p/status" 2>/dev/null
+    case "$uid" in ''|*[!0-9]*) continue ;; esac
+    [ "$uid" -ge 10000 ] && [ "$uid" -le 19999 ] || continue
+    cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null); cmd=${cmd% }
+    [ -n "$cmd" ] || continue
+    c=$(as_count "/proc/$bn/mountinfo")
+    [ -n "$c" ] || c="读不到"
+    AS_LIST="$AS_LIST$bn|$uid|$cmd|$c
+"
+    [ "$c" = 0 ] && [ "$AS_MINE" -gt 0 ] 2>/dev/null && AS_HIDDEN=1
+    n=$((n + 1))
+    [ "$n" -ge 3 ] && break
+  done
+  [ "$n" -gt 0 ] && AS_READ=1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 实机挂载能力测试：挂一个真实槽位 -> 校验 -> 立刻卸载
 # ---------------------------------------------------------------------------
 MT_RESULT="未测试"
@@ -776,6 +897,27 @@ do_mount_test() {
 }
 subnote "挂载实测（挂一个真实槽位再立刻卸载）"
 do_mount_test
+subnote "应用侧可见性（App 里看不看得到，见第 11 节）"
+app_side_probe
+# ---------------------------------------------------------------------------
+# 谷歌字体兼容：GMS 的"下载字体"（Google Sans / Product Sans 那类）不走 /system/fonts，
+# 我们替换系统字体管不到它 —— 这一节把现场摊开，见第 7 节和结论区。
+# 轻量口径（安装时）只读缓存状态，不跑 dumpsys（安装流程要快）。
+# ---------------------------------------------------------------------------
+GF_STATE=""; GF_DIAG=""; GF_OWNED=0; GF_RESET=0
+if [ -f "$MODDIR/google_font.sh" ]; then
+  subnote "谷歌字体兼容（GMS 下载字体）"
+  if [ "$FAST" = 1 ] || [ "$BG_FAST" = 1 ]; then
+    GF_STATE=$(sh "$MODDIR/google_font.sh" status 2>/dev/null | tr -d '[:space:]')
+  else
+    GF_STATE=$(sh "$MODDIR/google_font.sh" status fresh 2>/dev/null | tr -d '[:space:]')
+    GF_DIAG=$(sh "$MODDIR/google_font.sh" diag 2>/dev/null)
+  fi
+fi
+case "$GF_STATE" in on|off|foreign|unknown|nogms) ;; *) GF_STATE=unknown ;; esac
+[ -f "$LIB/.gms_journal.conf" ] && GF_OWNED=1
+# 有我们的记录、但组件已经不是"停用"了 = 被 GMS 更新顶回去了（用户看到的就是"又变回谷歌字体"）
+[ "$GF_OWNED" = 1 ] && [ "$GF_STATE" = off ] && GF_RESET=1
 }    # collect() 到此结束：这些采集只允许在真正生成报告时跑（见 collect_once）
 
 # 只在生成报告时采集一次（界面按钮用的 state/cancel/bg/estimate/text/savenow 绝不调用）
@@ -863,6 +1005,36 @@ conclusion() {
     echo "   只要替换列表里的主字体自带中文字形，中文一般也会跟着变；"
     echo "   只有主字体缺字形、系统回落到这个合集时，那一部分中文不会变。第 6 节有明细。"
   fi
+  # 「只有桌面/系统界面生效、App 里没变」——最常见的解释不是挂载失败，而是管理器默认
+  # 就对应用「卸载模块」（KernelSU 系内核里的默认值就是"卸"）。第 11 节有实测对比。
+  if [ "$AS_HIDDEN" = 1 ]; then
+    echo "⚠ 重点：实测到「App 侧看不到本模块的挂载」（第 11 节）。"
+    echo "   管理器把模块从应用进程里卸载了 —— 桌面 / 系统界面这类不受影响，"
+    echo "   所以现象看着像「只有桌面生效、App 里没变」。"
+    echo "   → 到管理器里关掉「默认卸载模块」（或只给那个 App 关掉「卸载模块」），重启后再看。"
+    echo "   这不是模块故障，也不是挂载失败。"
+  elif [ "$AS_RISK" = 1 ] && [ -n "$PEND" ] && [ "$PEND" != none ]; then
+    echo "ℹ 提示：本机（$RM，内核 ${AS_KREL:-?}）具备「对应用卸载模块」的机制。"
+    echo "   如果现象是「桌面 / 系统界面正常、App 里没变」，先看第 11 节 ——"
+    echo "   这种情况挂载全成功、报告也看不出问题，按第 11 节的 ① 关掉「默认卸载模块」再试。"
+  fi
+  # 包不完整（缺 ttcwrap.sh = 合集生成器）：现象是"开关亮着、中文没变"，
+  # 报告里如果只字不提，用户和作者都会往挂载上找。这里直接点名 + 给动作。
+  _mfmiss=$(modfiles_check "$M")
+  case "$_mfmiss" in
+    *ttcwrap.sh*)
+      if [ "$TTC_ON" = 1 ]; then
+        echo "⚠ 注意：模块文件不完整（缺：$_mfmiss）——"
+        echo "   缺 ttcwrap.sh 就等于「合集生成器不在」：合集替换不会生效、中文可能不变，"
+        echo "   而且不会有任何报错。→ 到管理器里把这个包**重新安装一次**即可（不是只更新）。"
+      fi ;;
+  esac
+  # 谷歌字体兼容被 GMS 更新顶回去了（有我们的记录、但组件已经不是"停用"状态）
+  if [ "$GF_RESET" = 1 ]; then
+    echo "⚠ 注意：谷歌字体兼容被系统重置了（Play 服务更新会这样）——"
+    echo "   现象就是「英文数字过一阵又变回谷歌默认」。本版每次开机（service 阶段）会自动补一次；"
+    echo "   想立刻生效：在界面点一下「开启兼容」，或直接重启一次。第 7 节有现场。"
+  fi
   hr
   echo "本次开机: post-fs-data $([ "$PFD_THIS" = 0 ] && echo '未执行' || echo '已执行')   service $([ "$SVC_THIS" = 0 ] && echo '未执行' || echo '已执行')   实际生效 $VHIT/$VTOT"
   echo "扫描范围: $(printf '%s\n' "$FONTDIRS" | grep -c . ) 个字体目录、$(printf '%s\n' "$XMLFOUND" | grep -c . ) 份字体配置（含厂商分区与 apex）"
@@ -877,7 +1049,7 @@ conclusion() {
   echo "字体库: ${LIB_N:-0} 个，占用 $(du -sk "$LIB" 2>/dev/null | cut -f1) KB   挂载方式: ${MODE_FILE:-?}"
   echo "设置: keep_lang=$KL keep_special=$KS   替换范围: ${SCOPE:-?}   槽位计划: $(printf '%s\n' "$PLAN_NOW" | grep -c . ) 个"
   echo "实际字体目录: /system/fonts → ${SYSDIR_REAL:-?}（设备上共 $(printf '%s\n' "$FONTDIRS" | grep -c . ) 个字体目录，详见第 5 节）"
-  echo "谷歌字体兼容: $(sh "$MODDIR/google_font.sh" status 2>/dev/null)   冲突模块: $(sh "$MODDIR/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')"
+  echo "谷歌字体兼容: $(gf_state_text "${GF_STATE:-unknown}")   冲突模块: $(sh "$MODDIR/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')"
   if [ "$G_FLIP" = 1 ]; then
     echo "⚠ 另外：检测到「字体包 / 字体设置」相关项（见第 7 节）。"
     echo "   如果你在 设置→显示→字体大小和样式 里选了非默认字体，系统会走字体包，"
@@ -979,6 +1151,14 @@ sec1() {
   echo "  本模块 module.prop:"
   sed -n 'p' "$M/module.prop" 2>/dev/null | while IFS= read -r L; do echo "      $L"; done
   echo "  本模块 system 残留: $([ -d "$M/system" ] && echo "有 ($(du -sk "$M/system" 2>/dev/null | cut -f1) KB)" || echo 无)"
+  # 关键文件完整性：缺文件不是"少个功能"，fontctl.sh 会直接报错退出（界面报废）；
+  # 缺 ttcwrap.sh 则是"合集替换静默不生效"。放在门禁这一节，一眼能看到。
+  if [ "$MODDIR" = "$M" ]; then
+    echo "  关键文件完整性  : $(modfiles_check "$M")"
+  else
+    echo "  关键文件完整性  : 运行副本 $MODDIR: $(modfiles_check "$MODDIR")"
+    echo "                    活动目录 $M: $(modfiles_check "$M")"
+  fi
   echo "  modules_update 目录:"
   ls -la /data/adb/modules_update/ 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      $L"; done
 }
@@ -1304,6 +1484,20 @@ sec7() {
   echo "  属性/设置里与 MIUI 字体相关:"
   "$GP" 2>/dev/null | grep -iE 'miui|hyperos|mi\.os|theme' | head -n 15 | while IFS= read -r L; do echo "      [prop] $L"; done
   { "$SETBIN" list system 2>/dev/null; "$SETBIN" list secure 2>/dev/null; } | grep -iE 'theme|font' | grep -viE 'scale|size' | head -n 10 | while IFS= read -r L; do echo "      [setting] $L"; done
+
+  # ---- 谷歌字体（GMS 下载字体）：另一条"绕开 /system/fonts"的路 ----
+  # Google 系应用（Play 商店 / Chrome 等）会向 Play 服务要"下载字体"，那些文件在 GMS 的
+  # 私有缓存里，不经过系统字体目录 —— 所以只替换系统字体时，英数会"过一阵又变回谷歌默认"。
+  # 现场全部列出来（只读，不改任何东西），结论写在结论区。
+  echo "  ---- 谷歌字体（GMS 下载字体）与「谷歌字体兼容」开关 ----"
+  echo "     开关当前状态: $(gf_state_text "${GF_STATE:-unknown}")"
+  if [ -n "$GF_DIAG" ]; then
+    printf '%s\n' "$GF_DIAG" | while IFS= read -r L; do [ -n "$L" ] && echo "      $L"; done
+  else
+    echo "     （轻量口径：这一节没跑 dumpsys；要看明细请用完整报告，或在界面点「重新检测」）"
+  fi
+  echo "     说明：本功能只停用「下载字体」这一个组件；不停用整个 Play 服务、不删字体缓存、"
+  echo "           不改系统字体配置。应用自带字体、网页字体不受影响。"
 }
 
 # ---------------------------------------------------------------------------
@@ -1385,6 +1579,66 @@ sec10() {
   for p in ro.boot.verifiedbootstate ro.boot.flash.locked ro.boot.veritymode ro.security.vaultkeeper.feature ro.crypto.state ro.boot.warranty_bit ro.boot.bootloader ro.build.version.oneui ro.build.version.sem ro.build.version.security_patch; do
     echo "      $p=$($GP "$p" 2>/dev/null)"
   done
+}
+
+# ---------------------------------------------------------------------------
+# 【11】应用侧是否看得到这些挂载
+#   「只有桌面 / 主界面生效，App 里没变」不是挂载失败（那会全都不变），而是管理器
+#   在每个应用进程里把模块挂载卸掉了。这一节把现场证据摊开，并给出下一步动作。
+# ---------------------------------------------------------------------------
+sec11() {
+  echo
+  echo "【11】应用侧是否看得到这些挂载（「只有桌面 / 主界面生效」就查这里）"
+  hr
+  echo "  报告是 root 权限在**全局**挂载命名空间里跑的，看到的是全局真相；"
+  echo "  而「卸载模块」是在**每个 App 自己的进程里**把模块挂载摘掉 —— 所以："
+  echo "  「挂载成功」不等于「每个 App 都看得到」，这一节专门查这件事。"
+  echo
+  echo "  1) 本机有没有这个机制（管理器 + 内核）"
+  echo "     Root 管理器      : $RM（$(root_manager_name "$RM" 2>/dev/null)）   元模块: $([ -e /data/adb/metamodule ] && readlink /data/adb/metamodule 2>/dev/null || echo 无)"
+  echo "     内核版本         : ${AS_KREL:-?}"
+  if [ "$AS_RISK" = 1 ]; then
+    echo "     → 5.10 及以上：KernelSU 系内核会**真的执行**「卸载模块」（不是只当配置项）"
+  else
+    echo "     → 按内核 / 管理器判断：这一节描述的机制在本机（$RM）不一定生效，仅供参考"
+  fi
+  echo "     内核里的默认值就是「卸」：不受影响的只有管理器自己、授予过 root 权限的 App、"
+  echo "     以及 uid 1000（SystemUI 等）这类系统进程 —— 这正是「系统界面正常、App 没变」的原因。"
+  echo
+  echo "  2) 实测：同一个 App 进程里能不能看到我们的挂载"
+  echo "     我们自己的命名空间 : ${AS_MINE:-?} 条（源在 $LIB 的绑定挂载）"
+  if [ "$AS_READ" = 1 ]; then
+    printf '%s' "$AS_LIST" | while IFS='|' read -r _p _u _c _n; do
+      [ -n "$_p" ] || continue
+      echo "     App pid=$_p uid=$_u → 看到 ${_n} 条   ${_c}"
+    done
+  else
+    echo "     （没找到可对照的普通 App 进程：应用都没在跑，或 /proc 读不到）"
+    echo "      让用户先打开任意一个普通 App，再重新生成一次报告，就能对照了。"
+  fi
+  if [ "$AS_HIDDEN" = 1 ]; then
+    echo "     ★ 判定：App 侧看到 0 条，而我们自己看到 ${AS_MINE} 条 ——"
+    echo "       管理器已经把模块从应用进程里卸载了。不是挂载失败，也不需要改模块。"
+  elif [ "$AS_READ" = 1 ]; then
+    echo "     （两边都能看到，或抽到的这个 App 恰好被授予过 root）"
+    echo "      ℹ 授予了 root 权限的 App **不会**被卸载，所以它看到「有」不代表别的 App 也有。"
+  fi
+  echo
+  echo "  3) 管理器侧的现场（原样列出，不做格式猜测）"
+  echo "     kernel_umount（.feature_config）: $AS_FEATURE"
+  echo "     /data/adb/ksu/.umount           : $AS_DOTUM"
+  echo "     元模块配置                       : ${AS_METAUM:-（没找到 config.toml）}"
+  echo "     （找不到这些文件不代表没这个机制：名单也可能只在管理器内部或内核里）"
+  echo
+  echo "  4) 怎么办（按顺序试，一次只改一个，改完重启再看同一个 App）"
+  echo "     ① 管理器 → 设置 → 关掉「默认卸载模块」"
+  echo "        （= 黑名单模式：以后只有你手动开的 App 才卸）"
+  echo "     ② 或者只给那一个 App 关：管理器的「应用配置 / App Profile」里把它的「卸载模块」关掉"
+  echo "     ③ 装了元模块（Hybrid Mount 等）的：把它的「禁用卸载 / disable_umount」改成 true"
+  echo "     改了还是没变 → 就不是这条原因，回到第 5 / 6 节找（槽位没进计划、中文走 .ttc 等）。"
+  echo "  ℹ 另外：网页 / 小程序 / 内置浏览器属于 WebView，它的渲染进程是「隔离进程」——"
+  echo "     KernelSU 系对隔离进程是**无条件**卸载的，这类内容里的字体不受本模块影响（正常现象）。"
+  hr
 }
 
 # ---------------------------------------------------------------------------
@@ -1663,6 +1917,7 @@ report_full() {
   sec8
   sec9
   sec10
+  sec11
   echo
   echo "== 报告结束 =="
 }
@@ -1677,7 +1932,7 @@ set_out_now() {
   fi
 }
 
-# 把完整报告（结论 + 10 节 + 原始配置与哈希清单）写到 Download，成功时 SAVED=路径
+# 把完整报告（结论 + 11 节 + 原始配置与哈希清单）写到 Download，成功时 SAVED=路径
 # 只产出一个 txt（另有一份同内容的 font_diag.txt 备用名），不再生成附件文件夹
 write_kit() {
   local tmpf="$1"
@@ -1984,9 +2239,9 @@ kit_report() {
   timing_add '4 字体配置与字体来源' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
-  dphase '5/6 清单 / 冲突 / 日志'
-  { sec8; sec9; sec10; } >> "$tmpf" 2>&1
-  timing_add '5 清单 / 冲突 / 日志' "$_PH_T0"
+  dphase '5/6 清单 / 冲突 / 日志 / App 可见性'
+  { sec8; sec9; sec10; sec11; } >> "$tmpf" 2>&1
+  timing_add '5 清单 / 冲突 / 日志 / App 可见性' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
   dphase '6/6 打包原始配置与哈希清单'

@@ -33,7 +33,7 @@ LAST=$(tr -d '[:space:]' 2>/dev/null < "$LIB/last_selection")
 [ -n "$LAST" ] || LAST=$(tr -d '[:space:]' 2>/dev/null < "$OLD/pending_font")
 [ -n "$LAST" ] || LAST=none
 
-for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh action.sh \
+for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh gms_cache.sh nameclone.sh action.sh \
          diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
   chmod 755 "$MODPATH/$f" 2>/dev/null
 done
@@ -112,7 +112,7 @@ ui_print "===================================="
 ui_print "- 完成"
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
-for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh action.sh \
+for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh gms_cache.sh nameclone.sh action.sh \
          diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
   set_perm "$MODPATH/$f" 0 0 0755
 done
