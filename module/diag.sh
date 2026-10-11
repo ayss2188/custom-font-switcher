@@ -412,6 +412,20 @@ for d in /data/adb/modules/*/; do
 done
 
 RM=$(root_manager 2>/dev/null)
+# 报告专用：先用"只认实锤"的判定，认不出再兜底（并在第 1 节标明这是**推断**）
+# 为什么不能直接用 root_manager()：它为了"装模块别装错"会在认不出时兜底成 magisk，
+# 而换过管理器的机器上旧 Magisk 痕迹长期存在 → 报告会把 APatch 机器说成 magisk/KernelSU 生效。
+RM_STRICT=$(root_manager_strict 2>/dev/null)
+RM_PROBE=""
+[ -n "$RM_STRICT" ] || {
+  command -v apd >/dev/null 2>&1 && RM_PROBE="apd 命令存在"
+  [ -n "$RM_PROBE" ] || { [ -d /data/adb/ap ] && RM_PROBE="/data/adb/ap 目录存在"; }
+  [ -n "$RM_PROBE" ] || { command -v magisk >/dev/null 2>&1 && RM_PROBE="magisk 命令存在"; }
+  [ -n "$RM_PROBE" ] || { [ -d /data/adb/magisk ] && RM_PROBE="/data/adb/magisk 目录存在"; }
+}
+RM_SRC="实锤（管理器自己留下的标记）"
+[ -n "$RM_STRICT" ] || RM_SRC="推断（$RM_PROBE${RM_PROBE:+，}没有实锤标记）"
+[ -n "$RM_STRICT" ] || RM="$([ -n "$RM_PROBE" ] && root_manager || echo unknown)"
 KSU_BIN=""
 [ -x /data/adb/ksud ] && KSU_BIN=/data/adb/ksud
 [ -n "$KSU_BIN" ] || { [ -x /data/adb/ksu/bin/ksud ] && KSU_BIN=/data/adb/ksu/bin/ksud; }
@@ -589,7 +603,7 @@ eff_scope() {
   else echo latin; fi
 }
 SCOPE=$(eff_scope "$PEND")
-KL=$(cfg_get keep_lang 1); KS=$(cfg_get keep_special 1)
+KL=$(cfg_get keep_lang 0); KS=$(cfg_get keep_special 0)
 subnote "计算槽位计划"
 plan_of() { # $1=scope $2=keep_lang $3=keep_special
   local scope="$1" kl="$2" ks="$3" role d name base
@@ -956,11 +970,20 @@ conclusion() {
     echo "   → 重启一次（开机时别按音量键），然后到管理器里重新启用模块。"
   elif [ "$G_MAGISK" = 1 ] && [ "$PFD_THIS" = 0 ] && [ -z "$MS_BOOT" ]; then
     echo "❌ 结论：机器上还检测到 Magisk。"
-    echo "   KernelSU 一旦发现 Magisk，就会跳过全部模块脚本（post-fs-data / post-mount / service 都不跑）。"
+    echo "   很多 Root 管理器（KernelSU / APatch）一旦发现 Magisk 在跑，就会跳过全部模块脚本"
+    echo "   （post-fs-data / post-mount / service 都不跑）—— 请先卸载 Magisk 或二选一，再重启。"
+  elif [ "$G_MAGISK" = 1 ] && [ -n "$RM_STRICT" ]; then
+    # 有 Magisk 的痕迹，但本模块脚本确实跑了，而且**认得出真正在生效的管理器** → 说明 Magisk 没在拦
+    echo "⚠ 结论：检测到 Magisk 的痕迹，但本次开机的模块脚本确实执行了 ——"
+    echo "   说明当前生效的是 $(root_manager_name "$RM_STRICT")，Magisk 没有在拦模块脚本（见第 1 节）。"
   elif [ "$G_MAGISK" = 1 ]; then
-    # 有 Magisk 的痕迹，但本模块脚本确实跑了 → 现在生效的是 KernelSU，不是冲突
-    echo "⚠ 结论：检测到 Magisk 与 KernelSU 共存，但本次开机的模块脚本确实执行了 ——"
-    echo "   说明当前生效的是 KernelSU，Magisk 只是残留，不影响字体替换（见第 1 节）。"
+    # ★ 2026-10-12 修：以前这里写死"说明当前生效的是 KernelSU"，害得一台 APatch 机器被说成 KernelSU。
+    #   脚本跑成功了 = 事实上没有冲突，这本身就是好消息；**至于谁在生效，认不出就不替用户下结论**。
+    echo "⚠ 结论：检测到 Magisk 的痕迹，但本次开机的模块脚本确实执行了 ——"
+    echo "   ⇒ 不管是谁在生效，**它没有拦住本模块**，字体替换是正常的（本次实测生效数见上面）。"
+    echo "   ⇒ 报告**没能认出**正在生效的 Root 管理器（第 1 节写了判据），所以不替你猜是哪一个。"
+    echo "      想弄清楚的话：第 1 节的 APATCH / KSU / MAGISK_VER 三个环境变量是不是都是空的 ——"
+    echo "      都空且没有 ksud/apd，说明这个管理器没给我们留下可识别的标记（换过管理器的机器很常见）。"
   elif [ "$MT_LEFT" = 1 ]; then
     echo "⚠ 结论：挂载测试成功，但测试用的挂载点卸载失败（已记录，重启后可恢复）。"
   elif [ "$PFD_THIS" = 0 ] && [ "$SVC_THIS" = 0 ]; then
@@ -1105,16 +1128,29 @@ conclusion() {
     echo "   · 只是想让「加粗」真的变粗：把同族的 Bold 一起导入（本版支持多字重配对）"
   fi
   if [ "$DATAFONT_N" -gt 0 ]; then
-    echo "⚠ 另外：检测到「个性化字体」（放在 /data 上，优先级高于 /system/fonts）："
+    echo "⚠ 另外：检测到「个性化字体」（厂商放在 /data 上、优先级可能高于 /system/fonts）："
     printf '%s\n' $DATAFONT_LIST | while IFS= read -r _df; do
       [ -n "$_df" ] || continue
-      echo "     $_df   $(size_kb "$_df")   修改时间 $(mstamp "$_df")"
+      _dfrel=${_df#"$FSROOT"}; _dfrel=${_dfrel#/}
+      _dfin=否; printf '%s\n' "$PLAN_NOW" | grep -qF "$_dfrel" && _dfin=是
+      echo "     $_df   $(size_kb "$_df")   修改时间 $(mstamp "$_df")   本次是否替换：$_dfin"
     done
-    echo "   魅族 Flyme 就是这种机制：只要这个文件在，系统显示的就一定是它的字形，"
-    echo "   只替换 /system/fonts 完全看不出变化（这也是很多人以为「模块没生效」的原因）。"
-    echo "   ℹ 本模块目前【只检测、不接管】这个路径（真机上没验证过的东西不默认去改）："
-    echo "     · 现在想换字体：用文件管理器把自己的字体改名成 flymeFont.ttf 覆盖它，重启即可"
-    echo "     · 想让模块也接管：把这份报告发给作者，作者确认后再加适配"
+    # ★ 2026-10-12 改：以前这里写"只要这个文件在，屏幕上显示的就一定是它的字形 / 只替换
+    #   /system/fonts 完全看不出变化"——真机报告证明这话说满了：
+    #   魅族那台 dumpsys 显示框架读的是 /system/fonts/FlymeSansVF.ttf（我们已替换）、
+    #   字体配置里也没有任何指向 customizecenter 的引用 → 实际是"部分界面才用它"。
+    #   不能拿没验证过的判断去下结论，改成"它是什么 + 我们做没做 + 怎么自己验"。
+    echo "   这是什么：魅族这类机器上，你在主题商店下主题 / 在设置里选个性字体时，"
+    echo "   厂商会把那份字体写到这个目录（真机例子：Flyme 的 using_font_name=静静字体 → flymeFont.ttf）。"
+    echo "   它到底会不会盖过 /system/fonts —— **各机型不一样，本报告不替你下结论**；"
+    echo "   想自己确认：看第 3 节的「框架读取的路径」是不是 /system/fonts 里的文件（是 → 我们已生效）。"
+    if [ "$(cfg_get theme_fonts 0)" = 1 ]; then
+      echo "   ✅ 你已经打开「也替换设置里选的字体」→ 这个目录里的字体也会换成你的字体（上面的「本次是否替换」=是 就是接了）。"
+    else
+      echo "   ℹ 本模块默认【不动它】（保护你在主题/设置里的选择，跟 MIUI「字体粗细」那条教训同一个规矩）："
+      echo "     · 想手动换：用文件管理器把自己的字体改名成 flymeFont.ttf 覆盖它，重启即可"
+      echo "     · 想让模块接管：界面 →「也替换「设置里选的字体」（主题 / 字体样式）」打开，重启一次"
+    fi
   fi
   echo "===== 结论结束，下面是原始数据（给作者看）====="
 }
@@ -1131,9 +1167,11 @@ sec1() {
   echo "  update（未激活） : $([ "$G_UPDATE" = 1 ] && echo '有 ★' || echo 无)"
   echo "  modules_update  : $([ -d "$UPD" ] && echo "存在  $UPD" || echo 不存在)$([ "$IN_INSTALL" = 1 ] && echo ' （本次正在安装，必然存在，不作为依据）' || echo '')"
   echo "  Android 安全模式 : persist.sys.safemode=$($GP persist.sys.safemode 2>/dev/null)  ro.sys.safemode=$($GP ro.sys.safemode 2>/dev/null)"
+  echo "  本模块运行时的环境变量（识别 Root 管理器的关键）:"
+  echo "      APATCH=[${APATCH:-}]  KSU=[${KSU:-}]  MAGISK_VER=[${MAGISK_VER:-}]  MAGISK_VER_CODE=[${MAGISK_VER_CODE:-}]"
   echo "  Magisk 共存     : command -v magisk = $(command -v magisk 2>/dev/null || echo 无)   /data/adb/magisk = $([ -e /data/adb/magisk ] && echo 有 || echo 无)   magisk.db = $([ -e /data/adb/magisk.db ] && echo 有 || echo 无)"
-  echo "                    判定: $([ "$G_MAGISK" = 1 ] && echo '★ Magisk 正在运行（会和 KernelSU 冲突）' || { [ "$MAGISK_LEFT" = 1 ] && echo '只是卸载残留（Magisk 没在运行，不影响本模块）' || echo '没有 Magisk'; })"
-  echo "  Root 管理器     : $RM   (KSU=$KSU APATCH=$APATCH MAGISK_VER=$MAGISK_VER)"
+  echo "                    判定: $([ "$G_MAGISK" = 1 ] && { [ -n "${MAGISK_VER:-}${MAGISK_VER_CODE:-}" ] && echo '★ Magisk 的环境变量在（会和部分 Root 管理器冲突）' || echo '☆ 只看到 magisk 命令/目录（很多 APatch 版本会提供 /system/bin/magisk 做兼容，这未必是 Magisk 在跑）'; } || { [ "$MAGISK_LEFT" = 1 ] && echo '只是卸载残留（Magisk 没在运行，不影响本模块）' || echo '没有 Magisk'; })"
+  echo "  Root 管理器     : $RM   [$RM_SRC]"
   echo "  ksud            : $KSU_BIN  版本: $KSVER"
   echo "  late-load 模式  : KSU_LATE_LOAD=$KSU_LATE_LOAD   KSU_RUNTIME_MODE=$KSU_RUNTIME_MODE"
   echo "  模块总数        : $G_NMOD 个，其中被禁用 $G_NDIS 个"
@@ -1212,6 +1250,18 @@ sec2() {
 # 所以这里：任意字体目录都算（*/fonts/*），匹配不上再把挂载点展开符号链接判一次。
 # 只看文件名是字体扩展名的挂载点，免得把几百条无关挂载都拉进来。
 # ---------------------------------------------------------------------------
+# 判断一个挂载点/路径是不是"字体目录里的字体文件"
+# ★ 2026-10-12：以前只认 */fonts/*（复数）。魅族个性化字体在 /data/customizecenter/**font**/
+#   （单数），照旧写法它**明明挂上了也不会被数进来** → 报告会显示"实际生效 N/N"但"上层挂载点 N-1"，
+#   看起来像少挂了一个（数字对不上，最容易让人误判）。所以单数 font/ 也要认。
+font_path() {
+  case "$1" in
+    */fonts/*|*/font/*) return 0 ;;
+    */fonts|*/font) return 0 ;;
+  esac
+  return 1
+}
+
 font_overlay_list() {
   local mnt r
   "$MO" 2>/dev/null | while IFS= read -r L; do
@@ -1221,11 +1271,9 @@ font_overlay_list() {
       *.ttf|*.TTF|*.otf|*.OTF|*.ttc|*.TTC) ;;
       *) continue ;;
     esac
-    case "$mnt" in
-      */fonts/*) printf '%s\n' "$L"; continue ;;
-    esac
+    if font_path "$mnt"; then printf '%s\n' "$L"; continue; fi
     r=$(readlink -f "$mnt" 2>/dev/null)
-    case "$r" in */fonts/*) printf '%s\n' "$L" ;; esac
+    if font_path "$r"; then printf '%s\n' "$L"; fi
   done
 }
 
@@ -1453,27 +1501,34 @@ sec7() {
     done
     echo "      与系统字体同名的（会顶替系统字体）: ${MIUI_SHADOW:-无}"
     if [ "${MIUI_INPLAN:-0}" -gt 0 ] 2>/dev/null; then
-      echo "      其中已纳入本模块替换的: $MIUI_INPLAN 个（名字与本次槽位相同，见计划里的 theme 行）"
+      echo "      其中已纳入本模块替换的: $MIUI_INPLAN 个（见计划里的 theme 行）"
       echo "      说明: 这几个文件会被本模块一并替换，主题字体不再盖住它们。"
     else
-      echo "      说明: 与本次槽位同名的会被本模块一并替换；不同名的不动（主题自带的东西）。"
+      echo "      说明: 与本次槽位同名的会被本模块一并替换（要打开「也替换设置里选的字体」）；不同名的不动。"
       echo "            如当前列表一个都没覆盖到，说明主题用的名字和系统槽位都不一样。"
     fi
   else
     echo "      （未检测到个性字体，系统字体走 /system/fonts 等系统目录）"
   fi
-  echo "  厂商个性化字体（/data 上的固定路径，优先级高于 /system/fonts）:"
+  echo "  厂商个性化字体（厂商写在 /data 上的固定路径；会不会盖过 /system/fonts 各机型不同）:"
   if [ "$DATAFONT_N" -gt 0 ]; then
     printf '%s\n' $DATAFONT_LIST | while IFS= read -r L; do
       [ -n "$L" ] || continue
       echo "      $L  $(size_kb "$L")  mtime=$(mstamp "$L")"
       echo "          前 4 字节: $(magic4 "$L")   表信息: $(sfnt_tags "$L")"
     done
-    echo "      ★ 这个路径上的文件会盖过 /system/fonts，而本模块【不会动它】："
-    echo "        - 结果是：换字体后系统字体文件确实被替换了，但屏幕上一点变化都没有"
-    echo "        - 想手动换：用文件管理器把自己的字体改名成 flymeFont.ttf 覆盖它，重启即可"
-    echo "        - 想让模块也接管这个路径：把这份报告发给作者（已经在 Issue/群里）——"
-    echo "          作者会先看这台机器的实际情况，确认安全后再加适配，不拿真机乱试。"
+    # 在不在"本次计划"里 —— 这一条比解释更有用（以前只写"本模块不会动它"）
+    printf '%s\n' $DATAFONT_LIST | while IFS= read -r L; do
+      [ -n "$L" ] || continue
+      Lrel=${L#"$FSROOT"}; Lrel=${Lrel#/}
+      if printf '%s\n' "$PLAN_NOW" | grep -qF "$Lrel"; then
+        echo "      ✅ 在本次替换计划里：$Lrel"
+      else
+        echo "      —  不在本次替换计划里：$Lrel   （想要就打开「也替换设置里选的字体」再重启）"
+      fi
+    done
+    echo "      · 手动换法（不依赖模块）：用文件管理器把自己的字体改名成 flymeFont.ttf 覆盖它，重启即可"
+    echo "      · 会不会盖过 /system/fonts：看第 3 节的「框架读取的路径」，是 /system/fonts 里的文件就说明我们已生效"
   else
     echo "      （未检测到；魅族机器上看 /data/customizecenter/font/flymeFont.ttf）"
   fi
