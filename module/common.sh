@@ -110,6 +110,29 @@ root_manager() {
   echo unknown
 }
 
+# ---------------------------------------------------------------------------
+# root_manager_strict —— 「只认实锤」版：**用于诊断报告，不要用它决定装模块的方式**
+#
+# 为什么需要它（2026-10-12 真机踩到）：
+#   换过 Root 管理器的机器上，旧 Magisk 的痕迹会长期留着（`/data/adb/magisk`、`magisk.db`，
+#   有的 APatch 版本还会提供 `/system/bin/magisk`，模块脚本里 `command -v magisk` 就命中了）。
+#   上面那个 root_manager() 为了「装模块别装错」会在认不出管理器时兜底成 magisk ——
+#   报告拿这个兜底值当真话，就会把一台**根本没装 KernelSU** 的机器说成"KernelSU 正在生效"。
+#   所以报告里改用这个函数：**认不出就老实说认不出**，再由报告自己解释"为什么认不出"。
+#
+# 与 root_manager() 的区别只有一条：**去掉"看到 magisk 目录/命令就认定为 magisk"这条弱判据**。
+# 真正在跑 Magisk 时会带 MAGISK_VER_CODE / MAGISK_VER 环境变量，这条仍然认。
+#
+# 注意：心跳日志 boot_events.log 里的 manager= 字段**仍然用 root_manager()**（保持原样，
+# 免得有工具在对它做解析）—— 所以在没有 magisk 痕迹的沙箱里会看到 manager=unknown，属正常。
+# ---------------------------------------------------------------------------
+root_manager_strict() {
+  if [ "$APATCH" = true ] || [ -x /data/adb/apd ]; then echo apatch; return 0; fi
+  if [ "$KSU" = true ] || [ -x /data/adb/ksud ]; then echo ksu; return 0; fi
+  if [ -n "$MAGISK_VER_CODE" ] || [ -n "${MAGISK_VER:-}" ]; then echo magisk; return 0; fi
+  echo ""
+}
+
 root_manager_name() {
   case "$1" in
     magisk) echo "Magisk" ;;
