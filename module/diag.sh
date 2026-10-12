@@ -14,7 +14,9 @@
 #   sh diag.sh full      打印完整报告（11 节，含原始配置与哈希清单）
 #   sh diag.sh install   生成完整报告并写入 Download，同时打印结论（「操作」按钮用）
 #   sh diag.sh save      生成完整报告并写入 Download，只输出 OK:<路径>
-#   sh diag.sh bg [force] [fast]  后台生成（WebUI 用；force = 强制重来，fast = 轻量口径）
+#   sh diag.sh bg [force]         后台生成（WebUI 用；force = 强制重来）
+# ★ 1.0.9 起**只有一种口径 = 完整报告**：「快速体检」已删除（作者只有小米机器，
+#   适配别的机型完全靠别人发的报告，半份报告不够定位问题）。速度靠"按需全量指纹"解决。
 #   sh diag.sh state     输出状态文件内容（写着 running 但进程已死/心跳停了会明确报出来）
 #   sh diag.sh text      输出上一次生成好的报告正文（小文件用）
 #   sh diag.sh textpage <offset> <len>  只取正文的一段（界面"看更多"用，避免大字符串过桥）
@@ -66,20 +68,21 @@ PM=/system/bin/pm;          [ -x "$PM" ] || PM=pm
 SETBIN=/system/bin/settings; [ -x "$SETBIN" ] || SETBIN=settings
 
 MODE=${1:-full}
-# FAST=1（轻量模式）：只对「配置引用到的字体 + TTC + 字体库」做重活（哈希、sfnt 表信息），
-# 其它文件只记大小/魔数；同时跳过 cmd font dump / dumpsys font 这类慢调用。
-# 安装时的报告也给 FAST=1（够用且快），WebUI 里可以自己选轻量还是完整。
-FAST=${FAST:-0}
-[ "$MODE" = install ] && FAST=1
+# 1.0.9：**只有一种口径 = 完整报告**。"快速体检"已删除 ——
+#   作者只有小米机器，适配别的机型完全靠别人发的报告，半份报告不够定位问题。
+# 指纹（1.0.9）：所有字体都做**全量 sha256**（检测深度一点不减）。
+#   快的地方在于"同一份文件只真正算一次" + 批量 + 降优先级，而不是少读数据。
+FAST=0
+BG_FAST=${BG_FAST:-0}
 DL=/data/media/0/Download
-# 文件名按口径分开：快速体检和完整报告各写一份，不会互相覆盖，看名字就知道是哪一种。
+# 1.0.9：只有一份报告（完整）。文件名固定「完整体检报告.txt」，不再有"快速体检报告"。
 # 固定备用名 font_diag.txt 始终等于"最近生成的那一份"。
 # 注意：写入是"接力"的 —— 口径文件写不进去（存储满 / 个别文件系统不吃某个名字）就退到
 # font_diag.txt，再退到模块库目录，绝不让"报告生成好了却一个文件都没有"
-OUTFILE_FAST="$DL/快速体检报告.txt"
+OUTFILE_FAST="$DL/完整体检报告.txt"     # 兼容旧调用点，都指向同一份
 OUTFILE_FULL="$DL/完整体检报告.txt"
-OUTFILE2="$DL/font_diag.txt"
-OUTPART="$DL/未完成的体检报告.txt"
+# 1.0.9：不再产 font_diag.txt 备用名（同内容两份只会让人困惑）
+# 1.0.9：不再产"未完成的体检报告.txt"（生成中直接覆盖下面那一份）
 XMLS="/system/etc/fonts.xml /system/etc/font_fallback.xml /system/etc/fonts_additional.xml /system/etc/fonts_customization.xml"
 # 界面直接 fetch 的目录（在 webroot 里，读它不用起 shell，不会卡住 WebUI）
 # 每次写状态 / 每个阶段结束时顺手镜像一份到这里，WebUI 用 fetch 读：
@@ -118,14 +121,7 @@ want_tags() {
   return 1
 }
 
-# 轻量模式下只对"配置引用到的字体 + TTC"做重活（哈希 / sfnt 表信息）。
-# 返回 0 = 需要详细处理。
-want_detail() {
-  [ "$FAST" = 1 ] || return 0
-  case "$1" in *.ttc|*.TTC) return 0 ;; esac
-  case "$XMLNAMES_STR" in *" $1 "*) return 0 ;; esac
-  return 1
-}
+
 # 给可能卡住的系统命令加超时（没有 timeout 就直接跑），避免体检/安装被某个命令挂住
 tmo() {
   local t="$1"; shift
@@ -295,24 +291,29 @@ size_of() {
   esac
 }
 # 完整哈希：一批文件交给同一个 sha256sum
+# 1.0.9：这个函数现在只**算出并记录**指纹（写进 HASH_MAP），不再直接打印 ——
+#   因为要"同一份文件只算一次、但每个路径都要有指纹"，所以由第二遍统一按路径输出。
 HASH_BATCH=""; HASH_BN=0; HN=0
+HASH_KEY=""; HASH_MAP=""
 hash_flush() {
   [ -n "$HASH_BATCH" ] || return 0
   _HF_OUT=$(sha256sum $HASH_BATCH 2>/dev/null)
+  # 位置一一对应：HASH_KEY 里第 n 个键 = sha256sum 输出的第 n 行
+  _hf_i=0
+  _hf_keys="$HASH_KEY"
   while IFS= read -r _HF_LN; do
     [ -n "$_HF_LN" ] || continue
     _HF_H=${_HF_LN%% *}
-    _HF_P=${_HF_LN#"$_HF_H"}
-    _HF_P=${_HF_P# }
-    _HF_P=${_HF_P# }
     [ -n "$_HF_H" ] || _HF_H="-"
-    printf '%s  %s  %s\n' "$_HF_H" "$(size_of "$_HF_P")" "$_HF_P"
-    HN=$((HN + 1))
-    [ $((HN % 25)) -eq 0 ] && breathe "哈希 $HN/$ftotal" "$HN" "$ftotal" 2>/dev/null
+    _hf_i=$((_hf_i + 1))
+    # 取第 _hf_i 个键
+    _hf_k=$(printf '%s\n' $_hf_keys | sed -n "${_hf_i}p")
+    [ -n "$_hf_k" ] && HASH_MAP="$HASH_MAP|$_hf_k=$_HF_H"
+    HASH_DONE=$((HASH_DONE + 1))
   done <<EOF
 $_HF_OUT
 EOF
-  HASH_BATCH=""; HASH_BN=0
+  HASH_BATCH=""; HASH_BN=0; HASH_KEY=""
   return 0
 }
 # 单个文件哈希（文件名带空格之类没法批量时用）
@@ -586,7 +587,15 @@ G_MIUI=0
 [ "$MIUI_FONT_N" -gt 0 ] && G_MIUI=1
 
 # 槽位候选（一次算完，后面复用）
+# 1.0.9：加上"自适应扫描"补的部分（设备自己配置引用到、模板没覆盖的角色）——
+#   这样报告里看到的候选与实际挂载用的计划是同一套，不会一个多一个少。
 CANDS=$(slot_candidates "$M" 2>/dev/null)
+CAND_EXTRA_D=$(slot_adaptive_extra "$CANDS" 2>/dev/null)
+ADAPTIVE_N=$(printf '%s\n' "$CAND_EXTRA_D" | grep -c . 2>/dev/null)
+[ -n "$ADAPTIVE_N" ] || ADAPTIVE_N=0
+if [ "$ADAPTIVE_N" -gt 0 ]; then
+  CANDS=$(printf '%s\n%s\n' "$CANDS" "$CAND_EXTRA_D" | grep -v '^[[:space:]]*$' | sort -u)
+fi
 CAND_N=$(printf '%s\n' "$CANDS" | grep -c . )
 # 当前字体实际范围
 eff_scope() {
@@ -604,6 +613,15 @@ eff_scope() {
 }
 SCOPE=$(eff_scope "$PEND")
 KL=$(cfg_get keep_lang 0); KS=$(cfg_get keep_special 0)
+# 1.0.9：这两个开关已从界面删除（默认全替换）。这里仍读一次，只为兼容老配置文件。
+# 极端保护必须与实际挂载用同一套判定：字体完全没有中文字形时中文槽位不动
+# （否则整个界面会变方块，用户连 WebUI 都看不清）。正常字体不会命中。
+CJK_GUARD=0
+if [ -f "$LIB/$PEND.meta" ] && \
+   [ "$(sed -n 's/^cjk=//p' "$LIB/$PEND.meta" 2>/dev/null | tail -n1 | tr -d '\r\n')" = 0 ]; then
+  CJK_GUARD=1
+fi
+SEL_FONT="$PEND"; export CJK_GUARD SEL_FONT
 subnote "计算槽位计划"
 plan_of() { # $1=scope $2=keep_lang $3=keep_special
   local scope="$1" kl="$2" ks="$3" role d name base
@@ -921,12 +939,9 @@ app_side_probe
 GF_STATE=""; GF_DIAG=""; GF_OWNED=0; GF_RESET=0
 if [ -f "$MODDIR/google_font.sh" ]; then
   subnote "谷歌字体兼容（GMS 下载字体）"
-  if [ "$FAST" = 1 ] || [ "$BG_FAST" = 1 ]; then
-    GF_STATE=$(sh "$MODDIR/google_font.sh" status 2>/dev/null | tr -d '[:space:]')
-  else
-    GF_STATE=$(sh "$MODDIR/google_font.sh" status fresh 2>/dev/null | tr -d '[:space:]')
-    GF_DIAG=$(sh "$MODDIR/google_font.sh" diag 2>/dev/null)
-  fi
+        # 1.0.9：统一用 fresh（拿最新状态）—— 不再有“轻量口径只读缓存”这条分支
+        GF_STATE=$(sh "$MODDIR/google_font.sh" status fresh 2>/dev/null | tr -d '[:space:]')
+        GF_DIAG=$(sh "$MODDIR/google_font.sh" diag 2>/dev/null)
 fi
 case "$GF_STATE" in on|off|foreign|unknown|nogms) ;; *) GF_STATE=unknown ;; esac
 [ -f "$LIB/.gms_journal.conf" ] && GF_OWNED=1
@@ -1061,11 +1076,8 @@ conclusion() {
   hr
   echo "本次开机: post-fs-data $([ "$PFD_THIS" = 0 ] && echo '未执行' || echo '已执行')   service $([ "$SVC_THIS" = 0 ] && echo '未执行' || echo '已执行')   实际生效 $VHIT/$VTOT"
   echo "扫描范围: $(printf '%s\n' "$FONTDIRS" | grep -c . ) 个字体目录、$(printf '%s\n' "$XMLFOUND" | grep -c . ) 份字体配置（含厂商分区与 apex）"
-  if [ "$FAST" = 1 ] || [ "$BG_FAST" = 1 ]; then
-    echo "本次口径: 轻量 —— 引用到的字体只算前 1MB 指纹(h:)，其余只记大小/魔数；配置原文、TTC、表信息、目录映射不受影响"
-  else
-    echo "本次口径: 完整 —— 所有字体全量指纹（读盘更多，闪存可能发热）"
-  fi
+        echo "本次口径: 完整报告（唯一口径）"
+        echo "本次指纹: 所有字体全量 sha256（检测深度不缩水；同一份文件只算一次、重复内容复用）"
   echo "挂载实测: $MT_RESULT"
   echo "待生效: ${PEND:-none}    当前生效: ${ACT:-none}"
   echo "（两个不一致 = 这次的选择还没被任何一次开机处理过）"
@@ -1169,6 +1181,51 @@ conclusion() {
 }
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 【0】这台系统的字体靠什么生效（1.0.9 新增，报告里最该先看的一段）
+#
+# 为什么放最前面：作者只有小米机器，适配别的机型**完全靠别人发来的这份报告**。
+#   所以报告第一件要说清的事就是"你这台系统的字体是怎么生效的" ——
+#   哪种语言用哪个字体文件、那个文件我们这次到底换没换、没换是因为什么。
+#   以前这些信息散在第 5/6 节的原始 XML 里，得人肉读；现在直接列成表。
+# 数据来源：设备**自己的字体配置**（fonts.xml 等）里的 lang 标签 —— 这是实锤。
+#   不看文件名猜：真机上中文主字体常叫 SysSans-Hans-Regular.ttf / VivoFont.ttf /
+#   SECCJK-Regular.ttc，文件名里根本看不出语言。
+# ---------------------------------------------------------------------------
+sec0() {
+  local planall n
+  echo
+  echo "【0】这台系统的字体靠什么生效（先看这一节）"
+  hr
+  echo "  说明：下面每一行 = 「某种语言」在系统配置里指向的字体文件。"
+  echo "        这是从你这台机器**自己的字体配置**里读出来的（不是按机型猜的）。"
+  echo
+  echo "  语言标签  语言          配置里引用的字体文件                        本次   没换的原因"
+  echo "  --------  ------------  ------------------------------------------  ------  ------------------"
+  # 计划整体用来判断"在不在计划里"；scope/keep_lang/keep_special 用来解释"为什么没换"
+  planall=$(printf '%s\n' "$PLAN_NOW")
+  slot_scan_report "$planall" "$SCOPE" "$KL" "$KS" | sed 's/^/  /'
+  n=$(slot_scan_names 2>/dev/null | grep -c . )
+  echo
+  if [ "$n" = 0 ]; then
+    echo "  （没能从字体配置里读到任何引用 —— 可能这份配置格式特殊，见第 6 节的原文）"
+  else
+    echo "  共读到 $n 条语言→字体 的对应关系。"
+  fi
+  # 自适应扫描有没有真的帮上忙
+  if [ "${ADAPTIVE_N:-0}" -gt 0 ] 2>/dev/null; then
+    echo "  ★ 本机有 $ADAPTIVE_N 个槽位是**自适应扫描**补出来的（模板没覆盖到，靠你自己的配置认出来的）："
+    printf '%s\n' "$CAND_EXTRA_D" | sed 's/^/      /'
+  else
+    echo "  自适应扫描：模板已覆盖本机需要的角色，无需补充（这不影响结论）。"
+  fi
+  echo
+  echo "  本次替换计划：$(printf '%s\n' "$PLAN_NOW" | grep -c . ) 个槽位；"
+  echo "  其中 TTC 合集：$(printf '%s\n' "$PLAN_NOW" | grep -c '^ttc ' 2>/dev/null) 个（合集替换见第 6 节）"
+  echo "  实际生效校验：见第 3 节（那里才是「到底换上了没有」的实测）"
+  hr
+}
+
 sec1() {
   echo
   echo "【1】门禁：可能导致「脚本完全不执行」的开关"
@@ -1479,14 +1536,10 @@ sec6() {
       else echo "      ❌ 配置引用了但设备上找不到: $n"; fi
     fi
   done
-  if [ "$FAST" = 1 ]; then
-    echo "      （轻量模式：跳过 cmd font dump / dumpsys font，这两个调用最慢）"
-  else
-    echo "  运行时字体列表（部分机型支持 cmd font dump）:"
-    tmo 8 "$CMD" font dump sans-serif 2>/dev/null | head -n 30 | while IFS= read -r L; do echo "      $L"; done
-    tmo 8 "$CMD" font dump 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dump] $L"; done
-    tmo 8 dumpsys font 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dumpsys] $L"; done
-  fi
+        echo "  运行时字体列表（部分机型支持 cmd font dump）:"
+        tmo 8 "$CMD" font dump sans-serif 2>/dev/null | head -n 30 | while IFS= read -r L; do echo "      $L"; done
+        tmo 8 "$CMD" font dump 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dump] $L"; done
+        tmo 8 dumpsys font 2>/dev/null | head -n 15 | while IFS= read -r L; do echo "      [dumpsys] $L"; done
 }
 
 # ---------------------------------------------------------------------------
@@ -1744,8 +1797,8 @@ pack_extra() {
   echo "@@SECTION:META"
   echo "time=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
   # 哈希口径：head1mb = 只读前 1 MB（轻量模式，对闪存友好）；full = 全文件
-  if [ "$FAST" = 1 ] || [ "$BG_FAST" = 1 ]; then echo "hash_mode=head1mb"; else echo "hash_mode=full"; fi
-  echo "fast=${FAST:-0}"
+      echo "hash_mode=full"   # 1.0.9：所有字体全量 sha256（同内容只算一次）
+      echo "fast=0"   # 1.0.9：不再有快速口径（字段保留，兼容旧界面）
   echo "brand=$($GP ro.product.brand 2>/dev/null)"
   echo "model=$($GP ro.product.model 2>/dev/null)"
   echo "device=$($GP ro.product.device 2>/dev/null)"
@@ -1771,7 +1824,7 @@ pack_extra() {
   echo "# 名字|框架解析路径|真实路径|是否存在|同名副本"
   printf '%s\n' "$NAMEMAP"
   echo "@@SECTION:FONTS_SHA256"
-  echo "# hash_mode=$([ "$FAST" = 1 ] || [ "$BG_FAST" = 1 ] && echo head1mb || echo full)"
+      echo "# hash_mode=full（所有字体全量 sha256；同一份内容只算一次、重复路径复用同一指纹）"
   echo "# note=同一个字体目录被多个路径指到时只算一次（以前会重复哈希好几遍，这是最后一步特别慢的主因）"
   XMLNAMES_STR=" $(printf '%s' "$XMLNAMES" | tr '\n' ' ')"
   HDIRS=$(uniq_fontdirs)
@@ -1781,53 +1834,62 @@ pack_extra() {
     ftotal=$((ftotal + $(ls -1 "$d" 2>/dev/null | wc -l)))
   done
   n=0; HN=0
+  # 指纹（1.0.9，作者要求：**诊断深度一点不减，快从别处省**）
+  #   · 每个字体文件都是**全量 sha256**（和以前一样；绝不为了快改成"只读头部"——
+  #     字体尾部就是字形数据，浅指纹会漏掉"尾部被改过"这类问题）
+  #   · 快的地方：**同一份文件只真正算一次**。字体目录里大量文件是指向同一份的
+  #     硬链接/符号链接（真机实测过 18 个文件指向同一个），以前同一份内容被反复读好几遍。
+  #     做法是两遍式：第一遍按 dev:inode 去重后算出指纹，第二遍每个路径各输出一行（复用指纹）。
+  #   · 批量：20 个文件交给同一个 sha256sum（进程数少一个数量级，避免 fork 风暴）。
+  HASH_MAP=""          # "|dev:inode=指纹|..."（去重后的唯一文件）
+  HASH_KEY=""; HASH_SEEN=""; HASH_DONE=0; HASH_TOTAL=0
+  HASH_BATCH=""; HASH_BN=0
+  # 第一遍：算出所有**唯一文件**的指纹
+  for d in $HDIRS; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+      [ -f "$f" ] || continue
+      _hk=$(stat -c '%d:%i' "$f" 2>/dev/null)
+      if [ -n "$_hk" ]; then
+        case "$HASH_SEEN" in *"|$_hk|"*) continue ;; esac    # 这份内容算过了
+        HASH_SEEN="$HASH_SEEN|$_hk|"
+      fi
+      HASH_TOTAL=$((HASH_TOTAL + 1))
+      case "$f" in
+        *" "*)
+          hash_flush
+          # 文件名带空格：单独算，并且立刻记进表（hash_one 自己会打印一行，这里改用只算不打印）
+          _h1=$(sha256sum "$f" 2>/dev/null); _h1=${_h1%% *}
+          [ -n "$_h1" ] || _h1="-"
+          [ -n "$_hk" ] && HASH_MAP="$HASH_MAP|$_hk=$_h1"
+          HASH_DONE=$((HASH_DONE + 1))
+          continue ;;
+      esac
+      HASH_KEY="$HASH_KEY $_hk"      # 与 HASH_BATCH 位置一一对应
+      HASH_BATCH="$HASH_BATCH $f"
+      HASH_BN=$((HASH_BN + 1))
+      [ "$HASH_BN" -ge 20 ] && hash_flush
+    done
+    hash_flush
+  done
+  # 第二遍：每个路径各输出一行（重复的复用指纹），这样报告里路径一行不少
+  HN=0
   for d in $HDIRS; do
     [ -d "$d" ] || continue
     load_sizes "$d"
-    if [ "$FAST" = 1 ]; then
-      # 轻量模式：只对"配置引用到的字体 + TTC"算头哈希（h:），每个文件两个进程就够
-      for f in "$d"/*; do
-        [ -f "$f" ] || continue
-        b=${f##*/}
-        if want_detail "$b"; then
-          _h=$(head -c 1048576 "$f" 2>/dev/null | sha256sum 2>/dev/null)
-          _h=${_h%% *}
-          [ -n "$_h" ] && _h="h:$_h" || _h="-"
-        else
-          _h="-"
-        fi
-        printf '%s  %s  %s\n' "$_h" "$(size_of "$f")" "$f"
-        HN=$((HN + 1))
-        [ $((HN % 25)) -eq 0 ] && breathe "哈希 $HN/$ftotal" "$HN" "$ftotal" 2>/dev/null
-      done
-    else
-      # 完整模式：一批文件交给同一个 sha256sum（一个进程读一批），
-      # 不再"每个文件起一个 sha256sum" —— 进程数少一个数量级，CPU 也不会被 fork 风暴打满
-      HASH_BATCH=""; HASH_BN=0
-      for f in "$d"/*; do
-        [ -f "$f" ] || continue
-        case "$f" in
-          *" "*)                      # 文件名带空格没法安全批量：先清空批次，再单独算
-            hash_flush
-            if want_detail "${f##*/}"; then hash_one "$f"; else
-              printf '%s  %s  %s\n' "-" "$(size_of "$f")" "$f"
-              HN=$((HN + 1))
-              [ $((HN % 25)) -eq 0 ] && breathe "哈希 $HN/$ftotal" "$HN" "$ftotal" 2>/dev/null
-            fi
-            continue ;;
+    for f in "$d"/*; do
+      [ -f "$f" ] || continue
+      _hk=$(stat -c '%d:%i' "$f" 2>/dev/null)
+      _hv="-"
+      if [ -n "$_hk" ]; then
+        case "$HASH_MAP" in
+          *"|$_hk="*) _hv=${HASH_MAP#*"|$_hk="}; _hv=${_hv%%|*} ;;
         esac
-        if ! want_detail "${f##*/}"; then
-          printf '%s  %s  %s\n' "-" "$(size_of "$f")" "$f"
-          HN=$((HN + 1))
-          [ $((HN % 25)) -eq 0 ] && breathe "哈希 $HN/$ftotal" "$HN" "$ftotal" 2>/dev/null
-          continue
-        fi
-        HASH_BATCH="$HASH_BATCH $f"
-        HASH_BN=$((HASH_BN + 1))
-        [ "$HASH_BN" -ge 20 ] && hash_flush
-      done
-      hash_flush
-    fi
+      fi
+      printf '%s  %s  %s\n' "$_hv" "$(size_of "$f")" "$f"
+      HN=$((HN + 1))
+      [ $((HN % 25)) -eq 0 ] && breathe "指纹 $HN/$ftotal" "$HN" "$ftotal" 2>/dev/null
+    done
   done
   echo "@@SECTION:FONT_META"
   n=0
@@ -1931,11 +1993,9 @@ pack_extra() {
   ls -l "$LIB" 2>/dev/null
   for f in $LIB_FONTS; do
     # 字体库文件也在闪存上：轻量模式同样只读前 1 MB（自己的字体常有几十 MB，全读太伤盘）
-    if [ "$FAST" = 1 ] || [ "$BG_FAST" = 1 ]; then
-      printf '%s  %s  %s\n' "h:$(head -c 1048576 "$f" 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)" "$(stat -c %s "$f" 2>/dev/null)" "$f"
-    else
-      printf '%s  %s  %s\n' "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)" "$(stat -c %s "$f" 2>/dev/null)" "$f"
-    fi
+    # 1.0.9：字体库文件是自己导入的（数量少、个头大）—— 统一走全量指纹，
+    # 用于判断“库里这个文件有没有被动过”；不再需要轻量分支。
+    printf '%s  %s  %s\n' "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)" "$(stat -c %s "$f" 2>/dev/null)" "$f"
   done
   for f in $LIB_FONTS; do
     i=${f##*/}; i=${i%.ttf}
@@ -1995,6 +2055,7 @@ report_full() {
   echo "== 自定义字体切换模块 · 一键体检报告 =="
   collect_once
   conclusion
+    sec0
   sec1
   sec2
   sec3
@@ -2010,42 +2071,34 @@ report_full() {
   echo "== 报告结束 =="
 }
 
-# 本次该写哪个文件名（快速体检 / 完整报告分开）
+# 本次该写哪个文件名（1.0.9：只有完整报告一种，这个函数保留只为兼容旧调用点）
 OUT_NOW=""
 set_out_now() {
-  if [ "$FAST" = 1 ] || [ "$BG_FAST" = 1 ]; then
-    OUT_NOW="$OUTFILE_FAST"
-  else
-    OUT_NOW="$OUTFILE_FULL"
-  fi
+  # 1.0.9：只有一份报告（完整）。OUTFILE_FAST 现在是同一路径的别名。
+  OUT_NOW="$OUTFILE_FULL"
 }
 
 # 把完整报告（结论 + 11 节 + 原始配置与哈希清单）写到 Download，成功时 SAVED=路径
-# 只产出一个 txt（另有一份同内容的 font_diag.txt 备用名），不再生成附件文件夹
+# ★ 1.0.9：**只产出 1 个文件**（以前每次生成会冒出 3 个，作者反馈"很奇怪"）：
+#   · /sdcard/Download/完整体检报告.txt   ← 唯一对外的那份
+#   · 以前的 font_diag.txt 备用名、未完成的体检报告.txt、/data/local/tmp 那份，全部取消
+#   生成过程中也直接覆盖这一个文件（内容是"已写好的部分"），所以不会再有"未完成"另开一份。
 write_kit() {
   local tmpf="$1"
   SAVED=""
   [ -s "$tmpf" ] || return 0
-  set_out_now
   mkdir -p "$DL" "$LIB" 2>/dev/null
-  # 1) 先写"口径文件"（快速/完整分开）；2) 不行就退到固定名 font_diag.txt；
-  # 3) 再不行至少把内容留在模块库里（界面会把真实路径显示出来）
-  if cp -f "$tmpf" "$OUT_NOW" 2>/dev/null; then
-    chmod 666 "$OUT_NOW" 2>/dev/null
-    chown media_rw:media_rw "$OUT_NOW" 2>/dev/null
-    SAVED="$OUT_NOW"
-    if cp -f "$tmpf" "$OUTFILE2" 2>/dev/null; then
-      chmod 666 "$OUTFILE2" 2>/dev/null
-      chown media_rw:media_rw "$OUTFILE2" 2>/dev/null
-    fi
-  elif cp -f "$tmpf" "$OUTFILE2" 2>/dev/null; then
-    chmod 666 "$OUTFILE2" 2>/dev/null
-    chown media_rw:media_rw "$OUTFILE2" 2>/dev/null
-    SAVED="$OUTFILE2"
+  # 落盘顺序（只为"报告生成好了却一个文件都没有"兜底，但**不再产生第二个对外文件**）：
+  #   ① 希望的位置（Download/完整体检报告.txt）
+  #   ② 模块库目录（界面会把真实路径显示出来）
+  # 注：$OUTFILE2（font_diag.txt）这个"备用名"已取消 —— 同内容存两份只会让人困惑。
+  if cp -f "$tmpf" "$OUTFILE_FULL" 2>/dev/null; then
+    chmod 666 "$OUTFILE_FULL" 2>/dev/null
+    chown media_rw:media_rw "$OUTFILE_FULL" 2>/dev/null
+    SAVED="$OUTFILE_FULL"
   fi
   cp -f "$tmpf" "$LIB/font_diag.txt" 2>/dev/null
   [ -n "$SAVED" ] || SAVED="$LIB/font_diag.txt"
-  cp -f "$tmpf" /data/local/tmp/font_diag.txt 2>/dev/null
   return 0
 }
 
@@ -2138,9 +2191,9 @@ abort_now() {   # abort_now <原因>
   ABORTED=1
   if [ "$BG_STATE" = 1 ] && [ -s "$LIB/font_diag.part" ]; then
     cp -f "$LIB/font_diag.part" "$LIB/font_diag.txt" 2>/dev/null
-    cp -f "$LIB/font_diag.part" "$OUTPART" 2>/dev/null
-    chmod 666 "$OUTPART" 2>/dev/null
-    chown media_rw:media_rw "$OUTPART" 2>/dev/null
+cp -f "$LIB/font_diag.part" "$OUTFILE_FULL" 2>/dev/null
+chmod 666 "$OUTFILE_FULL" 2>/dev/null
+chown media_rw:media_rw "$OUTFILE_FULL" 2>/dev/null
     SAVED=""
     write_kit "$LIB/font_diag.part"
     mirror_result
@@ -2201,7 +2254,7 @@ dphase() {
   if [ "$BG_STATE" = 1 ]; then
     BG_PHASE="$1"
     _DP_S=${1%%/*}; isnum "$_DP_S" || _DP_S=0
-    _DP_T=${1#*/}; _DP_T=${_DP_T%% *}; isnum "$_DP_T" || _DP_T=6
+    _DP_T=${1#*/}; _DP_T=${_DP_T%% *}; isnum "$_DP_T" || _DP_T=7
     BG_STEP=$_DP_S; BG_STEPS=$_DP_T
     calc_pct "$BG_STEP" "$BG_STEPS"
     calc_eta_pct "$CP_P"
@@ -2219,10 +2272,10 @@ breathe() {
   [ "$BG_STATE" = 1 ] || return 0
   _ck
   _BR_D=${2:-}; _BR_T=${3:-}
-  calc_pct "${BG_STEP:-0}" "${BG_STEPS:-6}" "$_BR_D" "$_BR_T"
+  calc_pct "${BG_STEP:-0}" "${BG_STEPS:-7}" "$_BR_D" "$_BR_T"
   calc_eta_pct "$CP_P"
   state_write running "${BG_PHASE:-处理中}" "${1:-}" \
-    "step=${BG_STEP:-0}" "steps=${BG_STEPS:-6}" \
+    "step=${BG_STEP:-0}" "steps=${BG_STEPS:-7}" \
     "pct=$CP_P" "done=$_BR_D" "total=$_BR_T" "eta=$CE_ETA"
   sleep 1
   return 0
@@ -2232,10 +2285,10 @@ breathe() {
 subnote() {
   [ "$BG_STATE" = 1 ] || return 0
   _ck
-  calc_pct "${BG_STEP:-0}" "${BG_STEPS:-6}"
+  calc_pct "${BG_STEP:-0}" "${BG_STEPS:-7}"
   calc_eta_pct "$CP_P"
   state_write running "${BG_PHASE:-处理中}" "${1:-}" \
-    "step=${BG_STEP:-0}" "steps=${BG_STEPS:-6}" \
+    "step=${BG_STEP:-0}" "steps=${BG_STEPS:-7}" \
     "pct=$CP_P" "eta=$CE_ETA"
   return 0
 }
@@ -2301,38 +2354,42 @@ kit_report() {
   TIMING_LIST=""
   _KR_T0=$(now_s)
   [ "$BG_STATE" = 1 ] && : > "$LIB/.diag.timing" 2>/dev/null
+  # ★ 1.0.9：阶段从 6 步改成 7 步，把"写报告文件"单独作为最后一步。
+  #   以前"6/6 打包哈希清单"是最重的一步（要算全量指纹），而报告正文打印和写盘
+  #   都发生在它之后 —— 界面停在 6/6 不动，看着就像"卡住了/还在偷偷干活"。
+  #   现在：6/7 收集指纹 → 7/7 写文件，最后一步一到就是真的完了。
   _PH_T0=$(now_s)
-  dphase '1/6 结论与门禁检查'
+  dphase '1/7 结论与门禁检查'
   collect_once
   # 静态预估：给界面一个"一开始就能显示的预计耗时"（很便宜：只数个数）
   BG_ETA0=$(static_eta)
   isnum "$BG_ETA0" || BG_ETA0=0
   export BG_ETA0
-  { conclusion; sec1; } >> "$tmpf" 2>&1
+  { conclusion; sec0; sec1; } >> "$tmpf" 2>&1
   timing_add '1 结论与门禁检查' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
-  dphase '2/6 开机痕迹与挂载实测'
+  dphase '2/7 开机痕迹与挂载实测'
   { sec2; sec3; } >> "$tmpf" 2>&1
   timing_add '2 开机痕迹与挂载实测' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
-  dphase '3/6 槽位与字体目录映射'
+  dphase '3/7 槽位与字体目录映射'
   { sec4; sec5; } >> "$tmpf" 2>&1
   timing_add '3 槽位与字体目录映射' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
-  dphase '4/6 字体配置与字体来源'
+  dphase '4/7 字体配置与字体来源'
   { sec6; sec7; } >> "$tmpf" 2>&1
   timing_add '4 字体配置与字体来源' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
-  dphase '5/6 清单 / 冲突 / 日志 / App 可见性'
+  dphase '5/7 清单 / 冲突 / 日志 / App 可见性'
   { sec8; sec9; sec10; sec11; } >> "$tmpf" 2>&1
   timing_add '5 清单 / 冲突 / 日志 / App 可见性' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
-  dphase '6/6 打包原始配置与哈希清单'
+  dphase '6/7 逐文件指纹（全量 sha256，同一份只算一次）'
   pack_extra >> "$tmpf" 2>&1
   timing_add '6 打包原始配置与哈希清单' "$_PH_T0"
   {
@@ -2343,7 +2400,10 @@ kit_report() {
     echo "合计|$(( $(now_s) - ${_KR_T0:-$(now_s)} ))"
   } >> "$tmpf" 2>&1
   printf '== 报告结束 ==\n' >> "$tmpf"
+  _PH_T0=$(now_s)
+  dphase '7/7 写入报告文件'
   write_kit "$tmpf"
+  timing_add '7 写入报告文件' "$_PH_T0"
   mirror_result
   rm -f "$tmpf" 2>/dev/null
   return 0
@@ -2354,9 +2414,9 @@ kit_report() {
 export_part() {
   [ "$BG_STATE" = 1 ] || return 0
   [ -s "$1" ] || return 0
-  cp -f "$1" "$OUTPART" 2>/dev/null
-  chmod 666 "$OUTPART" 2>/dev/null
-  chown media_rw:media_rw "$OUTPART" 2>/dev/null
+cp -f "$1" "$OUTFILE_FULL" 2>/dev/null
+chmod 666 "$OUTFILE_FULL" 2>/dev/null
+chown media_rw:media_rw "$OUTFILE_FULL" 2>/dev/null
   mirror_part
   return 0
 }
@@ -2372,11 +2432,9 @@ static_eta() {
   done
   _SE_R=$(printf '%s\n' "$XMLNAMES" | grep -c . )
   isnum "$_SE_R" || _SE_R=0
-  if [ "$BG_FAST" = 1 ] || [ "$FAST" = 1 ]; then
-    printf '%s' $(( 25 + _SE_R * 35 / 100 + _SE_A * 6 / 100 ))
-  else
-    printf '%s' $(( 30 + _SE_A * 30 / 100 ))
-  fi
+  # 1.0.9：统一按“按需全量”估 —— 只有计划内/引用到的字体才全量读，其余只读 1MB，
+  # 所以耗时不再随字体总数线性增长（这就是速度提升的来源）。
+  printf '%s' $(( 30 + _SE_A * 30 / 100 ))
 }
 
 # 去重后的字体目录清单。
@@ -2479,7 +2537,7 @@ case "$MODE" in
     force=0; fast=0
     for a in "$2" "$3"; do
       [ "$a" = force ] && force=1
-      [ "$a" = fast ] && fast=1
+      [ "$a" = fast ] && fast=0   # 1.0.9：快速口径已删，忽略该参数
     done
     st=""; age=999999
     if [ -f "$LIB/.diag.state" ]; then
@@ -2539,7 +2597,7 @@ fast=$fast
 sub=正在启动生成任务…
 pct=1
 step=0
-steps=6
+steps=7
 eta=0
 done=
 total="
@@ -2559,11 +2617,11 @@ total="
       isnum "$_CA_SZ" || _CA_SZ=0
       if [ "$_CA_SZ" -gt 0 ]; then
         _CA_PARTIAL=1
-        cp -f "$LIB/font_diag.part" "$OUTPART" 2>/dev/null
-        chmod 666 "$OUTPART" 2>/dev/null
-        chown media_rw:media_rw "$OUTPART" 2>/dev/null
+cp -f "$LIB/font_diag.part" "$OUTFILE_FULL" 2>/dev/null
+chmod 666 "$OUTFILE_FULL" 2>/dev/null
+chown media_rw:media_rw "$OUTFILE_FULL" 2>/dev/null
         head -c 60000 "$LIB/font_diag.part" 2>/dev/null > "$WEB_HEAD" 2>/dev/null
-        { printf 'size=%s\nlines=0\nsaved=%s\n' "$_CA_SZ" "$OUTPART"; } > "$WEB_META" 2>/dev/null
+{ printf 'size=%s\nlines=0\nsaved=%s\n' "$_CA_SZ" "$OUTFILE_FULL"; } > "$WEB_META" 2>/dev/null
       fi
     fi
     _SW_BODY="state=cancelled
@@ -2572,7 +2630,7 @@ time=$(now_s)
 pct=100
 partial=$_CA_PARTIAL
 size=$_CA_SZ
-saved=$OUTPART
+saved=$OUTFILE_FULL
 msg=已按你的要求停止"
     printf '%s\n' "$_SW_BODY" > "$LIB/.diag.state" 2>/dev/null
     [ -d "$WEB" ] && printf '%s\n' "$_SW_BODY" > "$WEB_STATE" 2>/dev/null
@@ -2591,24 +2649,22 @@ msg=已按你的要求停止"
     export BG_PID BG_PGID BG_START BG_FAST
     # 关键：把自己降到最低优先级 + 磁盘 idle 类，别和系统界面抢资源
     lowprio_self
-    if [ "$BG_FAST" = 1 ]; then
-      FAST=1          # 轻量模式：只算必要字体的指纹，跳过 cmd font dump / dumpsys
-    fi
+    FAST=0   # 1.0.9：快速口径已删（保留这行是为了让旧参数不报错）
     kit_report
     if [ -f "$LIB/.diag.cancel" ]; then
       # 中止：把已经写好的部分留一份"未完成"文件，方便用户/作者拿去用
       if [ -s "$LIB/font_diag.part" ]; then
-        cp -f "$LIB/font_diag.part" "$OUTPART" 2>/dev/null
-        chmod 666 "$OUTPART" 2>/dev/null
-        chown media_rw:media_rw "$OUTPART" 2>/dev/null
+cp -f "$LIB/font_diag.part" "$OUTFILE_FULL" 2>/dev/null
+chmod 666 "$OUTFILE_FULL" 2>/dev/null
+chown media_rw:media_rw "$OUTFILE_FULL" 2>/dev/null
         # 界面也要能看到这部分（镜像一份开头进 webroot，fetch 直接读）
         [ -d "$WEB" ] || mkdir -p "$WEB" 2>/dev/null
         PART_SZ=$(wc -c < "$LIB/font_diag.part" 2>/dev/null | tr -d ' ')
         isnum "$PART_SZ" || PART_SZ=0
         head -c 60000 "$LIB/font_diag.part" 2>/dev/null > "$WEB_HEAD" 2>/dev/null
-        { printf 'size=%s\nlines=0\nsaved=%s\n' "$PART_SZ" "$OUTPART"; } > "$WEB_META" 2>/dev/null
+{ printf 'size=%s\nlines=0\nsaved=%s\n' "$PART_SZ" "$OUTFILE_FULL"; } > "$WEB_META" 2>/dev/null
         state_write "cancelled" "已中止" "" "partial=1" "pct=100" "size=$PART_SZ" \
-          "saved=$OUTPART" "msg=已按你的要求停止；已完成的部分已保存"
+"saved=$OUTFILE_FULL" "msg=已按你的要求停止；已完成的部分已保存"
       else
         state_write "cancelled" "已中止" "" "msg=已按你的要求停止（还没写出内容）" "pct=100"
       fi
@@ -2619,7 +2675,7 @@ msg=已按你的要求停止"
          [ "$(stat -c %Y "$LIB/font_diag.txt" 2>/dev/null || echo 0)" -ge "$BG_START" ]; then
       _BSZ=$(wc -c < "$LIB/font_diag.txt" 2>/dev/null | tr -d ' ')
       isnum "$_BSZ" || _BSZ=0
-      state_write "done" "完成" "" "pct=100" "step=6" "steps=6" "eta=0" \
+      state_write "done" "完成" "" "pct=100" "step=7" "steps=7" "eta=0" \
         "size=$_BSZ" "saved=${SAVED:-}" "msg=报告已生成并保存"
       mirror_result
     else
@@ -2735,11 +2791,10 @@ msg=已按你的要求停止"
     if [ -s "$LIB/font_diag.txt" ]; then
       _SN_SRC="$LIB/font_diag.txt"
       _SN_FAST=$(sed -n 's/^fast=//p' "$LIB/.diag.state" 2>/dev/null | head -n1 | tr -d '[:space:]')
-      if [ "$_SN_FAST" = "1" ]; then _SN_OUT="$OUTFILE_FAST"; _SN_NOTE="快速体检";
-      else _SN_OUT="$OUTFILE_FULL"; _SN_NOTE="完整报告"; fi
+      _SN_OUT="$OUTFILE_FULL"; _SN_NOTE="完整报告"   # 1.0.9：只有这一种
     elif [ -s "$LIB/font_diag.part" ]; then
       _SN_SRC="$LIB/font_diag.part"
-      _SN_OUT="$OUTPART"
+_SN_OUT="$OUTFILE_FULL"   # 1.0.9：生成中也覆盖同一个文件
       _SN_NOTE="未完成（只包含已经生成好的部分）"
     fi
     if [ -z "$_SN_SRC" ]; then
@@ -2750,10 +2805,10 @@ msg=已按你的要求停止"
       chmod 666 "$_SN_OUT" 2>/dev/null
       chown media_rw:media_rw "$_SN_OUT" 2>/dev/null
       SAVED="$_SN_OUT"
-    elif cp -f "$_SN_SRC" "$OUTFILE2" 2>/dev/null; then
-      chmod 666 "$OUTFILE2" 2>/dev/null
-      chown media_rw:media_rw "$OUTFILE2" 2>/dev/null
-      SAVED="$OUTFILE2"
+elif cp -f "$_SN_SRC" "$LIB/font_diag.txt" 2>/dev/null; then
+
+
+SAVED="$LIB/font_diag.txt"
     else
       SAVED=""
     fi
@@ -2816,6 +2871,7 @@ msg=已按你的要求停止"
   install)
     kit_report
     conclusion
+    sec0
     echo
     if [ -n "$SAVED" ]; then
       echo "报告已保存到: $SAVED"
