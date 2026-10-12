@@ -194,6 +194,80 @@ _trim() {
   TRIM_OUT="$s"
 }
 
+# ---------------------------------------------------------------------------
+# 【1.0.9 新增】自适应扫描：从**设备自己的字体配置**挖出"哪种语言用哪个字体文件"
+#
+# 为什么需要（作者要求）：
+#   作者手上只有小米机器，适配别的机型全靠别人的真机报告。诊断报告**最核心的价值**
+#   就是回答"他这台系统的字体到底靠什么生效"。以前这条信息散在第 5/6 节的原始 XML 里，
+#   得人肉去读；这一版直接把它整理成"语言 → 字体文件"的清单。
+#
+#   另外：**角色判定必须看配置里的语言标签**，不能看文件名。
+#   实测教训：UnknownHant-Regular.ttf 这种名字一眼能看出是繁体，但真实机型上
+#   中文主字体常常叫 SysSans-Hans-Regular.ttf / VivoFont.ttf / SECCJK-Regular.ttc ——
+#   文件名里根本没有 hans/hant/kana 这些字样，猜不出来。配置里的 lang="zh-Hans" 才是实锤。
+#
+# 输出（每行）："<角色> <文件名> <语言标签>"，角色由 family 的 lang 决定：
+#   lang 含 zh-Hant/zh-Bopo/zh-HK/zh-TW/zh-MO → lang   （繁体那份，归"保留日韩等文字"管）
+#   lang 含 zh                                 → cjk    （简中 / CJK 主字体）
+#   lang 含 ja                                 → kana   （日文）
+#   lang 含 ko                                 → hangul （韩文）
+#   lang 为空                                  → main   （无语言的通用主字体）
+#   lang 含 en / und-Latn                      → latin  （拉丁）
+#   其它语言（阿拉伯、泰文、天城文…）           → 跳过   （不归我们碰）
+#   family 名带 Emoji/Symbol/Clock/Serif…      → 跳过   （装饰/符号，_xml_family_ok 挡掉）
+# 性能：整份 XML 只起 2 个进程（tr + sed），结果在同一进程里缓存（SCAN_NAMES_CACHE）。
+# ---------------------------------------------------------------------------
+slot_scan_names() {
+  local x fam hdr body rest name n l role
+  if [ -z "${SCAN_NAMES_CACHE+x}" ]; then
+    SCAN_NAMES_CACHE=$(
+      for x in $(slot_xml_files); do
+        [ -f "$x" ] || continue
+        tr '\n\r\t' '   ' 2>/dev/null < "$x" | sed 's/<family/\n<family/g' \
+          | while IFS= read -r fam || [ -n "$fam" ]; do
+              case "$fam" in '<family'*) ;; *) continue ;; esac
+              hdr=${fam%%>*}
+              n=""; l=""
+              case "$hdr" in *' name="'*) n=${hdr#*' name="'}; n=${n%%\"*} ;; esac
+              case "$hdr" in *' lang="'*) l=${hdr#*' lang="'}; l=${l%%\"*} ;; esac
+              # 装饰/符号/等宽/衬线这类不碰（和主文字族同一套判定）
+              _xml_family_ok "$n" "" || continue
+              # ★ 按"配置里的语言标签"定角色（这是实锤；文件名只能算线索，见上面说明）
+              l=$(_lc "$l")
+              case "$l" in
+                *zh-hant*|*zh-bopo*|*zh-hk*|*zh-tw*|*zh-mo*) role=lang ;;
+                *zh*)                                          role=cjk ;;
+                *ja*)                                          role=kana ;;
+                *ko*)                                          role=hangul ;;
+                "")                                            role=main ;;
+                *en*|*und-latn*)                               role=latin ;;
+                *)                                             role="" ;;   # 其它语言：不碰
+              esac
+              [ -n "$role" ] || continue
+              body=${fam#*>}
+              rest=$body
+              while :; do
+                case "$rest" in
+                  *'>'*'<'*) ;;
+                  *) break ;;
+                esac
+                rest=${rest#*>}
+                name=${rest%%<*}
+                rest=${rest#*<}
+                _trim "$name"; name="$TRIM_OUT"
+                case "$name" in *.[Tt][Tt][Ff]|*.[Oo][Tt][Ff]) ;;
+                  *) continue ;;
+                esac
+                printf '%s %s %s\n' "$role" "${name##*/}" "${l:-und}"
+              done
+            done
+      done | sort -u
+    )
+  fi
+  printf '%s\n' "$SCAN_NAMES_CACHE" | grep -v '^[[:space:]]*$'
+}
+
 # 从 XML 里取主文字族引用的字体文件名
 # 性能：整份 XML 只起 2 个进程（tr + sed），family/文件名都用 shell 内建解析；
 # 旧写法是"每个 family 起 4~6 个进程"，500 个 family 会 fork 上千次，手机上要卡好几秒。
@@ -362,8 +436,27 @@ _slot_script() {
 }
 
 # 该角色在当前设置下是否参与替换
+#
+# ★ 1.0.9 简化（作者定的）★
+#   取消「保留日文/韩文/繁体」与「保留时钟/等宽/斜体」两个开关 —— **默认全部替换**，
+#   不给开关、也不再"按字形自动让路"。作者原话："默认就替换这些，不管他是不是方块；
+#   如果有方块，那可能是字体没有这些东西 —— 但现在大家导入的字体一般都正常。"
+#   少一个开关 = 少一个"用户不知道该不该开"的坑，也才真正是"全局生效"。
+#   缺字形这件事**报告里会说清**（第 0 节列出"哪种语言没换、为什么"），不靠开关兜底。
+#
+#   唯一保留的**极端保护**在 slot_plan 里：字体完全没有中文字形时中文槽位不动 ——
+#   否则整个界面全变方块，用户连 WebUI 都看不清、没法换回来。
+#   （参数 keep_lang / keep_special 保留只为兼容旧调用方，本函数不再使用它们。）
 _role_wanted() {
   local role="$1" scope="$2" keep_lang="$3" keep_special="$4" name="${5:-}"
+  # ★ 极端保护（唯一的保留规则）：字体完全没有中文字形 → **除符号槽外一律不换**。
+  #   为什么必须管住 main/latin 这些"看着跟中文无关"的角色：
+  #     · 很多设备的通用主字体族（无语言的 <family>）**本身就是渲染中文的那个族**；
+  #     · 一旦换掉，整个界面（连 WebUI 自己）会变方块，用户连「换回无字体」都点不到。
+  #   所以这条是"整体不换"，不是"只不换中文槽"。正常字体（有中文字形）不会命中，一律全替换。
+  if [ "${CJK_GUARD:-0}" = 1 ]; then
+    return 1
+  fi
   case "$role" in
     # ttc = .ttc 合集槽位（三星简中这类）。合集里同时装着 ja/ko/zh 好几套字形，
     # 只有用户选的是"中英文/全覆盖"字体时替换才合理，所以限定 scope=all。
@@ -372,30 +465,169 @@ _role_wanted() {
       return 0 ;;
     sym) return 1 ;;
     lang)
-      [ "$keep_lang" = 1 ] && return 1
       [ "$scope" = all ] || return 1
-      # 1.0.8：**按槽位**自动让路（比"缺一类就整体保留"精确得多）：
-      #   韩文槽位只在字体真的没有韩文字形时才留，繁中是繁中、日文是日文，互不牵连。
-      # 判不出来（文件名看不出语言）→ 保守保留，宁可少换也不造方块。
-      # ★ 只在"用户没自己调过这个开关"时才自动让路：他手动选了全替换（或从界面切过开关），
-      #   就完全按他的来 —— 这正是"出问题给个开关、遇到了就开/关"的语义。
-      [ "${SLOT_AUTO_RESERVE:-1}" = 1 ] || return 0
-      case "$(_slot_script "$name")" in
-        hangul) _meta_have hangul || return 1 ;;
-        kana)   _meta_have kana   || return 1 ;;
-        hant)   _meta_have hant   || return 1 ;;
-        cjk)    _meta_have cjk    || return 1 ;;
-        *)      return 1 ;;
-      esac
       return 0 ;;
     italic|serif|mono|clock|display)
-      [ "$keep_special" = 1 ] && return 1 ;;
+      : ;;    # 1.0.9：不再有"保留特殊槽"开关 —— 直接参与替换
   esac
   case "$scope" in
     latin) case "$role" in latin|italic|serif|mono|clock|display) return 0 ;; esac; return 1 ;;
     cjk)   [ "$role" = cjk ] && return 0; return 1 ;;
     *)     return 0 ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# 【1.0.9 新增】扫描来的候选：把 slot_scan_names 的结果跟"设备上真实存在的文件"配对
+# 输出与 slot_candidates 同格式："角色 目录 文件名"
+# 规则（保守，避免乱换）：
+#   · 依赖设备自己的字体配置（有引用才认），不靠猜
+#   · 排除 Emoji/符号/纯图标字体（_role_set 已经判成 sym 的跳过）
+#   · 只输出"配置引用了、且文件确实在某个字体目录里"的项
+# ---------------------------------------------------------------------------
+slot_scan_candidates() {
+  local role name lang l d dirs
+  dirs=$(slot_dirs)
+  # ⚠ 必须读三个字段：slot_scan_names 每行是 "角色 文件名 语言标签"。
+  #   只写 `read -r role name` 的话，sh 会把**剩下的整段**塞进最后一个变量
+  #   （name 变成 "UnknownHangul-Regular.ttf ko"），后缀判定随即失败 → 整个函数什么都不输出。
+  #   这个坑很难看出来，改输出格式时务必同步改这里。
+  slot_scan_names | while IFS=' ' read -r role name lang; do
+    [ -n "$role" ] && [ -n "$name" ] || continue
+    case "$name" in *'*'*) continue ;; esac
+    l=$(_lc "$name")
+    case "$l" in *.ttf|*.otf) ;; *) continue ;; esac
+    # 名字看着是符号/表情的，绝不换（换了就是满屏怪符号）
+    # 注：这里写成 if 而不是 `[ ... ] && continue`，纯粹是为了可读性与稳妥 ——
+    #     本次真正的 bug 在下面 read 的字段数上（见函数开头注释）。
+    _role_set "$l"
+    if [ "$ROLE" = sym ]; then continue; fi
+    for d in $dirs; do
+      [ -f "$FSROOT$d/$name" ] && printf '%s %s %s\n' "$role" "$d" "$name"
+    done
+  done
+}
+
+# 从扫描结果里查某个文件的"确定性脚本"（配置里的语言标签 → 脚本）
+#   输出：cjk / kana / hangul / hant / ""（空 = 配置没说，或这文件不在配置里）
+#   为什么不用文件名猜：真机上中文主字体常叫 SysSans-Hans-Regular.ttf / VivoFont.ttf /
+#   SECCJK-Regular.ttc，文件名里没有 hans/hant 字样 —— 配置里的 lang 才是实锤。
+_scan_script_of() {
+  local want="$1" line role lang
+  [ -n "${SCAN_NAMES_CACHE+x}" ] || slot_scan_names >/dev/null 2>&1
+  printf '%s\n' "$SCAN_NAMES_CACHE" | while IFS=' ' read -r role name lang; do
+    [ "$name" = "$want" ] || continue
+    case "$role:$lang" in
+      cjk:*)             echo cjk ;;
+      kana:*)            echo kana ;;
+      hangul:*)          echo hangul ;;
+      lang:*zh-hant*|lang:*zh-bopo*|lang:*zh-hk*|lang:*zh-tw*|lang:*zh-mo*) echo hant ;;
+      lang:*)            echo lang ;;
+      *)                 echo "" ;;
+    esac
+    break
+  done
+}
+
+# 某个角色在候选里已经有几个（用来决定"要不要用扫描结果补"）
+# 用 grep 数"以该角色开头的行"，精确且不受文件名里出现同名字符串干扰
+_role_count() {
+  printf '%s\n' "$CANDS_TMP" | grep -c "^$1 " 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# 【1.0.9 新增】解释"某个槽位为什么没进计划"（进报告第 0 节）
+#
+# 目的：让作者**只看报告**就能定位问题，不用来回问用户。
+#   以前报告只说"在/不在计划里"，看不出是"用户关了开关"还是"字体缺字形自动让路"——
+#   这两种原因的修法完全相反（一个让用户开开关，一个要让用户换字体）。
+#
+# 判定用的就是**真实计划逻辑**（_role_wanted + _meta_have），不是另写一套猜的。
+# 输出：一句能直接给用户看的话。
+# ---------------------------------------------------------------------------
+slot_why() {   # $1=角色 $2=文件名 $3=scope $4=keep_lang $5=keep_special
+  local role="$1" name="$2" scope="$3" kl="$4" ks="$5" script
+  # ① 先看"角色开关"放不放它（这一步和计划完全一致）
+  if ! _role_wanted "$role" "$scope" "$kl" "$ks" "$name"; then
+    case "$role" in
+      lang)
+        case "$(_slot_script "$name")" in
+          kana)   echo "被保留：开了「保留日文」，日文继续用系统字体" ;;
+          hangul) echo "被保留：开了「保留韩文」，韩文继续用系统字体" ;;
+          hant)   echo "被保留：开了「保留繁体」，繁体继续用系统字体" ;;
+          *)      echo "被保留：「保留日文/韩文/繁体」开着" ;;
+        esac ;;
+      clock) echo "被保留：开了「保留时钟/等宽/斜体等特殊槽」" ;;
+      mono)  echo "被保留：开了「保留等宽槽」（终端那类）" ;;
+      italic) echo "被保留：开了「保留斜体槽」" ;;
+      serif) echo "被保留：开了「保留衬线槽」" ;;
+      ttc)   echo "被保留：「替换 .ttc 合集」没打开（这类机型的中文在合集里）" ;;
+      sym)   echo "刻意不动：符号/表情字体换了会显示异常" ;;
+      *)     echo "被保留：不在本次替换范围（范围=$scope）" ;;
+    esac
+    return 0
+  fi
+  # ② 角色开关放行 → 那就是"自动让路"按字形挡住了（字体没有这类字形）
+  script=$(_slot_script "$name")
+  [ -n "$script" ] || script=$(_scan_script_of "$name")
+  case "$script" in
+    kana|hangul|hant|cjk)
+      echo "自动让路：你的字体里没有「$script」这类字形，这处留给系统字体（避免方块）" ;;
+    "") echo "不在计划里（角色开关放行了，但计划里没有它 —— 请把这份报告发给作者）" ;;
+    *)  echo "不在计划里（脚本=$script）" ;;
+  esac
+}
+#
+# 这是作者最需要的一段：他只有小米机器，适配别的机型全靠别人的报告。
+# 以前"这台系统靠什么生效"要人肉去读第 6 节的原始 fonts.xml；现在直接列出来。
+# 输出（每行）："zh-Hans|中文简体|SysSans-Hans-Regular.ttf|在计划里/不在计划里|理由"
+# ---------------------------------------------------------------------------
+slot_scan_report() {
+  local role name lang label plan why
+  local base="${1:-}" scope="${2:-all}" kl="${3:-0}" ks="${4:-0}"
+  slot_scan_names | while IFS=' ' read -r role name lang; do
+    [ -n "$name" ] || continue
+    case "$lang" in
+      zh-hans|zh-hans-cn) label="中文（简体）" ;;
+      zh-hant|zh-hant-tw|zh-hant-hk|zh-bopo) label="中文（繁体）" ;;
+      ja)   label="日文" ;;
+      ko)   label="韩文" ;;
+      und|"") label="通用（无语言）" ;;
+      *)    label="$lang" ;;
+    esac
+    # 这个文件在本次计划里吗（计划里是 "角色 目录/文件名"）
+    case "$base" in
+      *"/$name"*) plan="✅ 会替换" ; why="—" ;;
+      *)          plan="❌ 不替换" ; why=$(slot_why "$role" "$name" "$scope" "$kl" "$ks") ;;
+    esac
+    printf '%-9s %-13s %-40s %-9s %s\n' "$lang" "$label" "$name" "$plan" "$why"
+  done | sort -u
+}
+
+# ---------------------------------------------------------------------------
+# 【1.0.9 新增】自适应补齐：只用**确定性信息**补，不做任何猜测
+#
+# 判定分两层：
+#   ① 角色层（cjk / kana / hangul / hant）：模板一路完全没覆盖到才补。
+#      补进来的是"设备自己的配置里、带对应语言标签的字体文件"。
+#   ② 脚本层（同一个槽位由几个脚本共用时的去重）：也用配置里的语言标签，
+#      而不是文件名 —— 这样 SysSans-Hans-Regular.ttf 这种"名字看不出来"的中文槽位
+#      也能被正确识别。
+#
+# 保守原则：**只补空缺，绝不动模板已经管到的角色**。
+#   模板命中的那些是"这个机型真正的主字体"，优先级高于"配置里引用到的一切"；
+#   无脑全加会把装饰字体、地区专用字体一起换掉 —— 那不是自适应，是乱来。
+# ---------------------------------------------------------------------------
+slot_adaptive_extra() {
+  local base="$1" role n scan
+  CANDS_TMP="$base"
+  scan=$(slot_scan_candidates)
+  [ -n "$scan" ] || return 0
+  for role in cjk kana hangul lang hant; do
+    n=$(_role_count "$role")
+    [ "$n" -gt 0 ] && continue          # 这个角色模板已经管到了 → 不补
+    printf '%s\n' "$scan" | grep "^$role " 2>/dev/null
+  done | sort -u
 }
 
 # ---------------------------------------------------------------------------
@@ -435,6 +667,7 @@ slot_candidates() {
     done
   fi
 }
+
 
 # ---------------------------------------------------------------------------
 # 生成槽位计划
@@ -584,25 +817,34 @@ theme_slots() {
 }
 
 slot_plan() {
-  # 默认值 1.0.8 起改为"全替换"（作者定的规矩：默认可开就开、替换得最全；
-  # 出问题（方块/某处没变）再用界面开关回退）。第三方调用方（fontctl/diag）会显式传值。
+  # 1.0.9：默认（也是唯一）口径 = **全替换**。日韩繁体、时钟/斜体/衬线都换，
+  #   不再有"保留 XX"开关、也不再按字形自动让路（作者定的：不给开关，省心）。
+  #   参数 scope/keep_lang/keep_special 保留只为兼容旧调用方（fontctl / diag）。
   local moddir="$1" scope="${2:-all}" keep_lang="${3:-0}" keep_special="${4:-0}"
   local role d name base
   #------------------------------------------------------------------------
-  # 自动让路：用户**没有自己调过**这个开关时（settings.conf 里没这一行），
-  #   字体缺哪一类字形，就把相关槽位自动留给系统字体 —— 这样"默认全替换"也不会造方块。
-  # 用户一旦自己动过（哪怕只是切换一次开关写成 0），就**完全按他的来**，不再自动干预：
-  #   这正是"出问题给个开关、遇到了就开/关"的语义。
-  # 为什么用"配置里有没有这一行"来判：cfg_get 的默认值分不清"用户选的"和"默认给的"。
+  # 唯一的**极端保护**：字体里完全没有中文字形时，中文槽位一个都不动。
+  #   为什么留这一条：那种情况下替换会把整个界面（含 WebUI 自己）变成方块，
+  #   用户连"换回无字体"都点不到 —— 属于"会把人卡死"的情况，必须挡。
+  #   正常字体（有中文字形）一律全替换，不做任何其它保留。
   #------------------------------------------------------------------------
-  if [ -z "$(sed -n 's/^keep_lang=//p' "$SETTINGS" 2>/dev/null | tail -n1)" ]; then
-    # 用户没自己调过 → 打开"按槽位自动让路"（具体判定在 _role_wanted 里，逐槽位做）
-    SLOT_AUTO_RESERVE=1
-  else
-    # 用户自己调过 → 关掉自动让路，完全听他的（手动选"也换日韩"就该连缺字的也换）
-    SLOT_AUTO_RESERVE=0
+  # （极端保护的实现放在 _role_wanted 里：所有调用方共享同一套判定，
+  #   诊断报告解释"为什么没换"时口径也一致。）
+  #------------------------------------------------------------------------
+  # ★ 1.0.9 自适应扫描 ★
+  #   先按老规矩（XML 主文字族 + 模板 + OEM 规则）枚举候选；**再补上"设备自己的字体配置
+  #   里引用到、但模板一路没覆盖到的角色"** —— 这样没适配过的 ROM 也能本地自适应，
+  #   不用等我们加 targets/*.list。补的规则在 slot_adaptive_extra 里（只补空缺角色）。
+  CAND_RAW=$(slot_candidates "$moddir")
+  CAND_EXTRA=$(slot_adaptive_extra "$CAND_RAW")
+  if [ -n "$CAND_EXTRA" ]; then
+    CAND_RAW=$(printf '%s\n%s\n' "$CAND_RAW" "$CAND_EXTRA" | grep -v '^[[:space:]]*$' | sort -u)
   fi
-  base=$(slot_candidates "$moddir" | while read -r role d name; do
+  # 让诊断报告/界面能看到"这次有没有靠自适应补的、补了几个"（供报告展示）
+  ADAPTIVE_N=$(printf '%s\n' "$CAND_EXTRA" | grep -c . 2>/dev/null)
+  [ -n "$ADAPTIVE_N" ] || ADAPTIVE_N=0
+  export ADAPTIVE_N
+  base=$(printf '%s\n' "$CAND_RAW" | while read -r role d name; do
            _role_wanted "$role" "$scope" "$keep_lang" "$keep_special" "$name" || continue
            printf '%s %s/%s\n' "$role" "${d#/}" "$name"
          done | sort -u -k2,2)
