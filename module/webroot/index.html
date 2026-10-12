@@ -118,8 +118,32 @@
     position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 8px;
     background: var(--card); color: var(--pending-blue); font-size: 13px; font-weight: 600; border-radius: 16px;
   }
-  .spin { width: 16px; height: 16px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+  /* 转圈：1.0.9 换掉"一个边框缺口在转"的老式写法。
+     现在是"环形轨道 + 双弧 + 中心点呼吸"：看着更顺、不像一个符号在打转，
+     而且用 transform 动画（GPU 合成），比改 border-color 省电。 */
+  .spin { position: relative; width: 16px; height: 16px; flex: none; display: inline-block;
+          border-radius: 50%; animation: spin 1.05s cubic-bezier(.45,.05,.55,.95) infinite; }
+  .spin::before, .spin::after { content: ""; position: absolute; inset: 0; border-radius: 50%; }
+  /* 外圈：一条渐隐的弧（用 conic-gradient 做，手机上都支持） */
+  .spin::before {
+    background: conic-gradient(from 0deg, transparent 0deg 40deg,
+                color-mix(in srgb, currentColor 25%, transparent) 120deg,
+                currentColor 330deg, transparent 360deg);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  }
+  /* 内圈：反向慢转的一条细弧，形成"对转"的层次感 */
+  .spin::after {
+    inset: 4px;
+    background: conic-gradient(from 180deg, transparent 0deg 90deg, currentColor 300deg, transparent 360deg);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.6px), #000 calc(100% - 1.2px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 1.6px), #000 calc(100% - 1.2px));
+    opacity: .55; animation: spinRev 1.6s linear infinite;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes spinRev { to { transform: rotate(-360deg); } }
+  /* .spin.lg：诊断横幅里那个大一点的 */
+  .spin.lg { width: 20px; height: 20px; }
 
   .empty { color: var(--text-dim); font-size: 12px; text-align: center; padding: 14px 0 6px; line-height: 1.6; }
 
@@ -307,6 +331,41 @@
   select.txt { width: 100%; margin-bottom: 12px; }
   .modal .lbl { font-size: 12px; color: var(--text-dim); margin: 0 0 6px; }
   textarea.report { width: 100%; height: 46vh; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 11px; line-height: 1.5; padding: 10px; resize: none; font-family: monospace; margin-bottom: 12px; }
+  /* ---------- 报告"结构化"视图（1.0.9 新增）----------
+     以前整个报告塞在一个等宽 textarea 里，几十万字一眼看下去抓不到重点。
+     现在默认渲染成"结论卡 + 分区折叠卡"，一眼能看到问题在哪；原样文本视图仍可切换。 */
+  .rep-view { display: none; height: 46vh; overflow-y: auto; overscroll-behavior: contain;
+              border: 1px solid var(--border); border-radius: 12px; background: var(--bg);
+              padding: 10px; margin-bottom: 12px; font-size: 12.5px; line-height: 1.65; }
+  .rep-view.show { display: block; }
+  .rep-view::-webkit-scrollbar { width: 6px; }
+  .rep-view::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  /* 结论卡：最上面的"结论"，最该被看到 */
+  .rv-concl { border-radius: 12px; padding: 11px 12px; margin-bottom: 10px; line-height: 1.7;
+              background: color-mix(in srgb, var(--accent) 10%, transparent);
+              border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  .rv-concl.bad { background: color-mix(in srgb, var(--danger) 12%, transparent);
+                  border-color: color-mix(in srgb, var(--danger) 42%, transparent); }
+  .rv-concl.warn { background: color-mix(in srgb, #e8a33d 14%, transparent); border-color: #e8a33d66; }
+  .rv-concl .rv-line { margin: 2px 0; }
+  /* 分区卡：点标题折叠 */
+  .rv-sec { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; overflow: hidden; background: var(--card); }
+  .rv-sec > summary { list-style: none; cursor: pointer; padding: 10px 12px; font-weight: 600; font-size: 13px;
+                      display: flex; align-items: center; gap: 8px; user-select: none; }
+  .rv-sec > summary::-webkit-details-marker { display: none; }
+  .rv-sec > summary::after { content: "▾"; margin-left: auto; opacity: .5; font-size: 11px; transition: transform .18s ease; }
+  .rv-sec[open] > summary::after { transform: rotate(180deg); }
+  .rv-sec > summary:active { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .rv-body { padding: 2px 12px 10px; font-family: ui-monospace, monospace; font-size: 11.5px;
+             line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: var(--text); }
+  .rv-body .rv-ok { color: #2e9e5b; }
+  .rv-body .rv-no { color: var(--danger); }
+  .rv-body .rv-hi { color: var(--pending-blue); font-weight: 600; }
+  .rv-flag { font-size: 11px; padding: 1px 6px; border-radius: 999px; font-weight: 600;
+             background: color-mix(in srgb, var(--pending-blue) 16%, transparent); color: var(--pending-blue); }
+  .rv-flag.bad { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+  .rv-flag.warn { background: #e8a33d26; color: #b5791f; }
+  .rv-empty { color: var(--text-dim); font-size: 12px; padding: 8px 2px; text-align: center; }
   .fade { animation: fadeUp .5s cubic-bezier(.22,.8,.34,1) both; animation-delay: var(--d, 0s); }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
   @media (prefers-reduced-motion: reduce) {
@@ -402,28 +461,18 @@ try {
 
   <div class="divider"></div>
 
-  <div class="section-title fade"><span>替换范围（高级）</span></div>
-  <div class="switch-row fade" onclick="toggleSetting('keep_lang')">
-    <div><div class="t">日文 / 韩文 / 繁体出现方块？</div><div class="d">方块（□）= 你的字体里没有那个字。<br>开：这些字保持系统字体显示，方块消失。<br>关：连它们也一起换 —— 字体缺字的地方就会是方块。</div></div>
-    <div class="sw" id="sw_keep_lang"></div>
-  </div>
-  <div class="switch-row fade" onclick="toggleSetting('keep_special')">
-    <div><div class="t">时钟、代码、斜体那些没跟着变？</div><div class="d">开：这些地方也换成你的字体（推荐 —— 全局都变才整齐）。<br>关：这些地方保持系统字体。<br><span style="opacity:.75">只有你发现"它们变了反而不好"时才关。</span></div></div>
-    <div class="sw" id="sw_keep_special"></div>
-  </div>
-  <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
-    <div><div class="t">报告说"0 生效"？</div><div class="d">只有自带挂载不生效时才需要改。<br>关：交给 Root 管理器 / 元模块来挂（KernelSU / APatch 要先装元模块）。</div></div>
-    <div class="sw on" id="sw_mount_mode"></div>
-  </div>
-  <div class="switch-row fade" onclick="toggleSetting('ttc_replace')">
-    <div><div class="t">英文变了、中文没变？</div><div class="d">有些机型的中文装在一个"合集"文件里，得单独处理才会变（三星、魅族这类）。<br>开：中文也换成你的字体（<b>本机需要的话会自动打开</b>）。<br>前提：你的字体得自带中文字形，否则中文会变方块。</div></div>
-    <div class="sw" id="sw_ttc_replace"></div>
-  </div>
+  <div class="section-title fade"><span>替换范围</span></div>
+  <div class="g-hint" style="margin-bottom:8px">日文、韩文、繁体、时钟、代码、斜体 —— 全部都会换成你的字体，不用设置。<br>如果某个字没变、或者显示成方块（□），那是<b>你的字体里没有那个字</b>；诊断报告里会列出是哪些。</div>
   <div class="switch-row fade" onclick="toggleSetting('theme_fonts')">
-    <div><div class="t">设置里选的字体没被换掉？</div><div class="d">在「设置 → 字体样式」或主题商店里选过字体的机型，那份字体会被系统单独存一份、优先级更高（<b>魅族主题商店下的免费主题生成的 FlymeFont 就是这一种</b>）。<br>开：那份也换成你的字体 —— <b>魅族这类机器会自动打开，不用你管</b>。<br>代价：设置里选的那个字体会失效；小米想用「字体粗细」调粗细的话，就关掉它。</div></div>
+    <div><div class="t">也替换主题里选的字体</div><div class="d">有些机型会把「设置 → 字体样式」或主题商店里选的那份字体单独存一份，它比系统字体优先，不换它就不生效。<br><b>开</b>：那份也换成你的字体，设置里的选择会失效。<br><b>关</b>：只换系统字体（小米想用「字体粗细」调粗细就保持关）。</div></div>
     <div class="sw" id="sw_theme_fonts"></div>
   </div>
-  <div class="g-hint">修改后会按当前选择自动重新生成，重启生效。</div>
+  <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
+    <div><div class="t">自带挂载</div><div class="d"><b>开</b>：模块自己把字体挂上去（推荐，不用装元模块）。<br><b>关</b>：交给 Root 管理器 / 元模块来挂。</div></div>
+    <div class="sw on" id="sw_mount_mode"></div>
+  </div>
+  <div class="g-hint">改完会自动重新生成，重启生效。</div>
+  <div class="divider"></div>
   <div class="btn-row">
     <button class="g-btn" onclick="showReport()">查看诊断报告</button>
   </div>
@@ -502,7 +551,7 @@ try {
         <span class="spin"></span><span id="reportBannerText">正在生成中…</span>
       </div>
       <div class="rep-prog" id="reportProgress" style="display:none">
-        <div class="rep-prog-top"><span id="reportStepText">第 0/6 步</span><span id="reportPct">0%</span></div>
+        <div class="rep-prog-top"><span id="reportStepText">第 0/7 步</span><span id="reportPct">0%</span></div>
         <div class="bar rep-bar"><i id="reportProgressBar"></i></div>
         <div class="rep-prog-sub" id="reportSubText">准备中</div>
         <div class="rep-eta" id="reportEtaText"></div>
@@ -510,15 +559,17 @@ try {
       <div class="loading-box" id="reportLoading"><span class="spin"></span><span id="reportLoadingText">正在准备…</span></div>
       <div class="g-hint" id="reportTip" style="display:none"></div>
       <textarea class="report" id="reportText" readonly style="display:none"></textarea>
-      <div class="g-hint" id="reportFileHint">生成完会自动保存到 Download，不用手动存：快速体检 → <b>快速体检报告.txt</b>，完整报告 → <b>完整体检报告.txt</b>；生成中途也会随时存一份 <b>未完成的体检报告.txt</b>。</div>
+      <!-- 1.0.9：结构化视图（默认显示这个；可切回"原样文本"） -->
+      <div class="rep-view" id="reportView"></div>
+      <div class="g-hint" id="reportFileHint">生成完会<b>自动存到 Download → 完整体检报告.txt</b>（只有这一个文件，不用手动存）；生成过程中会不断覆盖它，中途打开也能看到已写好的部分。</div>
       <div class="btn-row" id="reportChoice" style="display:none">
-        <button class="g-btn primary-blue" id="reportChoiceFast" onclick="repStart('fast')">快速体检</button>
-        <button class="g-btn" id="reportChoiceFull" onclick="repStart('full')">完整报告</button>
+        <button class="g-btn primary-blue" id="reportChoiceFull" onclick="repStart('full')">开始生成报告</button>
       </div>
       <div class="g-hint" id="reportChoiceHint" style="display:none"></div>
       <div class="btn-row">
         <button class="g-btn urgent" id="reportCancelBtn" onclick="cancelReport()" style="display:none">中止生成</button>
         <button class="g-btn" id="reportMoreBtn" onclick="reportMore()" style="display:none">看更多</button>
+        <button class="g-btn" id="reportViewBtn" onclick="repShowView(repViewMode === 'raw' ? 'pretty' : 'raw')" style="display:none">原样文本</button>
         <button class="g-btn" id="reportRegenBtn" onclick="regenReport()" style="display:none">重新生成</button>
         <button class="g-btn primary-blue" onclick="closeReport()">关闭</button>
       </div>
@@ -1449,14 +1500,14 @@ async function onFilePicked(input) {
 }
 
 /* ---------- 替换范围设置 / 诊断 ---------- */
-const settings = {keep_lang: "0", keep_special: "0", mount_mode: "self", ttc_replace: "0", theme_fonts: "0"};
+const settings = {mount_mode: "self", theme_fonts: "0"};   // 1.0.9：只剩这两个开关
 let mountMode = "self";
 async function loadSettings() {
   try {
     const out = await ksuExec(`sh ${MODDIR}/fontctl.sh settings`);
     (out.match(/(\w+)=(\S+)/g) || []).forEach(kv => { const i = kv.indexOf("="); settings[kv.slice(0, i)] = kv.slice(i + 1); });
   } catch (e) {}
-  ["keep_lang", "keep_special", "ttc_replace", "theme_fonts"].forEach(k => document.getElementById("sw_" + k).classList.toggle("on", settings[k] === "1"));
+  ["theme_fonts"].forEach(k => document.getElementById("sw_" + k).classList.toggle("on", settings[k] === "1"));
   document.getElementById("sw_mount_mode").classList.toggle("on", settings.mount_mode !== "manager");
 }
 async function toggleSetting(key) {
@@ -1478,34 +1529,18 @@ async function toggleSetting(key) {
     nv = settings[key] === "1" ? "0" : "1";
     if (nv === "1") {
       const ok = await dialog({
-        title: "也替换设置里选的字体？",
-        msg: "你在「设置 → 字体样式」或主题商店里选的字体，系统会单独存一份，优先于模块替换的那些。\n\n打开后：那份也换成你的字体，替换更全，不用再去设置里切回「默认」。\n\n代价：你在设置里选的那个字体会失效 —— 如果你用它调过「字体粗细」，打开后粗细也会调不动。\n\n想还原：关掉这个开关（或到设置里重新选一次）。",
+        title: "也替换主题里选的字体？",
+        msg: "你在「设置 → 字体样式」或主题商店里选的那份字体，系统会单独存一份，它比系统字体优先。\n\n"
+           + "开：那份也换成你的字体。\n"
+           + "不开：只换系统字体。\n\n"
+           + "注意：开了之后，你在设置里选的那个字体会失效 —— 如果那个字体是你用来调「字体粗细」的，粗细也会跟着失效。\n"
+           + "想还原：关掉这个开关（或到设置里重新选一次字体）。",
         okText: "仍然打开", danger: true
-      });
-      if (!ok) return;
-    }
-  } else if (key === "ttc_replace") {
-    nv = settings[key] === "1" ? "0" : "1";
-    if (nv === "1") {
-      const ok = await dialog({
-        title: "打开「替换 .ttc 合集」？",
-        msg: "你这台机器的中文装在一个合集文件里，普通替换够不到它 —— 所以会出现「英文变了、中文没变」。\n\n打开后：把你的字体按同样 face 数包成合集顶上去，重启生效。\n\n注意：你的字体得自带中文字形，否则中文会变方块（关掉这个开关、重启一次就能完全恢复，不会损坏系统文件）。",
-        okText: "打开", danger: true
       });
       if (!ok) return;
     }
   } else {
     nv = settings[key] === "1" ? "0" : "1";
-    if (nv === "1" && key === "keep_lang") {
-      const ok = await dialog({
-        title: "这些字也换成你的字体？",
-        msg: "打开后：日文 / 韩文 / 繁体等也换成你的字体。\n\n"
-           + "如果你的字体没有这些字，对应的地方会显示成方块（□）。\n"
-           + "担心方块的话，保持关闭即可 —— 现在默认就是「字体里有的字全换、没有的自动用系统字体」。",
-        okText: "仍然打开", danger: true
-      });
-      if (!ok) return;
-    }
   }
   // 立即翻转开关给出视觉反馈，后台失败时再翻回
   if (sw) sw.classList.toggle("on");
@@ -1550,7 +1585,8 @@ let repLastState = null;              // 最近一次读到的状态
 let repPollToken = 0;                 // 轮询代次：新开一次就作废旧的
 let repStop = false;
 let repTick = null;                   // 本地每秒刷新"已用/还剩"，轮询慢也不会看着卡住
-let repEtaDeadline = 0;
+let repEtaBase = 0;        // 脚本给的静态预估（秒），只做兜底
+let repEtaSmooth = 0;      // 按实际速度算出的剩余时间（做指数平滑，避免数字乱跳）
 let repFetchOK = true, repFetchFail = 0;
 let repDisp = { offset: 0, size: 0, shown: 0 };   // 正文预览进度（offset 是字节）
 let repLastPartLen = -1;
@@ -1560,6 +1596,119 @@ const repSleep = ms => new Promise(r => setTimeout(r, ms));
 const repEl = id => document.getElementById(id);
 const repOpen = () => repEl("reportMask").classList.contains("show");
 const repTxt = () => repEl("reportText");
+  const repView = () => repEl("reportView");
+  let repViewMode = "pretty";     // pretty = 结构化视图；raw = 原样文本
+
+  // ---------- 结构化视图（1.0.9 新增）----------
+  // 把纯文本报告渲染成"结论卡 + 分区折叠卡"，一眼能看出问题在哪。
+  // 只做排版与着色，**每个字符都来自报告原文**，不重新解读、不改变任何结论。
+  function repEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function rvLine(raw) {
+    const e = repEsc(raw);
+    let cls = "";
+    if (/^\s*(✅|正常|通过)/.test(raw)) cls = "rv-ok";
+    else if (/^\s*(❌|✗|失败|错误|找不到)/.test(raw)) cls = "rv-no";
+    else if (/^\s*(⚠|注意|警告)/.test(raw)) cls = "rv-hi";
+    else if (/^\s*(本次口径|本次指纹|设置:|实际生效|结论)/.test(raw)) cls = "rv-hi";
+    return cls ? '<span class="' + cls + '">' + e + "</span>" : e;
+  }
+  // 切成 [ {title, lines[], concl} ]：第一个【n】之前 = 结论区
+  function rvParse(text) {
+    const lines = String(text || "").split("\n");
+    const secs = [];
+    const head = [];
+    let i = 0;
+    for (; i < lines.length; i++) {
+      const l = lines[i];
+      if (/^\s*【\d+】/.test(l)) break;
+      if (/^={3,}/.test(l) || /^─{5,}/.test(l)) continue;
+      if (l.trim() === "" && head.length === 0) continue;
+      head.push(l);
+    }
+    if (head.length) secs.push({ title: "结论", lines: head, concl: true });
+    let cur = null;
+    for (; i < lines.length; i++) {
+      const l = lines[i];
+      const m = l.match(/^\s*(【\d+】.*)$/);
+      if (m) {
+        if (cur) secs.push(cur);
+        cur = { title: m[1].trim(), lines: [],
+                idx: parseInt((m[1].match(/\d+/) || ["0"])[0], 10) };
+        continue;
+      }
+      if (!cur) continue;            // 【n】之前的多余行忽略（已进结论区）
+      cur.lines.push(l);
+    }
+    if (cur) secs.push(cur);
+    return secs;
+  }
+  // 折叠标题上的"小标"：这节有几处问题/注意
+  function rvSummaryOf(sec) {
+    let bad = 0, warn = 0;
+    for (const l of sec.lines) {
+      if (/^\s*(❌|✗)/.test(l)) bad++;
+      else if (/^\s*⚠/.test(l)) warn++;
+    }
+    if (bad) return { text: bad + " 处问题", cls: "bad" };
+    if (warn) return { text: warn + " 处注意", cls: "warn" };
+    return null;
+  }
+  function repRenderView(text, partial) {
+    const host = repView();
+    if (!host) return;
+    const secs = rvParse(text);
+    if (!secs.length) { host.innerHTML = '<div class="rv-empty">（还没有内容）</div>'; return; }
+    const out = [];
+    if (partial) {
+      out.push('<div class="rv-concl warn"><div class="rv-line">⚠ 这一份是<b>未完成</b>的（生成被中断或超时），' +
+               '下面只是已经写好的部分。</div><div class="rv-line">点「重新生成」可以拿到完整的报告。</div></div>');
+    }
+    for (const sec of secs) {
+      if (sec.concl) {
+        const joined = sec.lines.join("\n");
+        const cls = /❌/.test(joined) ? "bad" : (/⚠/.test(joined) ? "warn" : "");
+        const body = sec.lines.filter(l => l.trim() !== "")
+          .map(l => '<div class="rv-line">' + rvLine(l) + "</div>").join("");
+        out.push('<div class="rv-concl ' + cls + '">' + (body || '<div class="rv-empty">（没有结论）</div>') + "</div>");
+        continue;
+      }
+      const flag = rvSummaryOf(sec);
+      const flagHtml = flag ? '<span class="rv-flag ' + flag.cls + '">' + flag.text + "</span>" : "";
+      const open = (sec.idx && sec.idx <= 3) ? " open" : "";     // 前 3 节默认展开
+      const body = sec.lines.map(l => (l.trim() === "" ? "" : rvLine(l))).join("\n");
+      out.push('<details class="rv-sec"' + open + '><summary>' + repEsc(sec.title) + flagHtml + "</summary>" +
+               '<div class="rv-body">' + (body.trim() ? body : '<span class="rv-empty">（本节没有内容）</span>') +
+               "</div></details>");
+    }
+    host.innerHTML = out.join("");
+  }
+  // 两种视图切换（默认结构化；想看逐字原文就切过去）
+  function repShowView(which) {
+    const v = repView(), t = repTxt();
+    repViewMode = (which === "raw") ? "raw" : "pretty";
+    if (repViewMode === "raw") {
+      if (v) { v.classList.remove("show"); v.style.display = "none"; }
+      if (t) t.style.display = "block";
+    } else {
+      if (t) t.style.display = "none";
+      if (v) { v.style.display = "block"; v.classList.add("show"); v.scrollTop = 0; }
+    }
+    const btn = repEl("reportViewBtn");
+    if (btn) btn.textContent = (repViewMode === "raw") ? "结构化视图" : "原样文本";
+  }
+  // 把一段报告文本同时喂给两种视图
+  function repPutText(text, partial) {
+    const t = repTxt();
+    if (t) { t.value = text; t.scrollTop = 0; }
+    repRenderView(text, !!partial);
+    repShowView(repViewMode);
+    // 有内容了就把"原样文本 / 结构化视图"切换按钮显示出来
+    const vb = repEl("reportViewBtn");
+    if (vb && String(text || "").length > 300) vb.style.display = "";
+  }
+
 
 // 秒 -> "1 分 20 秒"
 function fmtClock(sec) {
@@ -1655,9 +1804,30 @@ function repPctOf(kv) {
   if (kv.pct !== undefined && kv.pct !== "" && !isNaN(+kv.pct)) pct = +kv.pct;
   return Math.max(0, Math.min(100, pct));
 }
+// ---------- 预计剩余时间（1.0.9 重做）----------
+// 以前是"开局算一次固定倒计时"—— 所以会出现"还剩 3 分钟"长时间不动、或者突然跳变。
+// 现在按**实际速度**推：用"已用时间 ÷ 已完成百分比"估总时长，再看还剩多少。
+// · 比例低于 8% 时不给数字（样本太少，估出来会乱跳），只说"预计 …"（静态预估）兜底
+// · 用指数平滑，避免界面上的数字来回抖
 function repSetEta(etaSec) {
   const e = +etaSec;
-  repEtaDeadline = (e > 0) ? Date.now() + e * 1000 : 0;
+  repEtaBase = (e > 0) ? e : 0;      // 静态预估（秒），只做兜底
+}
+function repEtaText(kv, used) {
+  const pct = repPctOf(kv);
+  if (used >= 8 && pct >= 8 && pct < 100) {
+    const total = used * 100 / pct;              // 按当前速度推算总时长
+    let left = Math.max(0, total - used);
+    // 指数平滑：新值占 35%，避免"预计"数字来回跳
+    repEtaSmooth = repEtaSmooth ? (repEtaSmooth * 0.65 + left * 0.35) : left;
+    // 兜底：不超过静态预估的 3 倍（防止某一步特别慢把数字撑爆）
+    if (repEtaBase) repEtaSmooth = Math.min(repEtaSmooth, repEtaBase * 3);
+    left = repEtaSmooth;
+    if (left > 5) return { left: Math.round(left), exact: true };
+    return { left: 0, soon: true };
+  }
+  if (repEtaBase) return { left: repEtaBase, exact: false };
+  return null;
 }
 // 每秒本地刷新一次"已用 / 还要多久"：轮询间隔多大都不会显得卡住
 function repPaintEta() {
@@ -1667,13 +1837,12 @@ function repPaintEta() {
   const nowSec = Math.round(Date.now() / 1000);
   const start = +kv.start || 0;
   const used = start ? Math.max(0, nowSec - start) : 0;
-  let left = 0;
-  if (repEtaDeadline) left = Math.max(0, Math.round((repEtaDeadline - Date.now()) / 1000));
   if (kv.state === "running" || kv.state === "preparing") {
     const bits = [];
     if (used) bits.push("已用 " + fmtClock(used));
-    if (left > 3) bits.push("预计还要 <b>" + fmtClock(left) + "</b>");
-    else if (left > 0) bits.push("<b>马上就好</b>");
+    const e = repEtaText(kv, used);
+    if (e && e.soon) bits.push("<b>马上就好</b>");
+    else if (e && e.left > 3) bits.push((e.exact ? "预计还要 " : "大概需要 ") + "<b>" + fmtClock(e.left) + "</b>");
     else if (!used) bits.push("正在启动…");
     bits.push('<span style="opacity:.75;font-weight:400">（可以随时关闭窗口，任务会继续在后台跑）</span>');
     el.innerHTML = bits.join(" · ");
@@ -1730,26 +1899,23 @@ function repPaintRunning(kv, sub) {
   repEl("reportTip").innerHTML = repTipText(kv);
   repPaintEta();
 }
-function repTipText(kv) {
-  const useFull = String(kv.fast) === "0";
-  const bits = [];
-  if (repEst) {
-    const sec = useFull ? repEst.full_sec : repEst.fast_sec;
-    bits.push("预计耗时 <b>" + fmtDur(sec) + "</b>（" +
-      (useFull ? "完整报告 · 读盘约 " + repEst.size_all_mb + " MB"
-               : "快速体检 · 读盘约 " + repEst.read_fast_mb + " MB") +
-      " · 本机约 " + repEst.files_all + " 个字体）");
+  function repTipText(kv) {
+    const bits = [];
+    if (repEst) {
+      bits.push("预计耗时 <b>" + fmtDur(repEst.full_sec) + "</b>（完整报告 · 全量读字体约 " +
+        repEst.size_all_mb + " MB · 本机约 " + repEst.files_all + " 个字体）");
+    }
+    bits.push("任务会主动降优先级让资源给系统，所以比全速跑慢；随时可以关窗口去干别的，或者点「中止生成」。");
+    bits.push("同一份字体文件只会读一次（字体目录里很多文件其实指向同一份），所以比按文件数估算更快。");
+    return bits.join("<br>");
   }
-  bits.push("任务会主动降优先级让资源给系统，所以比全速跑慢；随时可以关窗口去干别的，或者点「中止生成」。");
-  if (useFull) bits.push("完整报告要全量读字体文件，闪存可能发热、之后暂时变慢。");
-  return bits.join("<br>");
-}
-// 本次实际保存的文件名（快速/完整分开，界面要说清楚存到哪了）
-function repSavedName(kv) {
-  const n = String((kv && kv.saved) || "").split("/").pop();
-  if (n) return n;
-  return String((kv && kv.fast) || "") === "0" ? "完整体检报告.txt" : "快速体检报告.txt";
-}
+  // 本次实际保存的文件名（1.0.9：只有一份）
+  // 本次实际保存的文件名（1.0.9：只有一份）
+  function repSavedName(kv) {
+    const n = String((kv && kv.saved) || "").split("/").pop();
+    if (n) return n;
+    return "完整体检报告.txt";
+  }
 // 生成完成：显示正文预览 + "看更多"
 async function repPaintDone(kv) {
   repEl("reportLoading").style.display = "none";
@@ -1764,19 +1930,20 @@ async function repPaintDone(kv) {
   const size = +kv.size || +meta.size || 0;
   const head = await readHeadText();
   const partial = String(kv.partial || "") === "1";
-  setRepBar("6/6", partial ? "已保存（未完成）" : "生成完成", 1,
+  setRepBar("7/7", partial ? "已保存（未完成）" : "生成完成", 1,
     (size ? "共 " + fmtSize(size) : "") + (kv.saved ? " · 已保存到 " + kv.saved : ""));
   repEl("reportEtaText").style.display = "none";
+  // 未完成的报告前面加一段说明（这段只在"中止/超时"时出现）
   const body = (partial
-    ? "⚠ 这一份是**未完成**的（生成被中断/超时），下面是已经生成好的部分。\n" +
-      "已保存到 Download/未完成的体检报告.txt；想要完整的请点「重新生成」。\n" +
+    ? "⚠ 这一份是【未完成】的（生成被中断或超时），下面是已经生成好的部分。\n" +
+      "想要完整报告，请点下面的「重新生成」。\n" +
       "────────────────────────────────────────\n"
     : "") + (String(head || "").trim() || "（报告为空）");
-  repTxt().style.display = "block";
-  repTxt().value = body;
+    // 1.0.9：同时喂给"结构化视图"和"原样文本"，默认显示结构化
   repTxt().scrollTop = 0;
   void repTxt().offsetWidth;
   repTxt().classList.add("pop");
+    repPutText(body, partial);
   repDisp = { offset: Math.min(REP_PREVIEW, size || REP_PREVIEW), size: size, shown: body.length };
   repEl("reportTip").style.display = "block";
   repEl("reportTip").innerHTML =
@@ -1803,11 +1970,13 @@ function repPaintSimple(kind, msg) {
   repEl("reportChoiceHint").style.display = "none";
   repEl("reportEtaText").style.display = "none";
   repEl("reportProgressBar").parentElement.classList.remove("running");
-  repTxt().style.display = "block";
-  repTxt().value = msg;
+    // 显示由 repPutText 统一处理
+    repPutText(msg, false);
   repEl("reportTip").style.display = "none";
 }
 // 还没决定跑哪种：直接给两个按钮（不再弹第二个对话框，少一次等待）
+// 1.0.9：「快速体检 / 完整报告」二选一已删除 —— 只有一种报告（完整）。
+// 这个函数现在只负责"还没开始生成时"显示一个开始按钮 + 本机工作量预估。
 function repPaintChooser(reason) {
   repEl("reportLoading").style.display = "none";
   repEl("reportProgress").style.display = "none";
@@ -1818,16 +1987,16 @@ function repPaintChooser(reason) {
   repTxt().style.display = "none";
   repEl("reportChoice").style.display = "flex";
   repEl("reportChoiceHint").style.display = "block";
-  repEl("reportChoiceFast").disabled = false;
-  repEl("reportChoiceFull").disabled = false;
-  repEl("reportChoiceHint").textContent = reason ||
-    "选一种开始生成：快速体检够发给作者看（默认）；完整报告会全量读所有字体，更慢也更伤闪存。";
+  const btn = repEl("reportChoiceFull");
+  if (btn) { btn.disabled = false; btn.textContent = "开始生成报告"; }
+  let txt = reason ||
+    "点下面的按钮生成体检报告。报告会把你手机上的字体现场完整记下来（含逐文件指纹），生成完自动存到 Download。";
   if (repEst) {
-    repEl("reportChoiceHint").textContent = (reason ? reason + "\n" : "") +
+    txt = (reason ? reason + "\n" : "") +
       "本机系统字体约 " + repEst.files_all + " 个（配置引用 " + repEst.files_ref + " 个，共约 " + repEst.size_all_mb + " MB）。\n" +
-      "预计耗时：快速体检 " + fmtDur(repEst.fast_sec) + "；完整报告 " + fmtDur(repEst.full_sec) + "。\n" +
-      "读盘量：快速体检约 " + repEst.read_fast_mb + " MB；完整报告约 " + repEst.size_all_mb + " MB。";
+      "预计耗时约 " + fmtDur(repEst.full_sec) + "；生成期间会自动降低优先级，尽量不影响你用手机。";
   }
+  repEl("reportChoiceHint").textContent = txt;
 }
 
 // ---------- 轮询（一次只有一个轮询在跑） ----------
@@ -1867,10 +2036,11 @@ async function repPaintRunningLive(kv) {
   const head = "⏳ 还在生成中，还没完成！（第 " + (p.step || "?") + " 步：" + p.label + "）\n" +
     "下面只是已经写好的部分，完成后会自动补全；可以点「关闭」去干别的，任务会在后台继续。\n" +
     "────────────────────────────────────────\n";
-  repTxt().style.display = "block";
-  repTxt().value = head + (t.length >= REP_PART_LIMIT
-    ? t + "\n\n……（后面还在继续写，完成后显示完整内容）"
-    : t);
+    // 显示由 repPutText 统一处理
+    const _pv = head + (t.length >= REP_PART_LIMIT
+      ? t + "\n\n……（后面还在继续写，完成后显示完整内容）"
+      : t);
+    repPutText(_pv, true);
 }
 
 // ---------- 主流程 ----------
@@ -1913,16 +2083,16 @@ function repStale(kv) {
   if (!t) return false;
   return (Date.now() / 1000 - t) > 900;          // 15 分钟没心跳才算"可能停了"
 }
+// 1.0.9：只有一种报告（完整）。参数 mode 保留只是为了兼容旧调用点。
 async function repStart(mode) {
   if (repStarting) return;
   repStarting = true;
-  const useFull = (mode === "full");
   repLastPartLen = -1;
-  repLastState = { state: "preparing", start: Math.round(Date.now() / 1000), fast: useFull ? "0" : "1" };
-  repSetEta(repEst ? (useFull ? repEst.full_sec : repEst.fast_sec) : 0);
+  repEtaSmooth = 0;
+  repLastState = { state: "preparing", start: Math.round(Date.now() / 1000), fast: "0" };
+  repSetEta(repEst ? repEst.full_sec : 0);
   repPaintRunning(repLastState, "正在启动生成任务…");
-  btnBusy(repEl("reportChoiceFast"), true, "快速体检");
-  btnBusy(repEl("reportChoiceFull"), true, "完整报告");
+  btnBusy(repEl("reportChoiceFull"), true, "开始生成报告");
   if (!repEst) loadEstimate();
   try {
     // 用户明确要生成/重新生成：如果还有一份在跑，先把它停掉
@@ -1949,7 +2119,6 @@ async function repStart(mode) {
     return;
   } finally {
     repStarting = false;
-    btnBusy(repEl("reportChoiceFast"), false);
     btnBusy(repEl("reportChoiceFull"), false);
   }
   const kv = await repPoll();
@@ -1980,14 +2149,14 @@ async function repFinish(kv) {
   if (kv.state === "none") { repPaintChooser(""); return; }
   repPaintSimple("timeout",
     "等了很久都没结果：任务可能还在后台慢慢跑，也可能已经被系统停掉了。\n\n" +
-    "可以先点「关闭」去干别的 —— 生成完会自动出现在 Download（快速体检报告.txt / 完整体检报告.txt）；\n" +
+    "可以先点「关闭」去干别的 —— 生成完会自动出现在 Download/完整体检报告.txt（同一个文件会不断更新）；\n" +
     "也可以点「重新生成」从头再来，或点「中止生成」把它彻底停掉。");
 }
 function loadEstimate() {
   if (repEst) return;
   ksuExec(`sh ${MODDIR}/fontctl.sh diag estimate`).then(out => {
     const e = diagKV(out);
-    if (e.fast_sec) {
+      if (e.full_sec) {
       repEst = e;
       if (repOpen() && repLastState && repLastState.state === "running") repPaintRunning(repLastState, repLastState.sub);
       if (repOpen() && repEl("reportChoice").style.display !== "none") repPaintChooser("");
@@ -2010,7 +2179,7 @@ async function reportMore() {
     repDisp.offset = next || (repDisp.offset + body.length);
     repDisp.size = total || repDisp.size;
     repDisp.shown += body.length;
-    repTxt().value += body;
+    repPutText(repTxt().value + body, false);   // 同步两种视图
     repTxt().scrollTop = repTxt().scrollHeight;
     if (repDisp.shown >= REP_VIEW_MAX) {
       repEl("reportMoreBtn").style.display = "none";
