@@ -2107,9 +2107,9 @@ async function repStart(mode) {
         if (s2.state !== "running" && s2.state !== "preparing") break;
       }
     }
-    // 只在"用户明确要生成"的时候才 force：这样关闭再进来永远不会重跑
-    const arg = useFull ? "bg force" : "bg force fast";
-    const r = (await ksuExec(`sh ${MODDIR}/fontctl.sh diag ${arg}`)).trim();
+    // 只在"用户明确要生成"的时候才 force：这样关闭再进来永远不会重跑。
+    // 1.0.9：只有一种口径（完整报告），不再传 fast —— 后端也已经删掉快速模式了。
+    const r = (await ksuExec(`sh ${MODDIR}/fontctl.sh diag bg force`)).trim();
     if (r.indexOf("OK:") !== 0) {
       repPaintSimple("error", "无法启动生成任务：" + (r.replace(/^ERROR:/, "") || "未知原因"));
       return;
