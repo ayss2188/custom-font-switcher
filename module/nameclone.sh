@@ -20,10 +20,57 @@ LIB=${LIB:-/data/adb/custom_font_lib}
 LOG="$LIB/.nameclone.log"
 mkdir -p "$LIB" 2>/dev/null
 tmo() {
+  # 给可能卡住的系统命令加超时。三层，从最可靠到最保守：
+  #   ① CFS_TMO_BIN（外部指定）
+  #   ② 系统自带 timeout（Android 7+ 的 toybox 基本都有）
+  #   ③ 纯 shell 看门狗（只有①②都没有时才用）
+  # ★ 看门狗的关键细节（1.0.9.2，踩过两次）：
+  #   · 只 kill 主进程是不够的 —— `dumpsys` 这类命令卡在内核里时不响应 TERM，
+  #     它 fork 出来的子进程还在，管道另一端（grep/head）就一直等，等于没超时。
+  #   · 但**无条件** `kill -TERM -$pid`（杀进程组）更危险：busybox 的 setsid 在
+  #     "当前进程已是组长"时会失败，后台命令就与脚本同组 → 杀组 = **把调用方自己杀掉**
+  #     （真机症状：报告正文生成了，最后写文件那一步却是空的）。
+  #   · 所以：**先看 setsid 有没有真的成功**；成功才杀组，失败只杀单个 pid。
   local t="$1"; shift
   if [ -n "$CFS_TMO_BIN" ] && [ -x "$CFS_TMO_BIN" ]; then "$CFS_TMO_BIN" "$t" "$@"; return $?; fi
   if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"; return $?; fi
-  "$@"
+  # ---- 以下只在"没有 timeout"时执行 ----
+  local o pid wd rc own=0
+  o="${LIB:-/data/local/tmp}/.tmo.out"
+  mkdir -p "${o%/*}" 2>/dev/null
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >"$o" 2>/dev/null &
+    pid=$!
+    # 新会话的组长 pid 就等于它自己；用它当"能不能杀组"的判据
+    [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ] && own=1
+  else
+    "$@" >"$o" 2>/dev/null &
+    pid=$!
+  fi
+  (
+    _i=0
+    while [ "$_i" -lt "$t" ]; do
+      sleep 1
+      kill -0 "$pid" 2>/dev/null || exit 0
+      _i=$((_i + 1))
+    done
+    if [ "$own" = 1 ]; then
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    else
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill -TERM "$wd" 2>/dev/null
+  cat "$o" 2>/dev/null
+  rm -f "$o" 2>/dev/null
+  [ "$rc" = 143 ] || [ "$rc" = 137 ] && rc=124
+  return "$rc"
 }
 blog() { printf '%s %s\n' "$(date '+%m-%d %H:%M' 2>/dev/null)" "$*" >> "$LOG" 2>/dev/null; }
 
