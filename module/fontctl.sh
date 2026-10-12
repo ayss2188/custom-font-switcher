@@ -385,8 +385,16 @@ make_plan() {
   _eff_scope "$sel"          # 不用 $(...)：SCOPE_VIA 要留在当前 shell 里给决策记录用
   scope="$EFF_SCOPE"
   kl=$(cfg_get keep_lang 0); ks=$(cfg_get keep_special 0)
-  # 1.0.8 起默认"全替换"（0）；自动让路（字体缺字形时保留那部分）在 slot_plan 里做。
+  # 1.0.9：界面已删掉这两个开关（默认全替换）；保留读取只为兼容老配置文件。
   SEL_FONT="$sel"            # 给 slot_plan/_meta_have 用：拿这个字体的 meta 判字形覆盖
+  # 极端保护：字体完全没有中文字形 → 中文槽位一个都不动
+  # （否则整个界面会变方块，用户连 WebUI 都看不清、没法换回来）。正常字体不会命中。
+  CJK_GUARD=0
+  if [ -f "$LIB/$sel.meta" ] && \
+     [ "$(sed -n 's/^cjk=//p' "$LIB/$sel.meta" 2>/dev/null | tail -n1 | tr -d '\r\n')" = 0 ]; then
+    CJK_GUARD=1
+  fi
+  export CJK_GUARD
   if [ "$scope" = combo ]; then
     slot_plan "$MODDIR" all "$kl" "$ks" > "$out"
   else
