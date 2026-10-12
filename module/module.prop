@@ -1,7 +1,7 @@
 id=custom_font_switcher
 name=自定义字体切换模块
-version=v1.0.9.1
-versionCode=1091
+version=v1.0.9.2
+versionCode=1092
 author=暗影双生
 description=[默认：无字体，不替换系统字体] 导入自己的 TTF/OTF 字体一键切换；自带挂载，无需元模块；自动识别机型，重启生效。
 updateJson=https://cdn.jsdelivr.net/gh/ayss2188/custom-font-switcher@main/update.json
