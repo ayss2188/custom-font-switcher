@@ -157,16 +157,32 @@ jobs:
             exit 1
           fi
 
-      - name: 主动刷新 CDN 缓存（让用户几分钟内就收到更新，而不是等 12 小时）
-        # 背景：CDN 会缓存 update.json，内容虽然更新了，用户读到的还是旧那份（实测卡了 3 小时以上）。
-        #   2026-10-12 实测：purge 之后立刻回源 —— purge 前给的是 v1.0.6（age=11555），
-        #   purge 后马上变成 v1.0.7（age=0）。所以这一步是真管用的，加上它用户几分钟就能看到更新。
-        # 注意：这一步**必须在账本提交之后**跑，否则刷掉的是旧内容，等于白刷。
-        # 老教程里写过"purge 刷不掉"，那是**另一种情况**（分支别名被钉在旧提交）；文件内容更新是有效的。
+      - name: 主动刷新 CDN 缓存（重试 + 自查，让用户尽快收到更新）
+        # 背景：CDN 会缓存 update.json，内容更新了用户读到的还是旧那份。
+        # 2026-10-12 完整实测（踩了三轮才搞清）：
+        #   · purge 的语义是"删这份缓存、下次回源"，**对文件内容有效**；
+        #   · 但 jsDelivr 还有一层"**main 分支名 → 哪个提交**"的解析缓存，purge 清不掉它 ——
+        #     所以有时 purge 完回源拿到的还是旧内容（别名还指着旧提交）。
+        #   · 发 1.0.8 时真遇到：CI 的 purge 那步 success 了，但 CDN 仍给 1.0.7；
+        #     手动再 purge 一次才跳到 1.0.8。
+        # 所以这里改成**多轮重试 + 每轮自查**：能刷到就提前结束，刷不到也把状态打出来（不当失败）。
         run: |
-          for f in "update.json" "UPDATE-${{ steps.ver.outputs.ver }}.md"; do
-            echo "→ purge $f"
-            curl -sS --max-time 25 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" || true
-            echo
+          VER="${{ steps.ver.outputs.ver }}"
+          URL="https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/update.json"
+          ok=0
+          for i in 1 2 3 4 5 6; do
+            for f in "update.json" "CHANGELOG.md"; do
+              curl -sS --max-time 25 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/$f" >/dev/null 2>&1 || true
+            done
+            sleep 12
+            GOT=$(curl -sS --max-time 25 "$URL" 2>/dev/null | sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' | head -n1)
+            echo "第 $i 轮：CDN 上的 update.json = ${GOT:-（读不到）}（期望 $VER）"
+            if [ "$GOT" = "$VER" ]; then ok=1; break; fi
           done
-          echo "刷新完成。若某个文件是新生成的（此前没被缓存过），purge 会报找不到 —— 属正常。"
+          if [ "$ok" = 1 ]; then
+            echo "CDN 已刷新：用户现在检查更新就能看到 $VER"
+          else
+            echo "::warning::CDN 还没跟上（jsDelivr 的 main 别名缓存，最长约 12 小时自愈）。"
+            echo "  · 不影响手动下载安装（Release 页那条路不走 CDN）；"
+            echo "  · 不影响包与账本的正确性（仓库里已经是对的）。"
+          fi
