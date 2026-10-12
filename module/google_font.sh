@@ -35,10 +35,57 @@ mkdir -p "$LIB" 2>/dev/null
 
 # 超时包装：优先用外部 timeout（测试可覆盖成垫片），没有就直接跑
 tmo() {
+  # 给可能卡住的系统命令加超时。三层，从最可靠到最保守：
+  #   ① CFS_TMO_BIN（外部指定）
+  #   ② 系统自带 timeout（Android 7+ 的 toybox 基本都有）
+  #   ③ 纯 shell 看门狗（只有①②都没有时才用）
+  # ★ 看门狗的关键细节（1.0.9.2，踩过两次）：
+  #   · 只 kill 主进程是不够的 —— `dumpsys` 这类命令卡在内核里时不响应 TERM，
+  #     它 fork 出来的子进程还在，管道另一端（grep/head）就一直等，等于没超时。
+  #   · 但**无条件** `kill -TERM -$pid`（杀进程组）更危险：busybox 的 setsid 在
+  #     "当前进程已是组长"时会失败，后台命令就与脚本同组 → 杀组 = **把调用方自己杀掉**
+  #     （真机症状：报告正文生成了，最后写文件那一步却是空的）。
+  #   · 所以：**先看 setsid 有没有真的成功**；成功才杀组，失败只杀单个 pid。
   local t="$1"; shift
   if [ -n "$CFS_TMO_BIN" ] && [ -x "$CFS_TMO_BIN" ]; then "$CFS_TMO_BIN" "$t" "$@"; return $?; fi
   if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"; return $?; fi
-  "$@"
+  # ---- 以下只在"没有 timeout"时执行 ----
+  local o pid wd rc own=0
+  o="${LIB:-/data/local/tmp}/.tmo.out"
+  mkdir -p "${o%/*}" 2>/dev/null
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >"$o" 2>/dev/null &
+    pid=$!
+    # 新会话的组长 pid 就等于它自己；用它当"能不能杀组"的判据
+    [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ] && own=1
+  else
+    "$@" >"$o" 2>/dev/null &
+    pid=$!
+  fi
+  (
+    _i=0
+    while [ "$_i" -lt "$t" ]; do
+      sleep 1
+      kill -0 "$pid" 2>/dev/null || exit 0
+      _i=$((_i + 1))
+    done
+    if [ "$own" = 1 ]; then
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    else
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill -TERM "$wd" 2>/dev/null
+  cat "$o" 2>/dev/null
+  rm -f "$o" 2>/dev/null
+  [ "$rc" = 143 ] || [ "$rc" = 137 ] && rc=124
+  return "$rc"
 }
 need_root() {
   [ "$(id -u 2>/dev/null)" = "0" ] && return 0
@@ -147,6 +194,26 @@ kill_consumers() {
 # ---------------------------------------------------------------------------
 do_status() {
   local fresh="$1" c
+  # ★ 1.0.9.2：**只读缓存模式**（报告专用）。设了 CFS_GF_CACHED_ONLY=1 就绝不跑 dumpsys。
+  #   为什么必须加这个口子：真机实测「诊断报告卡在谷歌字体兼容」——
+  #   `dumpsys package com.google.android.gms` 在 Android 17 / HyperOS 上要跑**几分钟**，
+  #   而诊断报告**根本不需要实时值**（界面有专门的「重新检测」按钮）。
+  #   判据全部取自本地文件，毫秒级：
+  #     · 有状态缓存文件 → 直接用它的值
+  #     · 没有缓存：有账本（我们停用过）→ on；否则 → off（或没装 GMS → nogms）
+  if [ "${CFS_GF_CACHED_ONLY:-0}" = 1 ]; then
+    c=$(cached_status) && { printf '%s\n' "$c"; return 0; }
+    if [ -f "$STATUS_CACHE" ]; then
+      c=$(tr -d '[:space:]' < "$STATUS_CACHE" 2>/dev/null)
+      case "$c" in on|off|foreign|nogms) printf '%s\n' "$c"; return 0 ;; esac
+    fi
+    # 没缓存：用"账本 + GMS 是否存在"粗判（都是本地文件判断，不起进程）
+    if [ ! -d "/data/data/$GMS" ] && [ ! -d "/data/user/0/$GMS" ] && [ ! -d "/data/user_de/0/$GMS" ]; then
+      printf 'nogms\n'; return 0
+    fi
+    if owned; then printf 'on\n'; else printf 'off\n'; fi
+    return 0
+  fi
   if [ "$fresh" != fresh ]; then
     c=$(cached_status) && { printf '%s\n' "$c"; return 0; }
   fi
