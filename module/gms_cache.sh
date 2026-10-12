@@ -33,10 +33,57 @@ UMNT=${UMNT:-/system/bin/umount}; [ -x "$UMNT" ] || UMNT="$(command -v umount 2>
 
 mkdir -p "$LIB" 2>/dev/null
 tmo() {
+  # 给可能卡住的系统命令加超时。三层，从最可靠到最保守：
+  #   ① CFS_TMO_BIN（外部指定）
+  #   ② 系统自带 timeout（Android 7+ 的 toybox 基本都有）
+  #   ③ 纯 shell 看门狗（只有①②都没有时才用）
+  # ★ 看门狗的关键细节（1.0.9.2，踩过两次）：
+  #   · 只 kill 主进程是不够的 —— `dumpsys` 这类命令卡在内核里时不响应 TERM，
+  #     它 fork 出来的子进程还在，管道另一端（grep/head）就一直等，等于没超时。
+  #   · 但**无条件** `kill -TERM -$pid`（杀进程组）更危险：busybox 的 setsid 在
+  #     "当前进程已是组长"时会失败，后台命令就与脚本同组 → 杀组 = **把调用方自己杀掉**
+  #     （真机症状：报告正文生成了，最后写文件那一步却是空的）。
+  #   · 所以：**先看 setsid 有没有真的成功**；成功才杀组，失败只杀单个 pid。
   local t="$1"; shift
   if [ -n "$CFS_TMO_BIN" ] && [ -x "$CFS_TMO_BIN" ]; then "$CFS_TMO_BIN" "$t" "$@"; return $?; fi
   if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"; return $?; fi
-  "$@"
+  # ---- 以下只在"没有 timeout"时执行 ----
+  local o pid wd rc own=0
+  o="${LIB:-/data/local/tmp}/.tmo.out"
+  mkdir -p "${o%/*}" 2>/dev/null
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >"$o" 2>/dev/null &
+    pid=$!
+    # 新会话的组长 pid 就等于它自己；用它当"能不能杀组"的判据
+    [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ] && own=1
+  else
+    "$@" >"$o" 2>/dev/null &
+    pid=$!
+  fi
+  (
+    _i=0
+    while [ "$_i" -lt "$t" ]; do
+      sleep 1
+      kill -0 "$pid" 2>/dev/null || exit 0
+      _i=$((_i + 1))
+    done
+    if [ "$own" = 1 ]; then
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    else
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill -TERM "$wd" 2>/dev/null
+  cat "$o" 2>/dev/null
+  rm -f "$o" 2>/dev/null
+  [ "$rc" = 143 ] || [ "$rc" = 137 ] && rc=124
+  return "$rc"
 }
 blog() { printf '%s %s\n' "$(date '+%m-%d %H:%M' 2>/dev/null)" "$*" >> "$LOG" 2>/dev/null; }
 
@@ -217,20 +264,29 @@ do_status() {
 }
 
 do_diag() {
-  local t src d n
+  local t src d n total
+  # ★ 1.0.9.2：**大改，为了不等它**。
+  #   以前这里会 `scan_targets`（对缓存目录里**每个** ttf/otf 跑一次
+  #   is_google_family → font_families 解析字体名），命中的再逐个查账本 + 查挂载。
+  #   商店下载过很多字体时就是**几百次字体解析 + 几百次 grep** —— 报告卡在这一步很久（真机反馈过）。
+  #
+  #   现在只收"判断兼容有没有生效"真正需要的几个数字，不再逐个文件列清单：
+  #     · 缓存目录在不在、里面有多少 ttf/otf（只数个数，**不解析字体**）
+  #     · 账本里记了多少条（= 我们挂上去的）
+  #     · 当前实际挂着多少条、有没有对不上的
+  #   想看逐个文件清单？那是"排障"级别的事，需要时再单独做，不该拖住整份报告。
   for d in $CACHE_DIRS; do
     n=0
     [ -d "$d" ] && n=$(find "$d" -maxdepth 3 -type f \( -name '*.ttf' -o -name '*.otf' \) 2>/dev/null | grep -c .)
     echo "缓存目录=$d（$([ -d "$d" ] && echo 在 || echo 不存在)，字体文件 ${n:-0} 个）"
   done
   src=$(source_font) && echo "用的字体=$src" || echo "用的字体=没有（还没导入字体？）"
-  echo "命中该顶替的文件："
-  scan_targets 2>/dev/null | while IFS= read -r t; do
-    if in_journal "$t"; then echo "  [已顶替] $t"
-    elif mounted_now "$t"; then echo "  [挂着但不在账本里] $t"
-    else echo "  [未顶替] $t"; fi
-  done
-  echo "账本=$( [ -f "$JOURNAL" ] && grep -c . "$JOURNAL" 2>/dev/null || echo 0 ) 条"
+  total=0
+  [ -f "$JOURNAL" ] && { total=$(grep -c . "$JOURNAL" 2>/dev/null); total=${total:-0}; }
+  # 行首保持 "账本="：回归测试断言用的是 grep -c '^账本='，
+  # 写成"账本里记着 N 条"会让断言假失败（内容一样，格式要对齐）。
+  echo "账本=$total 条（= 本模块顶替过的下载字体数量）"
+  echo "本次实测：$(do_status)"
   echo "边界：只顶替 .ttf/.otf（排除 Google Sans Code / emoji）；.ttc 不碰；关闭兼容或卸载会还原"
 }
 
