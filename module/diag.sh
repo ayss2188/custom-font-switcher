@@ -2532,7 +2532,7 @@ case "$MODE" in
     #   bg              已有正在跑的/刚生成好的，就直接复用（别重算）
     #   bg force        强制重新生成（先把正在跑的干掉）
     #   bg fast         轻量模式：只算必要字体的指纹，跳过 cmd font dump / dumpsys（不影响主要结论）
-    #   bg force fast   组合使用
+    #   （1.0.9 起不再有 fast：只有完整报告一种口径；传了 fast 也会被忽略）
     mkdir -p "$LIB" "$WEB" 2>/dev/null
     force=0; fast=0
     for a in "$2" "$3"; do
