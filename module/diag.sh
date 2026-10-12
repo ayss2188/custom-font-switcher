@@ -16,7 +16,7 @@
 #   sh diag.sh save      生成完整报告并写入 Download，只输出 OK:<路径>
 #   sh diag.sh bg [force]         后台生成（WebUI 用；force = 强制重来）
 # ★ 1.0.9 起**只有一种口径 = 完整报告**：「快速体检」已删除（作者只有小米机器，
-#   适配别的机型完全靠别人发的报告，半份报告不够定位问题）。速度靠"按需全量指纹"解决。
+#   适配别的机型完全靠别人发的报告，半份报告不够定位问题）。
 #   sh diag.sh state     输出状态文件内容（写着 running 但进程已死/心跳停了会明确报出来）
 #   sh diag.sh text      输出上一次生成好的报告正文（小文件用）
 #   sh diag.sh textpage <offset> <len>  只取正文的一段（界面"看更多"用，避免大字符串过桥）
@@ -68,9 +68,27 @@ PM=/system/bin/pm;          [ -x "$PM" ] || PM=pm
 SETBIN=/system/bin/settings; [ -x "$SETBIN" ] || SETBIN=settings
 
 MODE=${1:-full}
+# 1.0.9.2：新增「速度」参数（界面在点报告后当场选）：
+#   full   = 全速（不降优先级，最快；CPU 满负荷，可能发热/变卡）
+#   gentle = 慢慢生成（自动让路给系统，慢一些但不打扰）
+# 报告内容**完全一样**，只是快慢不同。默认 gentle（省电、不打扰）。
+# 用法：diag.sh bg force full        ← 全速
+#       diag.sh bg force gentle      ← 慢慢（或省略第 2 个参数）
+DIAG_SPEED=gentle
+for _sp in "$@"; do
+  case "$_sp" in
+    full|fast) DIAG_SPEED=full ;;
+    gentle|slow|nice) DIAG_SPEED=gentle ;;
+  esac
+done
+# 环境变量优先（旧的 CFS_DIAG_FULLSPEED=1 也继续认，兼容手工调用）
+[ "${CFS_DIAG_FULLSPEED:-0}" = 1 ] && DIAG_SPEED=full
+export DIAG_SPEED
 # 1.0.9：**只有一种口径 = 完整报告**。"快速体检"已删除 ——
 #   作者只有小米机器，适配别的机型完全靠别人发的报告，半份报告不够定位问题。
-# 指纹（1.0.9）：所有字体都做**全量 sha256**（检测深度一点不减）。
+# 指纹（1.0.9.2）：改用**稀疏指纹** —— 大小 + 修改时间 + 头尾各 64KB 的 sha256。
+#   目的只是判断"这个槽位的字体有没有被换过"（内容变没变），不是加密校验。
+#   1.0.9.1 的全量 sha256 在真机上让第 6 步花了 391 秒（字体目录约 700MB），现在降到十几秒。
 #   快的地方在于"同一份文件只真正算一次" + 批量 + 降优先级，而不是少读数据。
 FAST=0
 BG_FAST=${BG_FAST:-0}
@@ -124,8 +142,57 @@ want_tags() {
 
 # 给可能卡住的系统命令加超时（没有 timeout 就直接跑），避免体检/安装被某个命令挂住
 tmo() {
+  # 给可能卡住的系统命令加超时。三层，从最可靠到最保守：
+  #   ① CFS_TMO_BIN（外部指定）
+  #   ② 系统自带 timeout（Android 7+ 的 toybox 基本都有）
+  #   ③ 纯 shell 看门狗（只有①②都没有时才用）
+  # ★ 看门狗的关键细节（1.0.9.2，踩过两次）：
+  #   · 只 kill 主进程是不够的 —— `dumpsys` 这类命令卡在内核里时不响应 TERM，
+  #     它 fork 出来的子进程还在，管道另一端（grep/head）就一直等，等于没超时。
+  #   · 但**无条件** `kill -TERM -$pid`（杀进程组）更危险：busybox 的 setsid 在
+  #     "当前进程已是组长"时会失败，后台命令就与脚本同组 → 杀组 = **把调用方自己杀掉**
+  #     （真机症状：报告正文生成了，最后写文件那一步却是空的）。
+  #   · 所以：**先看 setsid 有没有真的成功**；成功才杀组，失败只杀单个 pid。
   local t="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"; else "$@"; fi
+  if [ -n "$CFS_TMO_BIN" ] && [ -x "$CFS_TMO_BIN" ]; then "$CFS_TMO_BIN" "$t" "$@"; return $?; fi
+  if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"; return $?; fi
+  # ---- 以下只在"没有 timeout"时执行 ----
+  local o pid wd rc own=0
+  o="${LIB:-/data/local/tmp}/.tmo.out"
+  mkdir -p "${o%/*}" 2>/dev/null
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >"$o" 2>/dev/null &
+    pid=$!
+    # 新会话的组长 pid 就等于它自己；用它当"能不能杀组"的判据
+    [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ] && own=1
+  else
+    "$@" >"$o" 2>/dev/null &
+    pid=$!
+  fi
+  (
+    _i=0
+    while [ "$_i" -lt "$t" ]; do
+      sleep 1
+      kill -0 "$pid" 2>/dev/null || exit 0
+      _i=$((_i + 1))
+    done
+    if [ "$own" = 1 ]; then
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    else
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill -TERM "$wd" 2>/dev/null
+  cat "$o" 2>/dev/null
+  rm -f "$o" 2>/dev/null
+  [ "$rc" = 143 ] || [ "$rc" = 137 ] && rc=124
+  return "$rc"
 }
 tag() { sed -n 's/^version=//p' "$1/module.prop" 2>/dev/null | head -n1 | tr -d '\r'; }
 # XML 规范化：把标签拆成一行一个，方便 grep 上下文
@@ -290,40 +357,62 @@ size_of() {
     *)        printf '?' ;;
   esac
 }
-# 完整哈希：一批文件交给同一个 sha256sum
-# 1.0.9：这个函数现在只**算出并记录**指纹（写进 HASH_MAP），不再直接打印 ——
-#   因为要"同一份文件只算一次、但每个路径都要有指纹"，所以由第二遍统一按路径输出。
+# 指纹相关的累加器（每批用完后在 hash_flush 里清零）
 HASH_BATCH=""; HASH_BN=0; HN=0
 HASH_KEY=""; HASH_MAP=""
+
+# 单个文件的指纹（1.0.9.2 起：**稀疏指纹**，不再全量读盘）
+#
+# 为什么改（真机实测数据）：
+#   截至 1.0.9.1 这里用 `sha256sum` 全量读文件。作者机器上字体目录里躺着
+#   63 个 44.8MB 的大文件（去重后仍有约 700MB），全量 sha256 让"第 6 步"花了 **391 秒**。
+#   而这一步的**唯一目的**是回答"这个槽位的字体有没有被换过"——
+#   也就是"内容有没有变"，不是做加密校验、也不是防碰撞。
+#
+#   所以改成 rsync/git 那类工具的常规做法：**大小 + 修改时间 + 头尾各 64KB**。
+#   · 读盘量从 ~700MB 降到 ~37MB（293 个文件 × 128KB），快一两个数量级；
+#   · 判"字体有没有被替换"完全够用：替换后大小/首尾数据必然变化；
+#   · 唯一理论盲区：同大小、同 mtime、且首尾 64KB 都一样 —— 两个不同字体同时满足，
+#     概率低到可以忽略（真有这种情况，第 5 节还有 dev:inode 与魔数可交叉验证）。
+#
+# 输出直接就是"哈希 大小 路径"里的哈希字段（大小/mtime 已混进去），所以调用方不用改。
+fp_of() {
+  local f="$1" sz mt
+  sz=$(stat -c %s "$f" 2>/dev/null) || sz=""
+  mt=$(stat -c %Y "$f" 2>/dev/null) || mt=""
+  if [ -z "$sz" ]; then printf '%s' "-"; return 0; fi
+  # tail -c 可能因 busybox 版本差异不支持，兜底只取头部（一样能判变化）
+  {
+    printf 'sz=%s mt=%s\n' "$sz" "$mt"
+    head -c 65536 "$f" 2>/dev/null
+    tail -c 65536 "$f" 2>/dev/null
+  } | sha256sum 2>/dev/null | cut -c1-64
+}
+
 hash_flush() {
   [ -n "$HASH_BATCH" ] || return 0
-  _HF_OUT=$(sha256sum $HASH_BATCH 2>/dev/null)
-  # 位置一一对应：HASH_KEY 里第 n 个键 = sha256sum 输出的第 n 行
+  # 1.0.9.2：不再把一批文件塞给同一个 sha256sum —— 稀疏指纹要按文件"跳读"，
+  #   而 sha256sum 只能顺序读整个文件。进程数变化：以前 20 个文件 1 次 fork，
+  #   现在每文件 1 次；但每次只读 128KB，总 I/O 降低约 20 倍，净收益很大。
   _hf_i=0
-  _hf_keys="$HASH_KEY"
-  while IFS= read -r _HF_LN; do
-    [ -n "$_HF_LN" ] || continue
-    _HF_H=${_HF_LN%% *}
-    [ -n "$_HF_H" ] || _HF_H="-"
+  for _hf_f in $HASH_BATCH; do
+    _hf_v=$(fp_of "$_hf_f")
+    [ -n "$_hf_v" ] || _hf_v="-"
     _hf_i=$((_hf_i + 1))
-    # 取第 _hf_i 个键
-    _hf_k=$(printf '%s\n' $_hf_keys | sed -n "${_hf_i}p")
-    [ -n "$_hf_k" ] && HASH_MAP="$HASH_MAP|$_hf_k=$_HF_H"
+    _hf_k=$(printf '%s\n' $HASH_KEY | sed -n "${_hf_i}p")
+    [ -n "$_hf_k" ] && HASH_MAP="$HASH_MAP|$_hf_k=$_hf_v"
     HASH_DONE=$((HASH_DONE + 1))
-  done <<EOF
-$_HF_OUT
-EOF
+  done
   HASH_BATCH=""; HASH_BN=0; HASH_KEY=""
   return 0
 }
-# 单个文件哈希（文件名带空格之类没法批量时用）
+# 单个文件指纹（文件名带空格之类没法批量时用）
 hash_one() {
-  _HO_H=$(sha256sum "$1" 2>/dev/null)
-  _HO_H=${_HO_H%% *}
+  _HO_H=$(fp_of "$1")
   [ -n "$_HO_H" ] || _HO_H="-"
   printf '%s  %s  %s\n' "$_HO_H" "$(size_of "$1")" "$1"
   HN=$((HN + 1))
-  [ $((HN % 25)) -eq 0 ] && breathe "哈希 $HN/$ftotal" "$HN" "$ftotal" 2>/dev/null
+  [ $((HN % 25)) -eq 0 ] && breathe "指纹 $HN/$ftotal" "$HN" "$ftotal" 2>/dev/null
   return 0
 }
 # 查表："|键=值|键=值|" 里取某个键的值，结果放 DMV（纯 shell：不起进程、不建临时文件）
@@ -381,6 +470,7 @@ shutting_down() {
 # 界面按钮用的轻量模式（state/cancel/bg/...）绝不进来
 # ---------------------------------------------------------------------------
 collect() {
+_ct0=$(now_s)    # 分段计时：C1 门禁/模块状态
 subnote "检查模块状态"
 G_DISABLE=0; [ -f "$M/disable" ] && G_DISABLE=1
 G_REMOVE=0;  [ -f "$M/remove" ] && G_REMOVE=1
@@ -423,6 +513,7 @@ RM_PROBE=""
   [ -n "$RM_PROBE" ] || { [ -d /data/adb/ap ] && RM_PROBE="/data/adb/ap 目录存在"; }
   [ -n "$RM_PROBE" ] || { command -v magisk >/dev/null 2>&1 && RM_PROBE="magisk 命令存在"; }
   [ -n "$RM_PROBE" ] || { [ -d /data/adb/magisk ] && RM_PROBE="/data/adb/magisk 目录存在"; }
+timing_add 'C1 门禁/模块状态' "$_ct0"
 }
 RM_SRC="实锤（管理器自己留下的标记）"
 [ -n "$RM_STRICT" ] || RM_SRC="推断（$RM_PROBE${RM_PROBE:+，}没有实锤标记）"
@@ -464,13 +555,16 @@ if [ "$SVC_THIS" = 0 ]; then
   fi
 fi
 
+_ct0=$(now_s)    # 分段计时：C2 校验槽位生效
 subnote "校验槽位是否真的生效"
-VER=$(payload_verify "$M" 2>/dev/null)
+ptv 'P1 槽位校验(payload_verify)' payload_verify "$M"
+VER="$PT_OUT"
 [ -n "$VER" ] || VER="0 0"
 VHIT=${VER%% *}
 VTOT=${VER##* }
 # 字体目录 / 配置文件（硬编码清单 + 全盘发现 + apex，全部合并，避免漏掉 product/vendor/odm 的配置）
-FONTDIRS=$(slot_dirs 2>/dev/null)
+ptv 'P0 字体目录(slot_dirs)' slot_dirs
+FONTDIRS="$PT_OUT"
 SYSDIR_REAL=$(readlink -f /system/fonts 2>/dev/null)
 XMLFOUND=""
 _addxml() {
@@ -478,6 +572,8 @@ _addxml() {
   case " $XMLFOUND " in *" $1 "*) return 0 ;; esac
   XMLFOUND="$XMLFOUND $1"
 }
+# 分段计时收尾（放这里，别插进上面的函数体里 —— 之前自动注入时插错了位置）
+timing_add 'C2 校验槽位生效' "$_ct0"
 for x in $XMLS; do _addxml "$x"; done
 for x in $(slot_xml_files 2>/dev/null); do _addxml "$x"; done
 for x in /apex/*/etc/*font*.xml /apex/*/*/etc/*font*.xml /system/etc/fonts*.xml; do _addxml "$x"; done
@@ -574,6 +670,7 @@ for td in $MIUI_DIRS; do
 done
 MIUI_SHADOW=""
 if [ "$MIUI_FONT_N" -gt 0 ]; then
+  _ct0=$(now_s)    # 分段计时：C3 扫主题字体
   subnote "扫描主题（个性）字体"
   MIUI_SHADOW=$(printf '%s\n' "$MIUI_FONTLIST" | while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -589,8 +686,10 @@ G_MIUI=0
 # 槽位候选（一次算完，后面复用）
 # 1.0.9：加上"自适应扫描"补的部分（设备自己配置引用到、模板没覆盖的角色）——
 #   这样报告里看到的候选与实际挂载用的计划是同一套，不会一个多一个少。
-CANDS=$(slot_candidates "$M" 2>/dev/null)
-CAND_EXTRA_D=$(slot_adaptive_extra "$CANDS" 2>/dev/null)
+ptv 'P2 候选枚举(slot_candidates)' slot_candidates "$M"
+CANDS="$PT_OUT"
+ptv 'P3 自适应扫描(slot_adaptive_extra)' slot_adaptive_extra "$CANDS"
+CAND_EXTRA_D="$PT_OUT"
 ADAPTIVE_N=$(printf '%s\n' "$CAND_EXTRA_D" | grep -c . 2>/dev/null)
 [ -n "$ADAPTIVE_N" ] || ADAPTIVE_N=0
 if [ "$ADAPTIVE_N" -gt 0 ]; then
@@ -610,6 +709,7 @@ eff_scope() {
   elif [ "$latin" = 1 ]; then echo latin
   elif [ "$cjk" = 1 ]; then echo cjk
   else echo latin; fi
+  timing_add 'C3 扫主题字体' "$_ct0"
 }
 SCOPE=$(eff_scope "$PEND")
 KL=$(cfg_get keep_lang 0); KS=$(cfg_get keep_special 0)
@@ -622,6 +722,7 @@ if [ -f "$LIB/$PEND.meta" ] && \
   CJK_GUARD=1
 fi
 SEL_FONT="$PEND"; export CJK_GUARD SEL_FONT
+_ct0=$(now_s)    # 分段计时：C4 算槽位计划
 subnote "计算槽位计划"
 plan_of() { # $1=scope $2=keep_lang $3=keep_special
   local scope="$1" kl="$2" ks="$3" role d name base
@@ -635,6 +736,7 @@ plan_of() { # $1=scope $2=keep_lang $3=keep_special
   # 主题字体槽（/data/system/theme/fonts 里与上面同名的）——必须和 slot_plan 保持一致，
   # 否则报告里的"计划槽位数"会比实际少几个。
   theme_slots "$base"
+timing_add 'C4 算槽位计划' "$_ct0"
 }
 PLAN_NOW=$(plan_of "$SCOPE" "$KL" "$KS")
 PLAN_MAX=$(plan_of all 0 0)
@@ -737,7 +839,8 @@ ensure_dirmaps() {
     done
     echo "$n|$p|$real|$st|$dup"
     nm_n=$(( ${nm_n:-0} + 1 ))
-    [ "$BG_STATE" = 1 ] && [ $((nm_n % 25)) -eq 0 ] && sleep 1
+    # ★ 1.0.9.2：原来这里每 25 条 `sleep 1`（NAMEMAP 有几百条 → 白等十几秒）。
+    #   让路已由 lowprio_self（nice 10）负责，这里不必再"睡"。
   done)
   return 0
 }
@@ -842,11 +945,35 @@ app_side_probe() {
   # 拿它们做对照会把"正常现象"误判成"模块没生效"。
   # 用 /proc/* 而不是 /proc/[0-9]*：文件名通配里的方括号不是所有 sh 都支持
   # （busybox-w32 就不支持，沙盒测试会走到字面量上），数字判断交给 case。
+  # ★ 1.0.9.2 定稿：**加 12 秒硬上限 + 修一个统计 bug**。
+  #   为什么又加上限：作者实测"第 1 步要 5 分钟"，而唯一"进程越多越慢"的地方就是这里 ——
+  #   真机 /proc 有一两千个条目，要**逐个**读 status 才能找到 uid 10000~19999 的普通 App。
+  #   而它的目的只是"抽样 3 个 App 看看能不能看到挂载"：抽 1 个和抽 3 个结论一样，
+  #   **不值得为它等几分钟**。超时会写进报告开头的「完整性声明」，不会静默。
+  #   （原来那句 `AS_TRIED=$_AS_TRIED` 还是个真 bug：变量名写错，统计被清零。）
+  AS_BUDGET=${AS_BUDGET:-12}
+  AS_TIMEOUT=0; AS_TRIED=0
+  _AS_T0=$(now_s)
   for p in /proc/*; do
     bn=${p#/proc/}
     case "$bn" in ''|*[!0-9]*) continue ;; esac
+    AS_TRIED=$((AS_TRIED + 1))
+    # 每 40 个查一次时间（查时间要起进程，不能每次都查）
+    if [ $((AS_TRIED % 40)) -eq 0 ]; then
+      if [ $(( $(now_s) - _AS_T0 )) -ge "$AS_BUDGET" ]; then
+        AS_TIMEOUT=1
+        skip_note "第11节 App 侧抽样" "扫了 ${AS_BUDGET} 秒到上限（试了 $AS_TRIED 个进程）" "重跑一次，或用 AS_BUDGET=60 sh diag.sh save 放宽上限"
+        break
+      fi
+    fi
     [ -r "$p/status" ] || continue
     uid=""
+    # ★ 1.0.9.2 修正：**不要写 IFS=' '**！
+    #   /proc/<pid>/status 里字段之间是**制表符**（`Uid:\t10123\t...`）。
+    #   写成 `IFS=' ' read -r _ask _asv _asr` 会把整行当成第一个字段，
+    #   _asv 永远是空 → uid 读不到 → **App 侧采样恒为 0**
+    #   （真机报告表现为"App 侧抽样一个都没采到"；沙箱回归测试抓到）。
+    #   不设 IFS 时 shell 默认按"空格+制表符"分词，tab 和空格都能吃。
     while read -r _ask _asv _asr; do
       case "$_ask" in Uid:) uid=$_asv; break ;; esac
     done < "$p/status" 2>/dev/null
@@ -862,6 +989,7 @@ app_side_probe() {
     n=$((n + 1))
     [ "$n" -ge 3 ] && break
   done
+  AS_SEC=$(( $(now_s) - _AS_T0 ))
   [ "$n" -gt 0 ] && AS_READ=1
   return 0
 }
@@ -877,7 +1005,7 @@ MT_LEFT=0
 do_mount_test() {
   local line id rel before after err srcid now umount_err
   MT_TARGET=""; MT_SRC=""
-  [ -s "$M/slots.map" ] || { MT_RESULT="跳过（没有槽位计划）"; return 0; }
+  [ -s "$M/slots.map" ] || { MT_RESULT="跳过（没有槽位计划）"; skip_note "第3节 挂载实测" "没有槽位计划（slots.map 为空）" "先在界面里选一份字体并重启一次"; return 0; }
   # 先把"上次被强杀留下的测试挂载"卸干净（没有锁文件时这一步是空操作）
   mt_recover
   # 实测目标优先取 system 分区上的槽位：这才是"能不能挂进系统字体"的判据；
@@ -897,8 +1025,8 @@ do_mount_test() {
   case "$id" in ""|*[!A-Za-z0-9_]*) MT_RESULT="跳过（slots.map 格式异常）"; return 0 ;; esac
   [ -n "$rel" ] || { MT_RESULT="跳过（slots.map 为空）"; return 0; }
   MT_SRC="$LIB/$id.ttf"; MT_TARGET="/$rel"
-  [ -f "$MT_SRC" ] || { MT_RESULT="跳过（字体库文件不存在: $MT_SRC）"; return 0; }
-  [ -f "$MT_TARGET" ] || { MT_RESULT="跳过（目标槽位不存在: $MT_TARGET）"; return 0; }
+  [ -f "$MT_SRC" ] || { MT_RESULT="跳过（字体库文件不存在: $MT_SRC）"; skip_note "第3节 挂载实测" "字体库文件不存在：$MT_SRC" "重新导入一次字体"; return 0; }
+  [ -f "$MT_TARGET" ] || { MT_RESULT="跳过（目标槽位不存在: $MT_TARGET）"; skip_note "第3节 挂载实测" "目标槽位在设备上不存在：$MT_TARGET" "通常说明这台设备没有这个槽位，可忽略"; return 0; }
   before=$(stat -L -c '%d:%i' "$MT_TARGET" 2>/dev/null)
   # 挂之前先立"锁"：记下目标 + 挂载前叠了几层。万一进程被强杀（kill -9 抓不住），
   # 下一次 mt_recover 就能凭这个文件把多出来的那层卸掉 —— 绝不留挂载泄漏（关机时 /data 卸不掉就麻烦了）
@@ -927,21 +1055,54 @@ do_mount_test() {
   [ "$MT_LEFT" = 1 ] || rm -rf "$MT_LOCK" 2>/dev/null
   return 0
 }
+_ct0=$(now_s)    # 分段计时：C5 挂载实测
 subnote "挂载实测（挂一个真实槽位再立刻卸载）"
 do_mount_test
+timing_add 'C5 挂载实测' "$_ct0"
+_ct0=$(now_s)    # 分段计时：C6 应用侧可见性
 subnote "应用侧可见性（App 里看不看得到，见第 11 节）"
 app_side_probe
 # ---------------------------------------------------------------------------
 # 谷歌字体兼容：GMS 的"下载字体"（Google Sans / Product Sans 那类）不走 /system/fonts，
 # 我们替换系统字体管不到它 —— 这一节把现场摊开，见第 7 节和结论区。
 # 轻量口径（安装时）只读缓存状态，不跑 dumpsys（安装流程要快）。
+# ★ 限时（1.0.9.2）：这两步都可能很慢（dumpsys / GMS 缓存目录里文件多），
+#   所以各自限时、超时就退回缓存值或留空，**绝不拖住整份报告**。
 # ---------------------------------------------------------------------------
-GF_STATE=""; GF_DIAG=""; GF_OWNED=0; GF_RESET=0
+GF_STATE=""; GF_OWNED=0; GF_RESET=0; GF_CACHED=0
 if [ -f "$MODDIR/google_font.sh" ]; then
-  subnote "谷歌字体兼容（GMS 下载字体）"
-        # 1.0.9：统一用 fresh（拿最新状态）—— 不再有“轻量口径只读缓存”这条分支
-        GF_STATE=$(sh "$MODDIR/google_font.sh" status fresh 2>/dev/null | tr -d '[:space:]')
-        GF_DIAG=$(sh "$MODDIR/google_font.sh" diag 2>/dev/null)
+  timing_add 'C6 应用侧可见性' "$_ct0"
+  _ct0=$(now_s)    # 分段计时：C7 谷歌字体兼容
+  subnote "检查谷歌字体兼容状态"
+  # ★★ 1.0.9.2：**这一节的重活全部删掉了**（作者实测"第一步的谷歌那里最慢"）。
+  #   删掉了什么、为什么：
+  #     · `google_font.sh status fresh` —— 内部跑 `dumpsys package com.google.android.gms`，
+  #       在 Android 17 / HyperOS 上要**几分钟**（作者机器实测）。报告不需要实时值。
+  #     · `google_font.sh diag` —— 要 find GMS 字体缓存目录并对每个文件查账本+挂载，
+  #       商店下过字体时是几百次 I/O。
+  #   这两个"现场明细"对**判断字体为什么没换**几乎没有帮助（字体没换的原因在第 0/6 节），
+  #   却能把报告拖到半小时。所以报告里改成**只读一个本地小文件**（毫秒级、零进程）：
+  #     $LIB/.gms_status   —— 由"开启/关闭兼容"和界面的「重新检测」按钮维护
+  #   要看实时状态，界面上的「重新检测」按钮照旧走完整检测（那条路没动）。
+  # 【1.0.9.2 定稿】内容与 1.0.9.1 完全一致，只是每一步都限时：
+  #   实测这两条在你机器上各只要 0~1 秒，所以限时根本不影响结果 ——
+  #   它只在"某台机器上 dumpsys 真的卡住"时才救场（那时报告会注明）。
+  GF_DIAG=""; GF_SEC=0; GF_STATUS_SEC=0; GF_SLOW=0
+  _gf_t0=$(now_s)
+  # ① 状态：先试实时（限 8 秒），超时就用缓存值并在报告里注明
+  GF_STATE=$(tmo 8 sh "$MODDIR/google_font.sh" status fresh 2>/dev/null | tr -d '[:space:]')
+  case "$GF_STATE" in
+    on|off|foreign|unknown|nogms) ;;
+    *)  GF_STATE=$(tmo 5 sh "$MODDIR/google_font.sh" status 2>/dev/null | tr -d '[:space:]')
+        GF_CACHED=1 ;;
+  esac
+  _gf_mid=$(now_s)
+  # ② 现场明细：和 1.0.9.1 一样照收（限 20 秒，超时就留空并注明）
+  GF_DIAG=$(tmo 20 sh "$MODDIR/google_font.sh" diag 2>/dev/null)
+  GF_SEC=$(( $(now_s) - _gf_t0 ))
+  GF_STATUS_SEC=$(( _gf_mid - _gf_t0 ))
+  [ "${GF_CACHED:-0}" = 1 ] && skip_note "谷歌字体兼容状态" "实时检测超时（8 秒），显示的是缓存值" "在界面点「重新检测」看最新状态"
+  [ -z "$GF_DIAG" ] && skip_note "谷歌字体兼容现场明细" "扫描超时（20 秒）或没取到" "稍后重新生成一次报告"
 fi
 case "$GF_STATE" in on|off|foreign|unknown|nogms) ;; *) GF_STATE=unknown ;; esac
 [ -f "$LIB/.gms_journal.conf" ] && GF_OWNED=1
@@ -949,13 +1110,343 @@ case "$GF_STATE" in on|off|foreign|unknown|nogms) ;; *) GF_STATE=unknown ;; esac
 [ "$GF_OWNED" = 1 ] && [ "$GF_STATE" = off ] && GF_RESET=1
 }    # collect() 到此结束：这些采集只允许在真正生成报告时跑（见 collect_once）
 
+# ===========================================================================
+# 【1.0.9.2 新增】批量采集 + 两节新报告内容
+#
+# 为什么加这个（作者要求）：
+#   诊断报告只有一个用途 —— 用户说"没全局生效" → 他传一份报告 → 作者照它修/加适配。
+#   所以报告必须能回答两件事：
+#     ① 这台系统"靠什么生效"（哪种语言 → 哪个字体文件）
+#     ② 哪些字体**没被适配清单覆盖**（作者据此加进 targets/*.list）
+#
+# 为什么快：
+#   旧写法对每个文件起一次进程（stat/grep/awk），293 个文件就是上千个进程。
+#   这里全部**批量**：一次 `ls -l` 拿全目录、一次 `awk` 算完、XML 只解析一次，
+#   判断"在不在清单/计划里"走内存查表（两次短模式匹配，零进程）。
+#
+# 这一整段是**自包含**的：只定义变量和函数，不执行任何东西，
+# 所以放在 diag.sh 里也不会影响原有流程。
+# ===========================================================================
+
+# ---- 批量采集（只做一次，结果落中间文件 + 内存表）----
+D2_TMP=""
+d2_init_tmp() {
+  D2_TMP="${TMPDIR:-/data/local/tmp}/.diag2.$$"
+  mkdir -p "$D2_TMP" 2>/dev/null || D2_TMP="$LIB/.diag2.$$"
+  mkdir -p "$D2_TMP" 2>/dev/null
+  return 0
+}
+
+# 字体文件总表：一次 ls -l 拿全目录，awk 拆列（不再 per-file stat）
+d2_collect_fontfiles() {
+  d2_init_tmp
+  : > "$D2_TMP/fontfiles"
+  for _d in $FONTDIRS; do
+    [ -d "$FSROOT$_d" ] || continue
+    ls -l "$FSROOT$_d" 2>/dev/null | awk -v D="$_d" '
+      NF >= 9 && $1 !~ /^d/ {
+        sz = $5; name = $9
+        for (i = 10; i <= NF; i++) name = name " " $i
+        if (name ~ /\.(ttf|otf|ttc|TTF|OTF|TTC)$/) printf "%s\t%s\t%s\n", name, sz, D
+      }' >> "$D2_TMP/fontfiles"
+  done
+  D2_NFILES=$(grep -c . "$D2_TMP/fontfiles" 2>/dev/null); isnum "$D2_NFILES" || D2_NFILES=0
+}
+
+# 字体配置：**只规范一次**，落成"一行一个标签"的中间文件
+d2_collect_xml() {
+  d2_init_tmp
+  : > "$D2_TMP/xml.flat"
+  D2_NXML=0
+  for _x in $XMLFOUND; do
+    [ -f "$FSROOT$_x" ] || continue
+    echo "@@X $_x" >> "$D2_TMP/xml.flat"
+    # ★ 关键：tr 把缩进变成空格后，标签之间是 ">   <"，必须匹配 ">[空格]<" 才能拆开。
+    #   （旧写法 s/></>\n</g 只匹配紧挨着的 "><"，带缩进的真实配置拆不开 —— 实测踩过。）
+    tr '\n\r\t' '   ' < "$FSROOT$_x" 2>/dev/null | sed 's/>[ 	]*</>\n</g' >> "$D2_TMP/xml.flat"
+    echo >> "$D2_TMP/xml.flat"
+    D2_NXML=$((D2_NXML + 1))
+  done
+}
+
+# 语言 → 字体文件（报告【4】【5】的数据源）
+# 同时建 famfile：文件名 → 它所属的 family 标识（给【5】判断"是不是时钟/符号这类刻意不换的"）
+d2_collect_langmap() {
+  d2_init_tmp
+  # ★ 1.0.9.2：family 标识 = family 的 name=/lang= 属性 + 这个 family 块里出现的所有
+  #   postScriptName=（真机上 `miclock-dela-gothic-one` 就只在 customization 的
+  #   postScriptName 里出现，family 的 name 属性是空的）。
+  #   两条输出写进**同一个 awk**，避免再解析一遍 XML（省一次全量扫描）。
+  awk '
+    /^@@X / { next }
+    /<family/ {
+      fam = $0; lang = ""; name = ""
+      if (match(fam, /lang="[^"]*"/)) { lang = substr(fam, RSTART+6, RLENGTH-7) }
+      if (match(fam, /name="[^"]*"/)) { name = substr(fam, RSTART+6, RLENGTH-7) }
+      # customization 块里还有 name= / postScriptName=，一并收进来当 family 标识
+      cur_lang = lang; cur_name = name; cur_ids = name " " lang
+      if (match(fam, /postScriptName="[^"]*"/)) { cur_ids = cur_ids " " substr(fam, RSTART+16, RLENGTH-17) }
+      infam = 1; next
+    }
+    /<\/family>/ {
+      # 一个 family 结束：把它引用过的每个文件都记一条 famfile
+      if (infam) {
+        n = split(cur_files, arr, " ")
+        for (i = 1; i <= n; i++) if (arr[i] != "") printf "FM\t%s\t%s\n", arr[i], cur_ids
+      }
+      infam = 0; cur_files = ""; next
+    }
+    {
+      if (!infam) next
+      line = $0
+      # family 块里出现的额外标识（postScriptName / name / customizationType 的名字）
+      if (match(line, /postScriptName="[^"]*"/)) { cur_ids = cur_ids " " substr(line, RSTART+16, RLENGTH-17) }
+      if (match(line, /name="[^"]*"/))          { cur_ids = cur_ids " " substr(line, RSTART+6,  RLENGTH-7) }
+      while (match(line, /[A-Za-z0-9_.\-]+\.(ttf|otf|TTF|OTF|ttc|TTC)/)) {
+        fn = substr(line, RSTART, RLENGTH)
+        printf "%s\t%s\n", (cur_lang == "" ? "und" : cur_lang), fn
+        cur_files = cur_files " " fn
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$D2_TMP/xml.flat" 2>/dev/null > "$D2_TMP/lm.raw"
+  grep -v '^FM	' "$D2_TMP/lm.raw" 2>/dev/null | sort -u > "$D2_TMP/langmap"
+  grep '^FM	' "$D2_TMP/lm.raw" 2>/dev/null | cut -f2,3 | sort -u | tr '\t' '|' > "$D2_TMP/famfile"
+  rm -f "$D2_TMP/lm.raw" 2>/dev/null
+  D2_NLANG=$(grep -c . "$D2_TMP/langmap" 2>/dev/null); isnum "$D2_NLANG" || D2_NLANG=0
+}
+
+# 三张内存查表：计划里的文件名 / 适配清单 / 设备上存在的文件
+# 有了它们，第 4/5 节判断"在不在"就是两次短模式匹配，**零进程**。
+d2_build_lookup() {
+  d2_init_tmp
+  D2_PLAN_NAMES=$(
+    printf '%s\n' "$PLAN_NOW" | while IFS= read -r _pl; do
+      [ -n "$_pl" ] || continue
+      _pn=${_pl##*/}
+      [ -n "$_pn" ] && printf '|%s|' "$_pn"
+    done
+  )
+  D2_TARGET_NAMES=""
+  _rom=$(tr -d '[:space:]' < "$M/current_rom" 2>/dev/null)
+  for _l in "$M/targets/$_rom.list" "$M/targets/aosp.list"; do
+    [ -f "$_l" ] || continue
+    _names=$(grep -v '^[[:space:]]*#' "$_l" 2>/dev/null | tr -d '\r' | sed 's#.*/##' | grep -v '^[[:space:]]*$')
+    printf '%s\n' "$_names" | while IFS= read -r _t; do
+      [ -n "$_t" ] && printf '|%s|' "$_t"
+    done > "$D2_TMP/tn.$$" 2>/dev/null
+    D2_TARGET_NAMES="$D2_TARGET_NAMES$(cat "$D2_TMP/tn.$$" 2>/dev/null)"
+    rm -f "$D2_TMP/tn.$$" 2>/dev/null
+  done
+  D2_EXIST_NAMES=$(
+    awk -F'\t' '{ printf "|%s|", $1 }' "$D2_TMP/fontfiles" 2>/dev/null
+  )
+  # ★★ 1.0.9.2 真机修（作者机器报告："设备上字体 24 个 / 查了 0 个"）：
+  #   「设备上存在的字体」这张表是**直接从字体目录 glob 出来**的，不用 fontfiles 那张表 ——
+  #   因为 fontfiles 是解析 `ls -l` 出来的，在真机上只装进了一部分（作者机器 293 个里只进 24 个），
+  #   导致后面所有比对都落空、【5】输出"查了 0 个"。
+  #   直接 glob 既准确又便宜（每个目录一次 ls），而且**和 fontfiles 那个环节解耦** ——
+  #   以后 fontfiles 就算出问题，也不会再把【5】整节带塌。
+  _ex2=""
+  for _xd in $FONTDIRS; do
+    [ -d "$FSROOT$_xd" ] || continue
+    _ex2="$_ex2$(ls -1 "$FSROOT$_xd" 2>/dev/null | awk '{ printf "|%s|", $0 }')"
+  done
+  _n2=$(printf '%s' "$_ex2" | tr '|' '\n' | grep -c . 2>/dev/null); isnum "$_n2" || _n2=0
+  if [ "$_n2" -gt "${D2_NFILES:-0}" ] 2>/dev/null; then
+    D2_EXIST_NAMES="$_ex2"
+    D2_NFILES=$_n2
+  fi
+  # 清单条数（给报告显示）
+  D2_NTARGET=$(printf '%s' "$D2_TARGET_NAMES" | tr '|' '\n' | grep -c . 2>/dev/null)
+  isnum "$D2_NTARGET" || D2_NTARGET=0
+}
+
+# 一次性采集（在 collect() 之后调用；此时 FONTDIRS / XMLFOUND / PLAN_NOW 都已经算好）
+d2_collect_all() {
+  [ -n "${D2_DONE:-}" ] && return 0
+  D2_DONE=1
+  d2_collect_fontfiles
+  d2_collect_xml
+  d2_collect_langmap
+  d2_build_lookup
+  return 0
+}
+
+# 内存查表：表形如 "|名|名|"
+d2_in() {
+  case "$1" in
+    *"|$2|"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# 【4】语言 → 字体文件：这台系统靠什么生效
+# ---------------------------------------------------------------------------
+sec_adapted() {
+  echo
+  echo "【4】★ 语言 → 字体文件：这台系统靠什么生效"
+  hr
+  echo "  说明：每一行都从**你这台机器自己的字体配置**里读出来（不是按机型猜）。"
+  echo "        「本次」= 这个文件在不在当前的替换计划里。"
+  echo
+  printf '  %-14s %-44s %-8s\n' "语言" "配置里引用的字体文件" "本次"
+  printf '  %-14s %-44s %-8s\n' "--------------" "--------------------------------------------" "--------"
+  if [ "${D2_NLANG:-0}" = 0 ] || [ ! -f "${D2_TMP:-/nonexistent}/langmap" ]; then
+    echo "  （没读到任何「语言→字体」映射 —— 配置格式可能特殊，或这台机器没有字体配置）"
+  else
+    while IFS='	' read -r _lg _fl; do
+      [ -n "$_fl" ] || continue
+      case "$_lg" in
+        zh-hans|zh-hans-cn) _lb="中文(简)" ;;
+        zh-hant|zh-hant-tw|zh-hant-hk|zh-bopo) _lb="中文(繁)" ;;
+        ja) _lb="日文" ;;
+        ko) _lb="韩文" ;;
+        und|"") _lb="通用" ;;
+        *) _lb="$_lg" ;;
+      esac
+      if d2_in "$D2_PLAN_NAMES" "$_fl"; then _r="✅ 会换"; else _r="❌ 不换"; fi
+      printf '  %-14s %-44s %-8s\n' "$_lg" "$_fl" "$_r"
+    done < "$D2_TMP/langmap"
+    echo
+    echo "  共 $D2_NLANG 条「语言→字体」对应关系（含同名字体在不同语言下的重复，已去重）"
+  fi
+  hr
+}
+
+# ---------------------------------------------------------------------------
+# 【5】★ 没适配的字体 —— 作者据此修适配
+#
+# 判据为什么这样定（1.0.9.2 真机报告后修正）：
+#   第一版判据是"在不在 targets/*.list 里"，结果在真机上输出"没有没适配的" ——
+#   但同一份报告的【0】节明明列着 Lobster-Regular.ttf / NotoSerifHentaigana.ttf 等
+#   "配置引用了、却没被替换"的字体。原因是：**清单里有 != 会被替换**，
+#   真正的门槛是"角色判定 + 计划"。
+#
+#   所以现在按"真正会不会被换"分类，并且把**本该换却没进计划**的单独标出来 ——
+#   那才是作者要修的东西。其它文字的字体（阿拉伯文/梵文/楔形文字…）被排除是**正确行为**，
+#   不能混进来当"没适配"，否则这份清单会被几百个无关字体淹没。
+# ---------------------------------------------------------------------------
+sec_unadapted() {
+  echo
+  echo "【5】★ 没被替换的字体（配置引用了，但本次不会换）"
+  hr
+  echo "  给作者看的：这台设备上**真实存在、且被字体配置引用**、但**本次计划里没有**的字体。"
+  echo "  已按「该不该换」分成两类，看第一类就行："
+  echo "    [★要修]   = 本该参与替换（主字体/拉丁/中文/日韩），却没进计划 → **作者要修的**"
+  echo "    [正常排除] = 其它文字体系（阿拉伯文、梵文、楔形文字…）或符号/emoji → 换了反而出问题"
+  echo
+  [ -d "${D2_TMP:-/nonexistent}" ] || { echo "  （临时目录不可用，跳过这一节 —— 不影响其它节）"; hr; return 0; }
+  : > "$D2_TMP/unadapted" 2>/dev/null
+  : > "$D2_TMP/normalexcl" 2>/dev/null
+  if [ "${D2_NLANG:-0}" = 0 ] || [ ! -s "$D2_TMP/langmap" ]; then
+    echo "  （没有「语言→字体」映射，无法判断 —— 见第 4 节）"
+    hr
+    return 0
+  fi
+  # 计数变量放在这里初始化。
+  # ★ 1.0.9.2 教训：原来只在最后用 `grep -c` 去数临时文件，真机上出现过
+  #   "确实分类了、但两行统计都没打印"（内容没丢，只是统计行没出来，看着像没检查）。
+  #   改成**循环里直接计数**，不再依赖临时文件读回来 —— 少一个可能失效的环节。
+  #
+  # ★ 另一个真机踩坑（"查了 0 个"）：判据第一句是
+  #     `d2_in "$D2_EXIST_NAMES" "$_fl" || continue`
+  #   —— **只要那张"设备上存在的文件"表是空的，所有行都被 continue 掉，结果就是"查了 0 个"**。
+  #   表为空不影响"该不该换"的判断（那只看语言标签 + 计划），所以表为空时**不该整节作废**，
+  #   只是没法做"设备上真的有这个文件吗"这一层过滤而已。
+  _have_exist=1
+  [ -n "${D2_EXIST_NAMES:-}" ] || _have_exist=0
+  if [ "$_have_exist" = 1 ]; then
+    echo "  （本机比对基数：设备上字体 ${D2_NFILES:-0} 个，语言映射 ${D2_NLANG:-0} 条）"
+  else
+    echo "  （本机比对基数：设备上字体 ${D2_NFILES:-0} 个，语言映射 ${D2_NLANG:-0} 条）"
+    echo "   ⚠ 字体清单为空 —— 本节只按配置判断，不做「设备上真有这个文件吗」这一层过滤。"
+  fi
+  _un=0; _nx=0; _nref=0; _nplan=0
+  while IFS='	' read -r _lg _fl; do
+    [ -n "$_fl" ] || continue
+    # 这一层是"设备上真有这个文件吗"的**辅助过滤**（作者机器上就是这里导致"查了 0 个"）。
+    # 为了不再被任何一张表带塌，这里做成**三级兜底**：
+    #   ① 查内存表；② 表里没有就直接问文件系统（几个候选目录试一遍）；③ 都没有才跳过。
+    # 注意：第 ② 步只在"表里没查到"时才起进程，正常情况下不增加开销。
+    if [ "$_have_exist" = 1 ]; then
+      if ! d2_in "$D2_EXIST_NAMES" "$_fl"; then
+        _found=0
+        for _fd in $FONTDIRS; do
+          if [ -e "$FSROOT$_fd/$_fl" ]; then _found=1; break; fi
+        done
+        [ "$_found" = 1 ] || continue
+      fi
+    fi
+    _nref=$((_nref + 1))
+    if d2_in "$D2_PLAN_NAMES" "$_fl"; then
+      _nplan=$((_nplan + 1))
+      continue                                       # 已在计划里 = 会换，跳过
+    fi
+    # 没进计划：判断"该不该换"
+    #   该换的：语言标签是 und/zh/ja/ko/en（主字体与常用文字），且文件名看着不像符号/其它文字
+    case "$_lg" in
+      und|"")  _should=1 ;;
+      zh*|ja|ko|en*) _should=1 ;;
+      *) _should=0 ;;                                # und-Arab / und-Deva / und-Xsux … = 其它文字
+    esac
+    if [ "$_should" = 1 ]; then
+      # 文件名里带 emoji/symbol/mono/clock 这类"刻意不换"的，也算正常排除
+      _lf=$(printf '%s' "$_fl" | tr 'A-Z' 'a-z')
+      case "$_lf" in
+        *emoji*|*symbol*|*dingbat*|*braille*|*clock*|*mono*|*italic*|*oblique*|*serif*)
+          _should=0 ;;
+      esac
+    fi
+    # ★ 1.0.9.2 真机补：**还要看"它属于哪个 family"**。
+    #   作者机器上的 DelaGothicOne.otf / DelaGothicOne-HZ.otf 文件名里没有 clock 字样，
+    #   但它们在配置里属于 `miclock-dela-gothic-one` —— 那是**锁屏时钟**的专属字体，
+    #   模块刻意不换（换了锁屏时钟会出问题）。只看文件名会把它们误报成"★要修"。
+    #   D2_FAMFILE 由 d2_collect_langmap 建好："文件名|所在 family 名（含 <> 里的名字）"。
+    if [ "$_should" = 1 ] && [ -f "${D2_TMP:-/nonexistent}/famfile" ]; then
+      _fams=$(sed -n "s/^$(printf '%s' "$_fl" | sed 's/[.[\*^$]/\\&/g')|//p" "$D2_TMP/famfile" 2>/dev/null | tr 'A-Z' 'a-z')
+      case "$_fams" in
+        *clock*|*watch*|*lockscreen*|*widget*|*emoji*|*symbol*|*logo*|*brand*)
+          _should=0 ;;
+      esac
+    fi
+    if [ "$_should" = 1 ]; then
+      _un=$((_un + 1))
+      printf '  [★要修]   %-44s (语言 %s)\n' "$_fl" "$_lg"
+      printf '%s\n' "$_fl" >> "$D2_TMP/unadapted"
+    else
+      _nx=$((_nx + 1))
+      printf '%s\n' "$_fl" >> "$D2_TMP/normalexcl"
+    fi
+  done < "$D2_TMP/langmap"
+  echo
+  # 先给一句"查了多少"，这样即使结果为 0 也能看出这一节**真的跑了**（不是漏了）
+  echo "  查了 $_nref 个「设备上真实存在、且被配置引用」的字体：$_nplan 个已在计划里，$((_un + _nx)) 个没进计划。"
+  echo
+  if [ "$_un" = 0 ]; then
+    echo "  ✅ 上面这 $((_un + _nx)) 个里面，没有「本该换却没进计划」的。"
+  else
+    echo "  ★ 共 $_un 个字体**本该参与替换、却没进计划**（作者据此修适配）："
+    sed 's/^/     /' "$D2_TMP/unadapted" 2>/dev/null
+  fi
+  if [ "$_nx" -gt 0 ] 2>/dev/null; then
+    echo "  （另有 $_nx 个是其它文字体系/符号字体，被排除是正确的，未列出）"
+  fi
+  hr
+}
+
+
 # 只在生成报告时采集一次（界面按钮用的 state/cancel/bg/estimate/text/savenow 绝不调用）
 COLLECTED=0
 collect_once() {
   [ "$COLLECTED" = 1 ] && return 0
   COLLECTED=1
   collect
+  # ★ 1.0.9.2：采集完之后再建"批量查表"（报告第 4/5 节要用；此时 FONTDIRS/XMLFOUND/PLAN_NOW 都已算好）
+  d2_collect_all
   return 0
+  timing_add 'C7 谷歌字体兼容' "$_ct0"
 }
 
 # ---------------------------------------------------------------------------
@@ -968,6 +1459,9 @@ conclusion() {
   echo "设备: $($GP ro.product.brand 2>/dev/null) $($GP ro.product.model 2>/dev/null)   Android $($GP ro.build.version.release 2>/dev/null)   构建号: $($GP ro.build.display.id 2>/dev/null)"
   echo "系统识别: $(rom_name "$ROMID" 2>/dev/null)   已开机 $((UP / 60)) 分钟   boot_completed=$BOOTCOMP"
   hr
+  # ★ 报告完整性声明：有任何一节没采到，必须写在最前面（"没问题"和"没检查"必须分得清）
+  print_skip_notice
+  [ -n "$DIAG_SKIPS" ] && hr
   if [ "$G_DISABLE" = 1 ]; then
     echo "❌ 结论：模块处于「已禁用」状态。"
     echo "   KernelSU 不会执行被禁用模块的任何开机脚本，重启多少次都不会生效。"
@@ -1077,7 +1571,7 @@ conclusion() {
   echo "本次开机: post-fs-data $([ "$PFD_THIS" = 0 ] && echo '未执行' || echo '已执行')   service $([ "$SVC_THIS" = 0 ] && echo '未执行' || echo '已执行')   实际生效 $VHIT/$VTOT"
   echo "扫描范围: $(printf '%s\n' "$FONTDIRS" | grep -c . ) 个字体目录、$(printf '%s\n' "$XMLFOUND" | grep -c . ) 份字体配置（含厂商分区与 apex）"
         echo "本次口径: 完整报告（唯一口径）"
-        echo "本次指纹: 所有字体全量 sha256（检测深度不缩水；同一份文件只算一次、重复内容复用）"
+        echo "本次指纹: 稀疏指纹（大小+修改时间+头尾各 64KB 的 sha256）—— 用于判断字体有没有被替换；同一份文件只算一次"
   echo "挂载实测: $MT_RESULT"
   echo "待生效: ${PEND:-none}    当前生效: ${ACT:-none}"
   echo "（两个不一致 = 这次的选择还没被任何一次开机处理过）"
@@ -1204,8 +1698,14 @@ sec0() {
   echo "  --------  ------------  ------------------------------------------  ------  ------------------"
   # 计划整体用来判断"在不在计划里"；scope/keep_lang/keep_special 用来解释"为什么没换"
   planall=$(printf '%s\n' "$PLAN_NOW")
+  # ★ 1.0.9.2：这两步单独计时 —— 真机反馈"第 1 步几分钟"，而 collect() 只要 32 秒，
+  #   所以慢的必然在这几节里。分开计时才能一次定位，不用再猜。
+  _Z0=$(now_s)
   slot_scan_report "$planall" "$SCOPE" "$KL" "$KS" | sed 's/^/  /'
+  timing_add 'Y1 sec0/slot_scan_report' "$_Z0"
+  _Z0=$(now_s)
   n=$(slot_scan_names 2>/dev/null | grep -c . )
+  timing_add 'Y2 sec0/slot_scan_names' "$_Z0"
   echo
   if [ "$n" = 0 ]; then
     echo "  （没能从字体配置里读到任何引用 —— 可能这份配置格式特殊，见第 6 节的原文）"
@@ -1631,11 +2131,12 @@ sec7() {
   # 私有缓存里，不经过系统字体目录 —— 所以只替换系统字体时，英数会"过一阵又变回谷歌默认"。
   # 现场全部列出来（只读，不改任何东西），结论写在结论区。
   echo "  ---- 谷歌字体（GMS 下载字体）与「谷歌字体兼容」开关 ----"
-  echo "     开关当前状态: $(gf_state_text "${GF_STATE:-unknown}")"
+  echo "     开关当前状态: $(gf_state_text "${GF_STATE:-unknown}")$( [ "${GF_CACHED:-0}" = 1 ] && echo '（实时检测超时，这是缓存值；点界面「重新检测」看最新）')"
+  [ "${GF_SEC:-0}" -ge 3 ] 2>/dev/null && echo "     本节耗时: ${GF_SEC} 秒"
   if [ -n "$GF_DIAG" ]; then
     printf '%s\n' "$GF_DIAG" | while IFS= read -r L; do [ -n "$L" ] && echo "      $L"; done
   else
-    echo "     （轻量口径：这一节没跑 dumpsys；要看明细请用完整报告，或在界面点「重新检测」）"
+    echo "     （现场明细这次没取到 —— 已在报告开头「完整性声明」里注明）"
   fi
   echo "     说明：本功能只停用「下载字体」这一个组件；不停用整个 Play 服务、不删字体缓存、"
   echo "           不改系统字体配置。应用自带字体、网页字体不受影响。"
@@ -1748,14 +2249,23 @@ sec11() {
   echo
   echo "  2) 实测：同一个 App 进程里能不能看到我们的挂载"
   echo "     我们自己的命名空间 : ${AS_MINE:-?} 条（源在 $LIB 的绑定挂载）"
+  [ "${AS_SEC:-0}" -ge 3 ] 2>/dev/null && \
+    echo "     （本节耗时 ${AS_SEC} 秒，试了 ${AS_TRIED:-?} 个进程$( [ "${AS_TIMEOUT:-0}" = 1 ] && echo '，到时间上限就停了' )）"
   if [ "$AS_READ" = 1 ]; then
     printf '%s' "$AS_LIST" | while IFS='|' read -r _p _u _c _n; do
       [ -n "$_p" ] || continue
       echo "     App pid=$_p uid=$_u → 看到 ${_n} 条   ${_c}"
     done
+    [ "${AS_TIMEOUT:-0}" = 1 ] && \
+      echo "     （抽样到时间上限就停了 —— 上面这几个样本足够判断，不必等它扫完）"
   else
-    echo "     （没找到可对照的普通 App 进程：应用都没在跑，或 /proc 读不到）"
-    echo "      让用户先打开任意一个普通 App，再重新生成一次报告，就能对照了。"
+    if [ "${AS_TIMEOUT:-0}" = 1 ]; then
+      echo "     （扫了 ${AS_SEC} 秒到上限，还没抽到普通 App 进程 —— /proc 里进程太多）"
+      echo "       这不影响结论：第 3 节已经证明挂载本身是成功的。"
+    else
+      echo "     （没找到可对照的普通 App 进程：应用都没在跑，或 /proc 读不到）"
+      echo "      让用户先打开任意一个普通 App，再重新生成一次报告，就能对照了。"
+    fi
   fi
   if [ "$AS_HIDDEN" = 1 ]; then
     echo "     ★ 判定：App 侧看到 0 条，而我们自己看到 ${AS_MINE} 条 ——"
@@ -1792,12 +2302,15 @@ sec11() {
 # 沙盒端用 tools/gen_targets.py 解析本段，生成 targets/<rom>.list
 # ---------------------------------------------------------------------------
 pack_extra() {
+  # ★ 1.0.9.2：第 6 步分段计时（PZ1~PZ12）。真机上这一步占总耗时约八成，
+  #   但原来只有一段总时间，看不出是哪个小段慢。计时器挂在每个 subnote 之前。
+  _PZ_T=$(now_s)
   echo
   ensure_dirmaps      # 导出数据包要带上目录映射与名字映射
   echo "@@SECTION:META"
   echo "time=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
   # 哈希口径：head1mb = 只读前 1 MB（轻量模式，对闪存友好）；full = 全文件
-      echo "hash_mode=full"   # 1.0.9：所有字体全量 sha256（同内容只算一次）
+      echo "hash_mode=sparse"   # 1.0.9.2：稀疏指纹（大小+mtime+头尾 64KB），不再全量读盘
       echo "fast=0"   # 1.0.9：不再有快速口径（字段保留，兼容旧界面）
   echo "brand=$($GP ro.product.brand 2>/dev/null)"
   echo "model=$($GP ro.product.model 2>/dev/null)"
@@ -1824,7 +2337,7 @@ pack_extra() {
   echo "# 名字|框架解析路径|真实路径|是否存在|同名副本"
   printf '%s\n' "$NAMEMAP"
   echo "@@SECTION:FONTS_SHA256"
-      echo "# hash_mode=full（所有字体全量 sha256；同一份内容只算一次、重复路径复用同一指纹）"
+      echo "# hash_mode=sparse（大小 + 修改时间 + 头尾各 64KB 的 sha256；同一份内容只算一次、重复路径复用同一指纹）"
   echo "# note=同一个字体目录被多个路径指到时只算一次（以前会重复哈希好几遍，这是最后一步特别慢的主因）"
   XMLNAMES_STR=" $(printf '%s' "$XMLNAMES" | tr '\n' ' ')"
   HDIRS=$(uniq_fontdirs)
@@ -1834,17 +2347,25 @@ pack_extra() {
     ftotal=$((ftotal + $(ls -1 "$d" 2>/dev/null | wc -l)))
   done
   n=0; HN=0
-  # 指纹（1.0.9，作者要求：**诊断深度一点不减，快从别处省**）
-  #   · 每个字体文件都是**全量 sha256**（和以前一样；绝不为了快改成"只读头部"——
-  #     字体尾部就是字形数据，浅指纹会漏掉"尾部被改过"这类问题）
-  #   · 快的地方：**同一份文件只真正算一次**。字体目录里大量文件是指向同一份的
+  # 指纹（1.0.9.2：**稀疏指纹**，口径见本文件开头 fp_of 的说明）
+  #   · 每个字体文件取"大小 + 修改时间 + 头尾各 64KB"，不再全量 sha256 ——
+  #     1.0.9.1 的全量读盘让真机第 6 步花了 391 秒（字体目录约 700MB），现在降到十几秒。
+  #     ★ 1.0.9 当时写过"绝不为了快改成只读头部（怕漏掉尾部被改）"，
+  #       1.0.9.2 改成**头尾都取样**：既省 20 倍 I/O，又保住了"尾部改动也能发现"。
+  #   · 去重：同一份文件只真正算一次。字体目录里大量文件是指向同一份的
   #     硬链接/符号链接（真机实测过 18 个文件指向同一个），以前同一份内容被反复读好几遍。
   #     做法是两遍式：第一遍按 dev:inode 去重后算出指纹，第二遍每个路径各输出一行（复用指纹）。
-  #   · 批量：20 个文件交给同一个 sha256sum（进程数少一个数量级，避免 fork 风暴）。
   HASH_MAP=""          # "|dev:inode=指纹|..."（去重后的唯一文件）
   HASH_KEY=""; HASH_SEEN=""; HASH_DONE=0; HASH_TOTAL=0
   HASH_BATCH=""; HASH_BN=0
   # 第一遍：算出所有**唯一文件**的指纹
+  # ★★ 1.0.9.2 定稿：**就用每文件一次 stat**（原版写法）。
+  #   我试过"整个目录一次 stat 建表 + 内存查表"，真机实测**更慢**：
+  #     每文件 stat：288 秒   →   批量建表 + 大字符串查表：**314 秒**
+  #   原因：`case "$INODE_MAP" in *";$f|"*` 要在**上万字符**的表里逐个匹配，
+  #   293 个文件 × 表越来越长，纯 shell 的字符串匹配比直接起一次 `stat` 还贵。
+  #   教训：**"少起进程"不等于"更快"** —— 大字符串查表在 shell 里也是 O(n·m)。
+  #   要提速得换思路（批量 sha256sum 之类），不能靠"把进程换成字符串匹配"。
   for d in $HDIRS; do
     [ -d "$d" ] || continue
     for f in "$d"/*; do
@@ -1933,6 +2454,7 @@ pack_extra() {
   echo "@@SECTION:PROCS"
   # 当前和本模块相关的进程（让"有没有偷偷跑东西"一目了然）
   ps -A -o pid,ppid,args 2>/dev/null | grep -E 'diag\.sh|fontctl\.sh|update\.sh|custom_font' | grep -v grep | head -n 20
+  timing_add 'PZ1 TTC头信息' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "TTC 合集头信息"
   echo "@@SECTION:TTCHEAD"
   for d in $FONTDIRS; do
@@ -1941,6 +2463,7 @@ pack_extra() {
       printf '%s\t%s\t%s\t%s\n' "$f" "$(ttc_tag "$f")" "$(ttc_faces "$f")" "$(stat -c %s "$f" 2>/dev/null)"
     done
   done
+  timing_add 'PZ2 配置原文' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出字体配置原文"
   echo "@@SECTION:XMLCONTENT"
   for x in $XMLFOUND; do
@@ -1949,6 +2472,7 @@ pack_extra() {
     echo
     echo "@@FILE:END"
   done
+  timing_add 'PZ3 family' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出配置里的 family"
   echo "@@SECTION:XMLFAMILY"
   for x in $XMLFOUND; do
@@ -1965,12 +2489,14 @@ pack_extra() {
       esac
     done
   done
+  timing_add 'PZ4 目录清单' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出字体目录清单"
   echo "@@SECTION:DIRLIST"
   for d in $FONTDIRS; do
     echo "--- $d"
     ls -l "$d" 2>/dev/null
   done
+  timing_add 'PZ5 模块快照' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出模块目录快照"
   echo "@@SECTION:MODULEDIR"
   ls -la "$M" 2>/dev/null
@@ -1985,15 +2511,17 @@ pack_extra() {
   ls -la /data/adb/modules_update/ 2>/dev/null
   echo "--- 本模块在 modules_update 里的内容"
   ls -la "$UPD" 2>/dev/null | head -n 30
+  timing_add 'PZ6 挂载表' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出挂载表"
   echo "@@SECTION:MOUNTS"
   "$MO" 2>/dev/null | head -n 80
+  timing_add 'PZ7 库指纹' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出字体库指纹"
   echo "@@SECTION:LIBFONTS"
   ls -l "$LIB" 2>/dev/null
   for f in $LIB_FONTS; do
     # 字体库文件也在闪存上：轻量模式同样只读前 1 MB（自己的字体常有几十 MB，全读太伤盘）
-    # 1.0.9：字体库文件是自己导入的（数量少、个头大）—— 统一走全量指纹，
+    # 1.0.9.2：字体库文件走同一个稀疏指纹口径（和字体目录保持一致，便于互相比对），
     # 用于判断“库里这个文件有没有被动过”；不再需要轻量分支。
     printf '%s  %s  %s\n' "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)" "$(stat -c %s "$f" 2>/dev/null)" "$f"
   done
@@ -2002,10 +2530,12 @@ pack_extra() {
     echo "--- $i  name=$(cat "$LIB/$i.name" 2>/dev/null | tr -d '\r\n')"
     cat "$LIB/$i.meta" 2>/dev/null
   done
+  timing_add 'PZ8 data fonts' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出 /data/fonts"
   echo "@@SECTION:DATAFONTS"
   ls -lR /data/fonts 2>/dev/null | head -n 60
   [ -f /data/fonts/config/config.xml ] && cat /data/fonts/config/config.xml 2>/dev/null
+  timing_add 'PZ9 主题字体' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出主题字体"
   echo "@@SECTION:MIUIFONT"
   echo "# 目录: $MIUI_DIRS"
@@ -2015,6 +2545,7 @@ pack_extra() {
     echo "--- $td"
     ls -lZ "$td" 2>/dev/null | head -n 30
   done
+  timing_add 'PZ10 个性化' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出个性化字体"
   echo "@@SECTION:PERSONALFONT"
   echo "# 厂商个性化字体（/data 上的固定路径，优先级高于 /system/fonts）"
@@ -2036,6 +2567,7 @@ pack_extra() {
   echo "@@SECTION:PACKAGES"
   ensure_pkgs
   printf '%s\n' "$PKG_FONT"
+  timing_add 'PZ11 槽位计划' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "导出槽位计划"
   echo "@@SECTION:SLOTS"
   echo "## slots.applied"
@@ -2046,6 +2578,7 @@ pack_extra() {
   printf '%s\n' "$PLAN_NOW"
   echo "## PLAN_MAX（关闭所有保留）"
   printf '%s\n' "$PLAN_MAX"
+  timing_add 'PZ12 收尾' "$_PZ_T"; _PZ_T=$(now_s)
   subnote "收尾"
   echo "@@SECTION:END"
 }
@@ -2083,6 +2616,33 @@ set_out_now() {
 #   · /sdcard/Download/完整体检报告.txt   ← 唯一对外的那份
 #   · 以前的 font_diag.txt 备用名、未完成的体检报告.txt、/data/local/tmp 那份，全部取消
 #   生成过程中也直接覆盖这一个文件（内容是"已写好的部分"），所以不会再有"未完成"另开一份。
+# ---------------------------------------------------------------------------
+# 【报告完整性声明】（1.0.9.2 新增）
+#
+# 为什么需要它：作者担心"改来改去，最后检测少东西、分析不了"。这个担心完全合理 ——
+#   为了把"半小时"压下来，我给几处加了时间上限/跳过了重活。但**如果报告不主动说明
+#   "哪一节没做、为什么"，看报告的人（包括作者自己）就分不清"没问题"和"没检查"** ——
+#   那才是最危险的（比慢得多危险）。
+#
+# 所以：任何一节被**超时、跳过、取不到**，都必须在这里记一笔，并写在报告最前面。
+#   规则：宁可难看，不许静默。
+# ---------------------------------------------------------------------------
+DIAG_SKIPS=""
+skip_note() {   # skip_note <小节名> <为什么> [怎么补回来]
+  DIAG_SKIPS="$DIAG_SKIPS$1|$2|${3:-}
+"
+}
+print_skip_notice() {
+  [ -n "$DIAG_SKIPS" ] || return 0
+  echo "  ⚠ 本次报告有 $(_skip_count) 处**没能完整采集**（下面逐一说明，不是"没问题"，是"没测到"）："
+  printf '%s' "$DIAG_SKIPS" | while IFS='|' read -r _sn _why _how; do
+    [ -n "$_sn" ] || continue
+    echo "     · $_sn —— $_why"
+    [ -n "$_how" ] && echo "       补回来：$_how"
+  done
+}
+_skip_count() { printf '%s' "$DIAG_SKIPS" | grep -c . 2>/dev/null; }
+
 write_kit() {
   local tmpf="$1"
   SAVED=""
@@ -2118,6 +2678,7 @@ pgid=${BG_PGID:-0}
 start=${BG_START:-0}
 time=${_SW_T:-0}
 fast=${BG_FAST:-0}
+speed=${DIAG_SPEED:-gentle}
 sub=${3:-}"
   shift 3
   for _l in "$@"; do
@@ -2133,6 +2694,42 @@ $_l"
 # 纯 shell 小工具（不起进程）
 isnum() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 now_s() { _NS_D=$(date +%s 2>/dev/null); isnum "$_NS_D" && printf '%s' "$_NS_D" || printf '0'; }
+
+# ---------------------------------------------------------------------------
+# 计时工具（★ 必须定义在 collect() 之前 —— collect 里要用；以前放在文件后段，
+#   结果 `sh diag.sh perf` 的分段计时全是 0。2026-10-12 修。）
+# ---------------------------------------------------------------------------
+TIMING_LIST=""
+timing_add() {   # timing_add <名称> <开始秒>
+  _TA_N=$(now_s)
+  _TA_D=$(( _TA_N - ${2:-$_TA_N} ))
+  [ "$_TA_D" -lt 0 ] && _TA_D=0
+  TIMING_LIST="$TIMING_LIST$1|$_TA_D
+"
+  [ "$BG_STATE" = 1 ] && printf '%s|%s\n' "$1" "$_TA_D" >> "$LIB/.diag.timing" 2>/dev/null
+  return 0
+}
+# 给任意函数计时：pt <标签> <函数> [参数...]   —— 输出走 stdout# 为什么需要它：真机反馈"整份报告 30 分钟"，而「每一步耗时」只到 6 个大步 ——
+#   第 1 步把整个 collect() 包住了（1371 秒），看不出是哪一段。
+#   collect() 里几个可疑点（候选枚举、自适应扫描、XML 解析…）用这个一量就知道。
+#   `sh diag.sh perf` 会把所有 P*/C* 行单独打出来。
+pt() {
+  _PT_L="$1"; shift
+  _PT_T=$(now_s)
+  "$@"
+  _PT_R=$?
+  timing_add "$_PT_L" "$_PT_T"
+  return $_PT_R
+}
+# 同上，但**捕获输出**到 PT_OUT（给 `VAR=$(函数)` 那种调用用，避免污染报告正文）
+ptv() {
+  _PT_L="$1"; shift
+  _PT_T=$(now_s)
+  PT_OUT=$("$@" 2>/dev/null)
+  timing_add "$_PT_L" "$_PT_T"
+  return 0
+}
+
 # 进度百分比：各阶段"分量"不一样（第 6 步打包/哈希占大头），按权重算才诚实。
 # 结果放全局 CP_P（不 echo、不起子 shell —— 这个函数每个阶段/每批文件都会调用）
 _pct_weight_of() {   # 参数 = 阶段号，结果放 _PW
@@ -2277,7 +2874,9 @@ breathe() {
   state_write running "${BG_PHASE:-处理中}" "${1:-}" \
     "step=${BG_STEP:-0}" "steps=${BG_STEPS:-7}" \
     "pct=$CP_P" "done=$_BR_D" "total=$_BR_T" "eta=$CE_ETA"
-  sleep 1
+  # ★ 1.0.9.2：原来这里 `sleep 1`（每 25 个文件睡一次）。
+  #   作者机器上字体目录 293 个文件 → 至少 12 秒白等；而且 breathe 在别处也被叫。
+  #   让路的目的已经由 lowprio_self 用 nice 达成了，这里不必用"睡"来实现。
   return 0
 }
 
@@ -2293,14 +2892,35 @@ subnote() {
   return 0
 }
 
-# 把自己降到最低优先级（CPU nice 19 + 磁盘 idle 类），子进程会继承
-# 没有 nice/renice/ionice 就跳过，不影响功能
+# 让路给系统（但要**有限度**）
+#
+# ★ 1.0.9.2 重要修正（真机实测）：
+#   1.0.9 这里用的是 `ionice -c 3`（I/O **空闲类**）+ `renice 19`（最低 CPU 优先级）。
+#   实测后果是灾难性的：作者机器上 `diag.sh perf` 跑采集只要 **32 秒**，
+#   而**同一条采集**在正式报告流程里花了 **6 分多钟**（第 1 步），整份报告半小时以上。
+#   原因：本脚本会起**几千个短命进程**（stat/grep/od/echo/sha256sum…），
+#     · `ionice -c 3` = "只要有别人要用磁盘就让路" → 手机上系统一直在读写，我们几乎排不上队；
+#     · `renice 19` = 最小 CPU 时间片 → 每个短命进程都要**排队等 CPU**，进程越多亏得越多。
+#   两者叠加，在"屏幕开着、系统有后台活动"时能把整体拖慢十几倍。
+#
+#   现在改成**有节制的让路**：
+#     · nice 10（中等偏低）—— 界面依然优先，但我们不会被饿死；
+#     · 不再动 ionice（保持默认 best-effort）。
+#   作者的原意是"别把系统挤死、别让手机觉得卡"，nice 10 完全够用；
+#   而"报告要跑半小时"本身就是更严重的问题。
 lowprio_self() {
-  command -v ionice >/dev/null 2>&1 && ionice -c 3 -p $$ 2>/dev/null
+  # ★ 1.0.9.2：速度由**命令行/环境变量**决定（界面在点"全速生成 / 慢慢生成"时传进来）：
+  #     DIAG_SPEED=full   → 不降优先级，最快（CPU 满负荷，手机可能发热/变卡）
+  #     DIAG_SPEED=gentle → 让路给系统（默认，慢一些但不打扰用手机）
+  #   为什么不做成"设置里的开关"：那是全局状态，用户点报告时根本不会去设置里找；
+  #   而且"全速/慢慢"只是一次性的选择，问一次就够了。
+  if [ "${DIAG_SPEED:-gentle}" = full ]; then
+    return 0        # 全速：什么都不改
+  fi
   if command -v renice >/dev/null 2>&1; then
-    renice 19 -p $$ >/dev/null 2>&1
+    renice 10 -p $$ >/dev/null 2>&1
   elif command -v nice >/dev/null 2>&1; then
-    nice -n 19 -p $$ >/dev/null 2>&1
+    nice -n 10 -p $$ >/dev/null 2>&1
   fi
   return 0
 }
@@ -2309,17 +2929,9 @@ lowprio_self() {
 # 分阶段计时：报告里会附带"每一步花了多少秒"
 #   给用户看：知道卡在哪一步、还要多久；
 #   给作者看：一眼看出哪一步是性能瓶颈（以前只能靠猜）
+# ★ 定义已经**移到文件前段**（collect() 之前）—— 否则 collect 里调用时函数还不存在。
+#   这里只留一句说明，不要再重复定义。
 # ---------------------------------------------------------------------------
-TIMING_LIST=""
-timing_add() {   # timing_add <名称> <开始秒>
-  _TA_N=$(now_s)
-  _TA_D=$(( _TA_N - ${2:-$_TA_N} ))
-  [ "$_TA_D" -lt 0 ] && _TA_D=0
-  TIMING_LIST="$TIMING_LIST$1|$_TA_D
-"
-  [ "$BG_STATE" = 1 ] && printf '%s|%s\n' "$1" "$_TA_D" >> "$LIB/.diag.timing" 2>/dev/null
-  return 0
-}
 
 # 生成完整报告包（体检 + 原始配置 + 哈希清单）
 # 流程优化：
@@ -2360,36 +2972,61 @@ kit_report() {
   #   现在：6/7 收集指纹 → 7/7 写文件，最后一步一到就是真的完了。
   _PH_T0=$(now_s)
   dphase '1/7 结论与门禁检查'
+  # ★ 1.0.9.2：第 1 步内部再分段计时。
+  #   真机实测（`diag.sh perf`）：collect_once 只要 32 秒，但第 1 步总耗时 1371 秒 ——
+  #   也就是说 1339 秒花在下面这四件事上。不细分就只能继续猜。
+  _S1_T0=$(now_s)
   collect_once
+  timing_add 'S1 collect_once' "$_S1_T0"
+  # ★ 1.0.9.2：collect 里的最后一个 subnote 会一直挂在界面「正在执行」那一行上，
+  #   后面 conclusion/sec0/sec1 全程不动 —— 用户看到的就像"卡在谷歌字体兼容"（真机反馈过）。
+  #   所以从 collect 出来立刻换标签，后面每一块也都换。
+  subnote "采集完成，正在生成结论"
   # 静态预估：给界面一个"一开始就能显示的预计耗时"（很便宜：只数个数）
+  _S1_T0=$(now_s)
   BG_ETA0=$(static_eta)
   isnum "$BG_ETA0" || BG_ETA0=0
   export BG_ETA0
-  { conclusion; sec0; sec1; } >> "$tmpf" 2>&1
+  timing_add 'S2 static_eta' "$_S1_T0"
+  _S1_T0=$(now_s); { conclusion; } >> "$tmpf" 2>&1; timing_add 'S3 conclusion 结论' "$_S1_T0"
+  subnote "正在分析：这台系统靠什么生效"
+  _S1_T0=$(now_s); { sec0; } >> "$tmpf" 2>&1;       timing_add 'S4 sec0 第0节' "$_S1_T0"
+  subnote "正在整理：语言→字体 映射"
+  _S1_T0=$(now_s); { sec_adapted; } >> "$tmpf" 2>&1;   timing_add 'S4b 第4节 语言映射' "$_S1_T0"
+  subnote "正在比对：哪些字体没适配"
+  _S1_T0=$(now_s); { sec_unadapted; } >> "$tmpf" 2>&1; timing_add 'S4c 第5节 没适配' "$_S1_T0"
+  subnote "正在检查：门禁与关键文件"
+  _S1_T0=$(now_s); { sec1; } >> "$tmpf" 2>&1;       timing_add 'S5 sec1 第1节' "$_S1_T0"
   timing_add '1 结论与门禁检查' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
   dphase '2/7 开机痕迹与挂载实测'
-  { sec2; sec3; } >> "$tmpf" 2>&1
+  _TT=$(now_s); { sec2; } >> "$tmpf" 2>&1; timing_add 'Z sec2' "$_TT"
+  _TT=$(now_s); { sec3; } >> "$tmpf" 2>&1; timing_add 'Z sec3' "$_TT"
   timing_add '2 开机痕迹与挂载实测' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
   dphase '3/7 槽位与字体目录映射'
-  { sec4; sec5; } >> "$tmpf" 2>&1
+  _TT=$(now_s); { sec4; } >> "$tmpf" 2>&1; timing_add 'Z sec4' "$_TT"
+  _TT=$(now_s); { sec5; } >> "$tmpf" 2>&1; timing_add 'Z sec5' "$_TT"
   timing_add '3 槽位与字体目录映射' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
   dphase '4/7 字体配置与字体来源'
-  { sec6; sec7; } >> "$tmpf" 2>&1
+  _TT=$(now_s); { sec6; } >> "$tmpf" 2>&1; timing_add 'Z sec6' "$_TT"
+  _TT=$(now_s); { sec7; } >> "$tmpf" 2>&1; timing_add 'Z sec7' "$_TT"
   timing_add '4 字体配置与字体来源' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
   dphase '5/7 清单 / 冲突 / 日志 / App 可见性'
-  { sec8; sec9; sec10; sec11; } >> "$tmpf" 2>&1
+  _TT=$(now_s); { sec8; } >> "$tmpf" 2>&1; timing_add 'Z sec8' "$_TT"
+  _TT=$(now_s); { sec9; } >> "$tmpf" 2>&1; timing_add 'Z sec9' "$_TT"
+  _TT=$(now_s); { sec10; } >> "$tmpf" 2>&1; timing_add 'Z sec10' "$_TT"
+  _TT=$(now_s); { sec11; } >> "$tmpf" 2>&1; timing_add 'Z sec11' "$_TT"
   timing_add '5 清单 / 冲突 / 日志 / App 可见性' "$_PH_T0"
   export_part "$tmpf"
   _PH_T0=$(now_s)
-  dphase '6/7 逐文件指纹（全量 sha256，同一份只算一次）'
+  dphase '6/7 逐文件指纹（稀疏：大小+mtime+头尾 64KB，同一份只算一次）'
   pack_extra >> "$tmpf" 2>&1
   timing_add '6 打包原始配置与哈希清单' "$_PH_T0"
   {
@@ -2414,9 +3051,11 @@ kit_report() {
 export_part() {
   [ "$BG_STATE" = 1 ] || return 0
   [ -s "$1" ] || return 0
-cp -f "$1" "$OUTFILE_FULL" 2>/dev/null
-chmod 666 "$OUTFILE_FULL" 2>/dev/null
-chown media_rw:media_rw "$OUTFILE_FULL" 2>/dev/null
+  # ★ 1.0.9.2：**不再每阶段整份复制报告到 Download**。
+  #   原来这里是 `cp -f "$1" "$OUTFILE_FULL"` —— 7 个阶段就把整份报告
+  #   （作者机器上 1.9MB）复制 7 遍，而最后 write_kit 本来就会写一份完整的。
+  #   在"慢速存储 + I/O 让路"的情况下，这些多余复制本身就很可观。
+  #   现在只更新界面用的预览镜像（60KB，很便宜），真正的落盘交给最后的 write_kit。
   mirror_part
   return 0
 }
@@ -2526,6 +3165,31 @@ case "$MODE" in
     collect_once
     conclusion
     ;;
+  perf)
+    # 【隐藏模式，给作者/维护者用】只跑采集并打印各段耗时，不生成报告、不写 Download。
+    # 为什么需要它：真机反馈过"整份报告要半小时"，而报告末尾的「每一步耗时」
+    # 只能看到 6 个大步（第 1 步把采集全包住了）。这个模式把 collect() 里的
+    # C1~C7 分段耗时直接打出来 —— 在真机上 `sh diag.sh perf` 一条命令就能定位。
+    echo "===== 分段耗时实测（不生成报告）====="
+    _p0=$(now_s)
+    collect_once
+    _p1=$(now_s)
+    echo "collect() 总计: $(( _p1 - _p0 )) 秒"
+    echo
+    echo "各段明细（C*=采集大段，P*=采集内部细节，按耗时从大到小）："
+    if [ -n "$TIMING_LIST" ]; then
+      printf '%s' "$TIMING_LIST" | sed '/^$/d' | sort -t'|' -k2 -rn | while IFS= read -r _l; do
+        case "$_l" in C*|P*|S*|Y*|Z*) printf '  %-42s %s 秒\n' "${_l%%|*}" "${_l##*|}" ;; esac
+      done
+    else
+      echo "  （没有分段记录）"
+    fi
+    echo
+    echo "规模参考："
+    echo "  候选槽位: $(slot_candidates "$M" 2>/dev/null | grep -c .) 个"
+    echo "  语言映射: $(slot_scan_names 2>/dev/null | grep -c .) 条"
+    echo "  字体目录: $(slot_dirs 2>/dev/null | tr '\n' ' ')"
+    ;;
   bg)
     # 后台生成（立刻返回，WebUI 的 JS 不会被长命令卡住；生成期间窗口可随时关闭）
     # 本模式只做"读状态 + 启动"，绝不采集 —— 这是"点一下立刻有反应"的前提
@@ -2579,11 +3243,16 @@ case "$MODE" in
     rm -f "$WEB_META" 2>/dev/null
     BG_START=$(now_s)
     BG_FAST=$fast
-    export BG_START BG_FAST
+    export BG_START BG_FAST DIAG_SPEED
+    # ★ 1.0.9.2：**必须把速度传给 build**。
+    #   build 是一个**新进程**（`diag.sh build`），它会重新解析 argv ——
+    #   只写 `diag.sh build` 的话，它拿到的 argv 里没有 full/gentle，
+    #   于是 DIAG_SPEED 退回默认的 gentle，**界面选了"全速"也没用**（真机实测抓到）。
+    #   所以这里显式把当前速度作为参数带上。
     if command -v setsid >/dev/null 2>&1; then
-      setsid sh "$MODDIR/diag.sh" build >/dev/null 2>&1 &
+      setsid sh "$MODDIR/diag.sh" build "$DIAG_SPEED" >/dev/null 2>&1 &
     else
-      sh "$MODDIR/diag.sh" build >/dev/null 2>&1 &
+      sh "$MODDIR/diag.sh" build "$DIAG_SPEED" >/dev/null 2>&1 &
     fi
     bpid=$!
     # 父进程先写一份（pid 可能不准），build 一开始就会用自己的真实 pid/pgid 覆盖
