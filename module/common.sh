@@ -12,72 +12,173 @@ getp() { getprop "$1" 2>/dev/null | tr -d '\r\n'; }
 # 识别当前 ROM：
 #   专项适配（有已知文件名清单）：hyperos | coloros | originos | flyme
 #   通用适配（靠真实字体目录 + 字体配置 XML 发现槽位）：samsung | honor | huawei | nothing | aosp
+#
+# ★ 1.0.9 重做：识别要"多证据"，不能看到一个属性就下结论 ★
+#   真实反馈（2026-10-12）：一台 **Android 16 类原生**被认成了 MIUI ——
+#     · 类原生 / GSI / 移植包经常带着**残留属性**（ro.miui.ui.version.code 这类）；
+#     · 老写法只要有一个非空就 return，于是"有 MIUI 残留属性"= MIUI，误判。
+#   误判的代价不只是名字写错：ROM 决定用哪份 targets/*.list（槽位名单），
+#     认错就会去找根本不存在的槽位名 → 计划里少几个槽位 → 用户看到"部分没换"。
+#
+#   新判定规则（对每一家都一样）：
+#     ① **厂商专属属性**才算"强证据"；AOSP 通用属性（ro.product.* 这些谁都能改）只算弱证据；
+#     ② 强证据 ≥1 → 直接认定；
+#     ③ 只有弱证据（比如 brand=Xiaomi）→ **必须再有厂商目录/文件实证**（/system_ext/oplus 等）；
+#     ④ 都不满足 → aosp（类原生）。
+#   本函数每个属性只取一次（PROP_CACHE 缓存整个 getprop 输出），
+#     比原来十几次 getprop 进程快，也不会同一台机器上两次读不一致。
 # ---------------------------------------------------------------------------
-detect_rom() {
-  local vname vdisplay vbrand vmanu
+_rom_props() {
+  # 一次读完全部属性并缓存（getprop 不带参数 = 全量转储）。之后查询走内存，不起进程。
+  if [ -z "${PROP_ALL+x}" ]; then
+    PROP_ALL=$(getprop 2>/dev/null | tr -d '\r')
+    [ -n "$PROP_ALL" ] || PROP_ALL=" "
+  fi
+}
+# 查一个属性（结果写 PROP_V）；从缓存里按行匹配，纯 shell，不起进程
+_prop_get() {
+  local line
+  [ -n "${1:-}" ] || { PROP_V=""; return 0; }
+  _rom_props
+  PROP_V=""
+  while IFS= read -r line; do
+    case "$line" in
+      "[$1]:"*) PROP_V=${line#*: }; PROP_V=${PROP_V# }; PROP_V=${PROP_V# }; ;;
+    esac
+  done <<EOF
+$PROP_ALL
+EOF
+  return 0
+}
+# 厂商目录/文件实证：有任意一个存在就返回 0（这些目录是 ROM 刷进去的，改属性改不出来）
+_rom_has_dir() {
+  local d
+  for d in "$@"; do
+    [ -e "$FSROOT$d" ] && return 0
+  done
+  return 1
+}
 
-  # 1. 澎湃OS / HyperOS / MIUI（小米/红米/POCO）
-  if [ -n "$(getp ro.mi.os.version.name)" ] || [ -n "$(getp ro.miui.ui.version.code)" ]; then
+detect_rom() {
+  local vname vdisplay vbrand vmanu strong weak gen
+
+  # 读一次通用属性（品牌/厂商/显示版本），后面每家都用
+  _prop_get ro.product.brand;               vbrand="$PROP_V"
+  _prop_get ro.product.manufacturer;        vmanu="$PROP_V"
+  _prop_get ro.build.display.id;            vdisplay="$PROP_V"
+  # "像不像手机厂商自己的品牌"：类原生/GSI 上这里通常是 google / Android / unknown
+  case "$vbrand $vmanu" in
+    *google*|*Google*|*GOOGLE*|*[Aa]ndroid*|*unknown*|*Unknown*|"") gen=1 ;;
+    *) gen="" ;;
+  esac
+
+  # ---- 1. 澎湃OS / HyperOS / MIUI（小米/红米/POCO）----
+  #   为什么这一家要**双重证据**：类原生/移植包带着 MIUI 残留属性的情况最常见
+  #   （作者 2026-10-12 反馈的那台就是：Android 16 类原生被认成 MIUI）。
+  #   强属性（ro.mi.os.version.name 等）单独不算数，必须再有"小米品牌"或"小米目录实证"。
+  _prop_get ro.mi.os.version.name;          strong="$PROP_V"
+  [ -n "$strong" ] || { _prop_get ro.miui.ui.version.code; strong="$PROP_V"; }
+  [ -n "$strong" ] || { _prop_get ro.miui.ui.version.name; strong="$PROP_V"; }
+  case "$vbrand $vmanu" in
+    *[Xx]iaomi*|*[Rr]edmi*|*[Pp][Oo][Cc][Oo]*|*[Xx]IAOMI*|*[Rr]EDMI*) weak=1 ;;
+    *) weak="" ;;
+  esac
+  if [ -n "$weak" ]; then
+    # 小米品牌：有强属性就直接认定；没强属性但有小米目录也算（老 MIUI 可能没那个属性）
+    if [ -n "$strong" ] || _rom_has_dir /system_ext/priv-app/MiuiSystemUI /system/framework/miui-framework.jar; then
+      echo "hyperos"; return 0
+    fi
+  elif [ -n "$strong" ] && _rom_has_dir /system_ext/priv-app/MiuiSystemUI /system/framework/miui-framework.jar; then
+    # 品牌不像小米，但有小米目录实证 → 移植/换皮，仍按小米处理
     echo "hyperos"; return 0
   fi
+  # 走到这里：光有 MIUI 属性、品牌却是 google/类原生 → **不认**，继续往下判（最终落到 aosp）
 
-  # 2. ColorOS / OPPO / 一加 / realme（oplus 系）
-  if [ -n "$(getp ro.build.version.oplusrom)" ] || [ -d /data/oplus/os ] || [ -d /system_ext/oplus ]; then
-    echo "coloros"; return 0
-  fi
+  # ---- 2. ColorOS / OPPO / 一加 / realme（oplus 系）----
+  _prop_get ro.build.version.oplusrom;      strong="$PROP_V"
+  [ -n "$strong" ] || { _prop_get ro.oplus.version; strong="$PROP_V"; }
+  [ -n "$strong" ] || { _prop_get ro.build.version.oplusrom.display; strong="$PROP_V"; }
+  if [ -n "$strong" ]; then echo "coloros"; return 0; fi
+  case "$vbrand $vmanu" in
+    *[Oo][Pp][Pp][Oo]*|*[Oo]ne[Pp]lus*|*[Rr]ealme*|*[Rr]eal[Mm]e*)
+      if _rom_has_dir /system_ext/oplus /my_product /my_stock; then
+        echo "coloros"; return 0
+      fi ;;
+  esac
+  if _rom_has_dir /system_ext/oplus /my_product; then echo "coloros"; return 0; fi
 
-  # 3. OriginOS / vivo / iQOO
-  vname=$(getp ro.vivo.os.name)
-  vdisplay=$(getp ro.build.display.id)
-  vbrand=$(getp ro.product.brand)
-  vmanu=$(getp ro.product.manufacturer)
-  case "$vname $vdisplay" in
-    *OriginOS*|*originos*) echo "originos"; return 0 ;;
+  # ---- 3. OriginOS / vivo / iQOO ----
+  _prop_get ro.vivo.os.name;                vname="$PROP_V"
+  _prop_get ro.vivo.product.version;        strong="$PROP_V"
+  case "$vname $strong" in
+    *[Oo]rigin[Oo][Ss]*|*[Ff]untouch*) echo "originos"; return 0 ;;
   esac
   case "$vbrand $vmanu" in
     *vivo*|*VIVO*|*iQOO*|*iqoo*|*IQOO*)
-      [ -n "$vname$vdisplay" ] && { echo "originos"; return 0; }
-      ;;
+      if _rom_has_dir /system_ext/etc/vivo /vendor/etc/vivo /system/etc/vivo /data/vivo; then
+        echo "originos"; return 0
+      fi ;;
   esac
 
-  # 4. Flyme / 魅族
+  # ---- 4. Flyme / 魅族 ----
   case "$vdisplay" in
-    *Flyme*|*flyme*) echo "flyme"; return 0 ;;
+    *Flyme*|*flyme*|*FLYME*) echo "flyme"; return 0 ;;
   esac
+  _prop_get ro.flyme.version;               strong="$PROP_V"
+  [ -n "$strong" ] && { echo "flyme"; return 0; }
   case "$vbrand $vmanu" in
-    *Meizu*|*MEIZU*|*meizu*) echo "flyme"; return 0 ;;
+    *Meizu*|*MEIZU*|*meizu*)
+      if _rom_has_dir /system/etc/flyme /system/flyme /data/customizecenter; then
+        echo "flyme"; return 0
+      fi ;;
   esac
 
-  # 5. 荣耀 MagicOS（先于华为判断：荣耀的 build 属性里也带 hw 字样）
-  if [ -n "$(getp ro.build.version.magic)" ] || [ -n "$(getp ro.honor.build.version)" ]; then
-    echo "honor"; return 0
-  fi
+  # ---- 5. 荣耀 MagicOS（先于华为判断：荣耀的属性里也带 hw 字样）----
+  _prop_get ro.build.version.magic;         strong="$PROP_V"
+  [ -n "$strong" ] || { _prop_get ro.honor.build.version; strong="$PROP_V"; }
+  if [ -n "$strong" ]; then echo "honor"; return 0; fi
   case "$vbrand $vmanu" in
-    *HONOR*|*honor*|*Honor*) echo "honor"; return 0 ;;
+    *HONOR*|*honor*|*Honor*)
+      if _rom_has_dir /system/etc/honor /system_ext/etc/honor /product/etc/honor; then
+        echo "honor"; return 0
+      fi ;;
   esac
 
-  # 6. 华为 EMUI / HarmonyOS(AOSP 兼容版)
-  if [ -n "$(getp ro.build.version.emui)" ] || [ -n "$(getp ro.build.hw_emui_api_level)" ]; then
-    echo "huawei"; return 0
-  fi
+  # ---- 6. 华为 EMUI / HarmonyOS(AOSP 兼容版) ----
+  _prop_get ro.build.version.emui;          strong="$PROP_V"
+  [ -n "$strong" ] || { _prop_get ro.build.hw_emui_api_level; strong="$PROP_V"; }
+  [ -n "$strong" ] || { _prop_get ro.huawei.build.version; strong="$PROP_V"; }
+  if [ -n "$strong" ]; then echo "huawei"; return 0; fi
   case "$vbrand $vmanu" in
-    *HUAWEI*|*huawei*|*Huawei*) echo "huawei"; return 0 ;;
+    *HUAWEI*|*huawei*|*Huawei*)
+      if _rom_has_dir /system/etc/huawei /system_ext/etc/huawei /hw_product; then
+        echo "huawei"; return 0
+      fi ;;
   esac
 
-  # 7. 三星 One UI
-  if [ -n "$(getp ro.build.version.oneui)" ] || [ -n "$(getp ro.build.version.sem)" ]; then
-    echo "samsung"; return 0
-  fi
+  # ---- 7. 三星 One UI ----
+  _prop_get ro.build.version.oneui;         strong="$PROP_V"
+  [ -n "$strong" ] || { _prop_get ro.build.version.sem; strong="$PROP_V"; }
+  [ -n "$strong" ] || { _prop_get ro.config.knox; strong="$PROP_V"; }
+  if [ -n "$strong" ]; then echo "samsung"; return 0; fi
   case "$vbrand $vmanu" in
-    *samsung*|*SAMSUNG*|*Samsung*) echo "samsung"; return 0 ;;
+    *samsung*|*SAMSUNG*|*Samsung*)
+      if _rom_has_dir /system/etc/floating_feature.xml /system/etc/samsung /system/samsung; then
+        echo "samsung"; return 0
+      fi ;;
   esac
 
-  # 8. Nothing OS
+  # ---- 8. Nothing OS ----
+  _prop_get ro.nothing.build.version;       strong="$PROP_V"
+  [ -n "$strong" ] && { echo "nothing"; return 0; }
   case "$vbrand $vmanu" in
-    *Nothing*|*nothing*|*NOTHING*) echo "nothing"; return 0 ;;
+    *Nothing*|*nothing*|*NOTHING*)
+      if _rom_has_dir /system/etc/nothing /system_ext/etc/nothing; then
+        echo "nothing"; return 0
+      fi ;;
   esac
 
-  # 9. 兜底：原生 AOSP / 类原生 / 谷歌 Pixel / GSI / 其他
+  # ---- 9. 兜底：原生 AOSP / 类原生 / 谷歌 Pixel / GSI / 其他 ----
   echo "aosp"; return 0
 }
 
