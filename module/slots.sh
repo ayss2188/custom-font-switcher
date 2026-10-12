@@ -23,29 +23,41 @@ _lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # 真实存在的字体目录（输出绝对路径，不含 FSROOT）
 # ---------------------------------------------------------------------------
 slot_dirs() {
-  local d p parent
-  {
-    for d in /system/fonts /system_ext/fonts /product/fonts /vendor/fonts /odm/fonts /oem/fonts \
-             /my_product/fonts /my_region/fonts /my_company/fonts /my_carrier/fonts /my_stock/fonts \
-             /my_heytap/fonts /my_manifest/fonts /my_bigball/fonts /mi_ext/fonts /hw_product/fonts \
-             /prism/fonts /optics/fonts /product/vivo/fonts /system_ext/vivo/fonts /vendor/vivo/fonts \
-             /oplus_product/fonts /oplus_engineering/fonts /oplus_version/fonts /oplus_region/fonts; do
-      [ -d "$FSROOT$d" ] && echo "$d"
-    done
-    # 未知厂商分区自动发现：/xxx/fonts 与 /xxx/yyy/fonts
-    for d in "$FSROOT"/*/fonts "$FSROOT"/*/*/fonts; do
-      [ -d "$d" ] || continue
-      parent=${d%/fonts}
-      [ -L "$parent" ] && continue          # /system/product 之类的符号链接，避免重复
-      p=${d#"$FSROOT"}
-      case "$p" in
-        /data/*|/sdcard/*|/storage/*|/mnt/*|/proc/*|/sys/*|/dev/*|/apex/*|/linkerconfig/*|\
-        /config/*|/metadata/*|/cache/*|/acct/*|/debug_ramdisk/*|/second_stage_resources/*|\
-        /system/etc/*|/system/usr/*|/system/app/*|/system/priv-app/*) continue ;;
-      esac
-      echo "$p"
-    done
-  } | sort -u
+  # ★ 1.0.9.2：**加进程内缓存**（SLOT_DIRS_CACHE）。
+  #   这个函数每次调用都要遍历所有分区、用 glob 找 `*/fonts` 目录
+  #   （`"$FSROOT"/*/fonts "$FSROOT"/*/*/fonts`）。而它在一次运行里被调用 **6 次以上**
+  #   （slot_candidates、slot_scan_candidates、slot_plan、报告第 5 节、字体目录映射…）。
+  #   "设备上有哪些字体目录"在一次运行内不会变 —— 重复扫描纯属浪费，
+  #   在真机（分区多、目录多）上尤其明显。这是第 1 步里最容易被忽略的一块固定开销。
+  if [ -n "${SLOT_DIRS_CACHE+x}" ]; then
+    printf '%s\n' "$SLOT_DIRS_CACHE" | grep -v '^[[:space:]]*$'
+    return 0
+  fi
+  SLOT_DIRS_CACHE=$(
+    {
+      for d in /system/fonts /system_ext/fonts /product/fonts /vendor/fonts /odm/fonts /oem/fonts \
+               /my_product/fonts /my_region/fonts /my_company/fonts /my_carrier/fonts /my_stock/fonts \
+               /my_heytap/fonts /my_manifest/fonts /my_bigball/fonts /mi_ext/fonts /hw_product/fonts \
+               /prism/fonts /optics/fonts /product/vivo/fonts /system_ext/vivo/fonts /vendor/vivo/fonts \
+               /oplus_product/fonts /oplus_engineering/fonts /oplus_version/fonts /oplus_region/fonts; do
+        [ -d "$FSROOT$d" ] && echo "$d"
+      done
+      # 未知厂商分区自动发现：/xxx/fonts 与 /xxx/yyy/fonts
+      for d in "$FSROOT"/*/fonts "$FSROOT"/*/*/fonts; do
+        [ -d "$d" ] || continue
+        parent=${d%/fonts}
+        [ -L "$parent" ] && continue          # /system/product 之类的符号链接，避免重复
+        p=${d#"$FSROOT"}
+        case "$p" in
+          /data/*|/sdcard/*|/storage/*|/mnt/*|/proc/*|/sys/*|/dev/*|/apex/*|/linkerconfig/*|\
+          /config/*|/metadata/*|/cache/*|/acct/*|/debug_ramdisk/*|/second_stage_resources/*|\
+          /system/etc/*|/system/usr/*|/system/app/*|/system/priv-app/*) continue ;;
+        esac
+        echo "$p"
+      done
+    } | sort -u
+  )
+  printf '%s\n' "$SLOT_DIRS_CACHE" | grep -v '^[[:space:]]*$'
 }
 
 # ---------------------------------------------------------------------------
@@ -513,20 +525,32 @@ slot_scan_candidates() {
 #   为什么不用文件名猜：真机上中文主字体常叫 SysSans-Hans-Regular.ttf / VivoFont.ttf /
 #   SECCJK-Regular.ttc，文件名里没有 hans/hant 字样 —— 配置里的 lang 才是实锤。
 _scan_script_of() {
-  local want="$1" line role lang
+  local want="$1"
   [ -n "${SCAN_NAMES_CACHE+x}" ] || slot_scan_names >/dev/null 2>&1
-  printf '%s\n' "$SCAN_NAMES_CACHE" | while IFS=' ' read -r role name lang; do
-    [ "$name" = "$want" ] || continue
-    case "$role:$lang" in
-      cjk:*)             echo cjk ;;
-      kana:*)            echo kana ;;
-      hangul:*)          echo hangul ;;
-      lang:*zh-hant*|lang:*zh-bopo*|lang:*zh-hk*|lang:*zh-tw*|lang:*zh-mo*) echo hant ;;
-      lang:*)            echo lang ;;
-      *)                 echo "" ;;
-    esac
-    break
-  done
+  # ★ 1.0.9.2：**先把"文件名→脚本"建成一张内存表**，之后纯内存查。
+  #   原来这里是 `printf '%s\n' "$SCAN_NAMES_CACHE" | while read ...` ——
+  #   每调用一次就起一个子 shell 管道、再逐行比对。而它被**每个候选各调一次**
+  #   （作者机器 75 个候选 → 75 个子 shell + 75×N 次字符串比较），
+  #   在手机上这是 sec0（报告第 0 节）里最贵的一块。
+  #   现在：建表只做一次（SCAN_SCRIPT_MAP，进程内缓存），查询是纯 shell 模式匹配、不起进程。
+  if [ -z "${SCAN_SCRIPT_MAP+x}" ]; then
+    SCAN_SCRIPT_MAP=$(printf '%s\n' "$SCAN_NAMES_CACHE" | while IFS=' ' read -r _sr _sn _sl; do
+      [ -n "$_sn" ] || continue
+      case "$_sr:$_sl" in
+        cjk:*)             _ss=cjk ;;
+        kana:*)            _ss=kana ;;
+        hangul:*)          _ss=hangul ;;
+        lang:*zh-hant*|lang:*zh-bopo*|lang:*zh-hk*|lang:*zh-tw*|lang:*zh-mo*) _ss=hant ;;
+        lang:*)            _ss=lang ;;
+        *)                 _ss="" ;;
+      esac
+      [ -n "$_ss" ] && printf '|%s=%s' "$_sn" "$_ss"
+    done)
+  fi
+  case "$SCAN_SCRIPT_MAP" in
+    *"|$want="*) _SS_T=${SCAN_SCRIPT_MAP#*"|$want="}; printf '%s' "${_SS_T%%|*}" ;;
+    *)           printf '%s' "" ;;
+  esac
 }
 
 # 某个角色在候选里已经有几个（用来决定"要不要用扫描结果补"）
@@ -583,9 +607,41 @@ slot_why() {   # $1=角色 $2=文件名 $3=scope $4=keep_lang $5=keep_special
 # 输出（每行）："zh-Hans|中文简体|SysSans-Hans-Regular.ttf|在计划里/不在计划里|理由"
 # ---------------------------------------------------------------------------
 slot_scan_report() {
-  local role name lang label plan why
+  local role name lang label plan why base_l
   local base="${1:-}" scope="${2:-all}" kl="${3:-0}" ks="${4:-0}"
-  slot_scan_names | while IFS=' ' read -r role name lang; do
+  # ★★ 1.0.9.2 第三次提速（真机实测这一节 253 秒 → 目标几秒）：
+  #   原因：这一节对**每个**"不替换"的字体都调一次 `slot_why`，而 slot_why 里又有
+  #   `$(...)` 形式的子进程（_slot_script / _scan_script_of 各一次）。
+  #   作者机器上配置引用 279 个字体 → **500 多个进程**，每个进程在手机上要排队几十毫秒
+  #   —— 累起来就是 250 秒。
+  #   现在：**整节不起任何子进程**：判定和理由全部用纯 shell 的 case 完成。
+  #
+  # ① 计划表（一次建好）
+  if [ -z "${PLAN_NAME_MAP+x}" ]; then
+    PLAN_NAME_MAP=$(printf '%s\n' "$base" | while IFS= read -r _pl; do
+      [ -n "$_pl" ] || continue
+      _pn=${_pl##*/}
+      [ -n "$_pn" ] && printf '|%s|' "$_pn"
+    done)
+  fi
+  # ② 脚本表（文件 → 文字体系），一次建好，查询纯匹配
+  if [ -z "${SCAN_SCRIPT_MAP+x}" ]; then
+    printf '%s\n' "$SCAN_NAMES_CACHE" | while IFS=' ' read -r _sr _sn _sl; do
+      [ -n "$_sn" ] || continue
+      case "$_sr:$_sl" in
+        cjk:*)             _ss=cjk ;;
+        kana:*)            _ss=kana ;;
+        hangul:*)          _ss=hangul ;;
+        lang:*zh-hant*|lang:*zh-bopo*|lang:*zh-hk*|lang:*zh-tw*|lang:*zh-mo*) _ss=hant ;;
+        lang:*)            _ss=lang ;;
+        *)                 _ss="" ;;
+      esac
+      [ -n "$_ss" ] && printf '|%s=%s' "$_sn" "$_ss"
+    done > "${TMPD:-/data/local/tmp}/.scanmap.$$" 2>/dev/null
+    SCAN_SCRIPT_MAP=$(cat "${TMPD:-/data/local/tmp}/.scanmap.$$" 2>/dev/null)
+    rm -f "${TMPD:-/data/local/tmp}/.scanmap.$$" 2>/dev/null
+  fi
+  printf '%s\n' "$SCAN_NAMES_CACHE" | while IFS=' ' read -r role name lang; do
     [ -n "$name" ] || continue
     case "$lang" in
       zh-hans|zh-hans-cn) label="中文（简体）" ;;
@@ -595,11 +651,46 @@ slot_scan_report() {
       und|"") label="通用（无语言）" ;;
       *)    label="$lang" ;;
     esac
-    # 这个文件在本次计划里吗（计划里是 "角色 目录/文件名"）
-    case "$base" in
-      *"/$name"*) plan="✅ 会替换" ; why="—" ;;
-      *)          plan="❌ 不替换" ; why=$(slot_why "$role" "$name" "$scope" "$kl" "$ks") ;;
+    # 在不在计划里：两次短模式匹配（纯 shell，零进程）
+    case "$PLAN_NAME_MAP" in
+      *"|$name|"*) _inplan=1 ;;
+      *)           _inplan=0 ;;
     esac
+    if [ "$_inplan" = 1 ]; then
+      plan="✅ 会替换" ; why="—"
+    else
+      plan="❌ 不替换"
+      # ---- 以下替代 slot_why：全部纯 shell，零子进程 ----
+      # 先看角色放不放行
+      _rw=1
+      case "$role" in
+        sym) _rw=0 ;;                                   # 符号/emoji 刻意不动
+        ttc|lang) [ "$scope" = all ] || _rw=0 ;;
+      esac
+      case "$scope" in
+        latin) case "$role" in latin|italic|serif|mono|clock|display) ;; *) _rw=0 ;; esac ;;
+        cjk)   [ "$role" = cjk ] || _rw=0 ;;
+      esac
+      if [ "$_rw" = 0 ]; then
+        case "$role" in
+          sym)   why="刻意不动：符号/表情字体换了会显示异常" ;;
+          ttc)   why="被保留：替换范围不是 all（合集槽只在全替换时参与）" ;;
+          lang)  why="被保留：这个角色只在「全替换」时参与" ;;
+          *)     why="被保留：不在本次替换范围（范围=$scope）" ;;
+        esac
+      else
+        # 角色放行了却不在计划里 → 看它的文字体系，给出原因
+        _ss=""
+        case "$SCAN_SCRIPT_MAP" in
+          *"|$name="*) _ss=${SCAN_SCRIPT_MAP#*"|$name="}; _ss=${_ss%%|*} ;;
+        esac
+        case "$_ss" in
+          kana|hangul|hant|cjk) why="不在计划里（脚本=$_ss，可能是该字体没被模板覆盖到最后一步" ;;
+          "")                   why="不在计划里（角色放行了，但计划里没有它 —— 请把这份报告发给作者）" ;;
+          *)                    why="不在计划里（脚本=$_ss）" ;;
+        esac
+      fi
+    fi
     printf '%-9s %-13s %-40s %-9s %s\n' "$lang" "$label" "$name" "$plan" "$why"
   done | sort -u
 }
@@ -621,7 +712,14 @@ slot_scan_report() {
 slot_adaptive_extra() {
   local base="$1" role n scan
   CANDS_TMP="$base"
-  scan=$(slot_scan_candidates)
+  # ★ 1.0.9.2：**用调用方已经算好的候选，别再自己算一遍**。
+  #   原来这里 `scan=$(slot_scan_candidates)` —— 而调用它的 slot_plan 前面刚做过
+  #   `CAND_RAW=$(slot_candidates ...)`，两者都要解析全部字体配置 + 逐文件判定，
+  #   等于**同一件重活干两遍**（作者机器上 C4「算槽位计划」28 秒，P2「候选枚举」只要 1 秒，
+  #   差的这一段主要就是这次重复计算）。
+  #   现在：base 非空时直接用；为空才回退去算（保持兼容旧调用方）。
+  [ -n "$base" ] || base=$(slot_candidates "${MODDIR:-/data/adb/modules/custom_font_switcher}")
+  scan="$base"
   [ -n "$scan" ] || return 0
   for role in cjk kana hangul lang hant; do
     n=$(_role_count "$role")
