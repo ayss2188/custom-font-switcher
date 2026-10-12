@@ -14,10 +14,15 @@ ui_print "*****************************************"
 . "$MODPATH/common.sh"
 mkdir -p "$LIB"
 
+# 1.0.9：识别机型要读全部系统属性、还要找厂商目录，会花一两秒。
+#   特意把话说在前面，免得用户看管理器"卡在那儿不动"以为死机了。
+#   这一阶段等一下完全没问题 —— 它不是开机流程，不影响开机时间。
+ui_print "- 正在检测你的机型与字体配置，请稍等…"
 ROM_ID=$(detect_rom)
 ROM_NAME=$(rom_name "$ROM_ID")
 RM=$(root_manager)
 echo "$ROM_ID" > "$MODPATH/current_rom"
+ui_print "- 已识别：$ROM_NAME"
 
 # 旧版设置在模块目录里，迁移到字体库目录（以后更新不会丢）
 [ -f "$SETTINGS" ] || { [ -f "$OLD/settings.conf" ] && cp -f "$OLD/settings.conf" "$SETTINGS"; }
@@ -101,9 +106,9 @@ GM="无"; { command -v magisk >/dev/null 2>&1 || [ -e /data/adb/magisk ]; } && G
 ui_print " "
 ui_print "- 设备：$(getprop ro.product.brand) $(getprop ro.product.model) / Android $(getprop ro.build.version.release)"
 ui_print "- 门禁速查：已禁用=$GD  待激活=$GU  安全模式=$GS  Magisk共存=$GM"
-ui_print "- 需要诊断报告时（一分钟内出结果）：在 WebUI 里点「查看诊断报告」，"
-ui_print "  或点模块卡片上的「操作」按钮（不用再手动保存，生成完会自动落到 Download）；"
-ui_print "  快速体检写到 Download/快速体检报告.txt，完整报告写到 完整体检报告.txt"
+ui_print "- 需要诊断报告时：在 WebUI 里点「查看诊断报告」，"
+ui_print "  或点模块卡片上的「操作」按钮（不用手动保存，生成完会自动存到 Download）。"
+ui_print "  报告只产出一个文件：Download/完整体检报告.txt"
 if [ -f "$MODPATH/diag.sh" ]; then
   cp -f "$MODPATH/diag.sh" /data/local/tmp/font_diag.sh 2>/dev/null
   chmod 755 /data/local/tmp/font_diag.sh 2>/dev/null
