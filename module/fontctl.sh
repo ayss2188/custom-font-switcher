@@ -916,7 +916,8 @@ case "${1:-}" in
     ;;
   diag)
     if [ -f "$MODDIR/diag.sh" ]; then
-      # 原样转发后面所有参数：diag bg force fast / diag textpage 60000 60000 / diag state ...
+      # 原样转发后面所有参数：diag bg force / diag textpage 60000 60000 / diag state ...
+# （1.0.9 起不再有 fast 口径；万一旧界面传了 fast，diag.sh 会忽略它）
       shift
       [ -n "${1:-}" ] || set -- full
       sh "$MODDIR/diag.sh" "$@"
