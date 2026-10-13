@@ -112,14 +112,20 @@ case "${1:-check}" in
   changelog)
     # 优先用网上的（永远是最新）；拿不到就用随模块打包的那一份 ——
     # raw.githubusercontent.com 在国内经常连不上，没网时至少还能看到本版的更新说明
+    #
+    # ★ 上限 60000，**不要再调回 30000**（2026-10-14 修）。
+    #   日志文件已经 44,849 字节，30000 会把**后 5 个版本（v1.0.4 及更早）整段截掉**，
+    #   而用户看到的是"更新日志就这么长"，不会知道少了 —— 也就是"悄悄少东西"，
+    #   这是本项目最忌讳的一类问题。
+    #   这个上限本来就该是 60000（早期从 30000 提上去过），换皮时又退回去了，别再退。
     if load_json && [ -n "$LOG_URL" ] && fetch "$LOG_URL" "$TMP/changelog.md" 25; then
-      head -c 30000 "$TMP/changelog.md"
+      head -c 60000 "$TMP/changelog.md"
       exit 0
     fi
     if [ -s "$MODDIR/changelog.md" ]; then
       echo "（当前无法连接 GitHub，下面是随模块一起装进来的更新日志）"
       echo
-      head -c 30000 "$MODDIR/changelog.md"
+      head -c 60000 "$MODDIR/changelog.md"
       exit 0
     fi
     echo "ERROR:下载更新日志失败（也找不到随模块打包的 changelog.md）"
