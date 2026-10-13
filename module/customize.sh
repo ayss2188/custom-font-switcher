@@ -33,9 +33,25 @@ A=$(tr -d '[:space:]' 2>/dev/null < "$OLD/active_font")
 echo "$A" > "$MODPATH/active_font"
 echo none > "$MODPATH/pending_font"
 
-# 上次的选择：优先字体库记录，其次旧模块的待生效记录
-LAST=$(tr -d '[:space:]' 2>/dev/null < "$LIB/last_selection")
-[ -n "$LAST" ] || LAST=$(tr -d '[:space:]' 2>/dev/null < "$OLD/pending_font")
+# 上次的选择：**尽量保住用户正在用的那套**（升级体验的关键）
+#
+# ⚠️ 原来这条链有两个毛病：
+#   ① **`$OLD/active_font`（当前真正在用的）没被读** —— 它才是最该恢复的那个。
+#      `pending_font` 只在"选完还没重启"时有意义；正常用着的时候它常常是 none。
+#   ② `[ -n "$LAST" ] ||` 把 **"none" 也当成有效值** ——
+#      于是 pending_font 里写着 none 时它挡住后面的来源，最后 apply none
+#      → 用户升级完字体没了（真机反馈过"更新后变回默认"）。
+#   现在：**跳过空值和 none**，一路找到第一个真正可用的来源。
+#   顺序：字体库记录 → **当前生效** → 待生效
+_pick() {   # $1=文件；echo 出值（空/none 视为无值）
+  local v
+  v=$(tr -d '[:space:]' 2>/dev/null < "$1")
+  case "$v" in ""|none) return 0 ;; esac
+  printf '%s' "$v"
+}
+LAST=$(_pick "$LIB/last_selection")
+[ -n "$LAST" ] || LAST=$(_pick "$OLD/active_font")     # ★ 当前真正在用的
+[ -n "$LAST" ] || LAST=$(_pick "$OLD/pending_font")
 [ -n "$LAST" ] || LAST=none
 
 for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh gms_cache.sh nameclone.sh action.sh \
@@ -52,6 +68,13 @@ ui_print "- 挂载方式：$([ "$(mount_mode)" = manager ] && echo 交给管理�
 RESTORED=0
 if [ "$LAST" != none ]; then
   ui_print "- 正在恢复上次的字体选择..."
+  # ★ 2026-10-14：加"要等一会儿"的提示。
+  #   为什么必须加：下一行 `fontctl.sh apply` 要**扫一遍机器上的字体配置 + 逐文件判定**，
+  #   字体多的机器上要十几秒到一分钟。而这段时间安装界面**一行输出都没有** ——
+  #   用户会以为卡死了、甚至去强杀管理器。真机反馈过。
+  #   提示要写在 apply **之前**（写在后面就是马后炮了，用户已经等完了）。
+  #   ⚠️ 改这里时别删：它不参与任何逻辑，纯粹是给用户看的。
+  ui_print "  ⏳ 正在扫描你机器上的字体，大概十几秒到一分钟，卡住不动是正常的，请稍等…"
   OUT=$(sh "$MODPATH/fontctl.sh" apply "$LAST" 2>&1 | tail -n1)
   case "$OUT" in
     OK:*)
@@ -61,13 +84,27 @@ if [ "$LAST" != none ]; then
     *)
       ui_print "  恢复失败：${OUT#ERROR:}"
       ui_print "  已改为「无字体」，请开机后在 WebUI 重新选择"
+      FALLBACK=0
       ;;
   esac
 fi
-[ "$RESTORED" = 1 ] || sh "$MODPATH/fontctl.sh" apply none >/dev/null 2>&1
+# ★ 只有「恢复失败 **且** 兜底也没成功」时才清成 none。
+#   这个 if 现在看起来是等价的（主项目没内置字体，兜底就是写 none），
+#   但它是**给换皮/内置字体变体留的正确形状**：保时捷内置配色版的兜底会挑一套
+#   可用配色（builtin_apply_first），而无条件的 `|| apply none` 会**紧接着把
+#   它的结果覆盖回 none** → 用户重启后回到默认、必须重新选一次（真机踩到过）。
+#   所以这里先算出 FALLBACK 再决定，别写死。
+if [ "$RESTORED" = 1 ] || [ "${FALLBACK:-0}" = 1 ]; then
+  :                                   # 已有可用选择，别动它
+else
+  sh "$MODPATH/fontctl.sh" apply none >/dev/null 2>&1
+fi
 sh "$MODPATH/fontctl.sh" prop >/dev/null 2>&1
 
 LIB_COUNT=$(ls "$LIB"/f*.ttf 2>/dev/null | wc -l)
+# ★ 2026-10-14：`conflicts` 也要扫一遍机器上的字体配置，会停一会儿。
+#   上面第 100-102 行那两句是静默的，加上这句提示，用户才不会以为卡死。
+ui_print "- 正在检查有没有其它字体模块…（也会扫一遍字体配置，稍等）"
 CONFLICTS=$(sh "$MODPATH/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')
 
 ui_print " "
