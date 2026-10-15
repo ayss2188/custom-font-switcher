@@ -11,7 +11,8 @@ getp() { getprop "$1" 2>/dev/null | tr -d '\r\n'; }
 # ---------------------------------------------------------------------------
 # 识别当前 ROM：
 #   专项适配（有已知文件名清单）：hyperos | coloros | originos | flyme
-#   通用适配（靠真实字体目录 + 字体配置 XML 发现槽位）：samsung | honor | huawei | nothing | aosp
+#   （靠真实字体目录 + 字体配置 XML 自动发现槽位）：honor | huawei | nothing | aosp
+#   ★ samsung 有自己的清单（targets/samsung.list）+ .ttc 合集处理，不属于这一类
 #
 # ★ 1.0.9 重做：识别要"多证据"，不能看到一个属性就下结论 ★
 #   真实反馈（2026-10-12）：一台 **Android 16 类原生**被认成了 MIUI ——
@@ -27,6 +28,36 @@ getp() { getprop "$1" 2>/dev/null | tr -d '\r\n'; }
 #     ④ 都不满足 → aosp（类原生）。
 #   本函数每个属性只取一次（PROP_CACHE 缓存整个 getprop 输出），
 #     比原来十几次 getprop 进程快，也不会同一台机器上两次读不一致。
+# ---------------------------------------------------------------------------
+# ★ 2026-10-15：**小米专有字体**是否存在 —— 用来证明"这确实是小米的 ROM"
+#
+#   为什么需要：`ro.product.brand` 是硬件品牌（小米机器刷类原生也报 xiaomi），
+#   而 `ro.miui.*` 属性在移植/类原生包上会残留 → 光靠属性会把类原生认成 HyperOS。
+#   实测对照：
+#     真 HyperOS（小米 23116PN5BC / 红米 25102RKBEC）→ 小米专有字体 60 / 51 个
+#     类原生  （小米 2210132C，AOSP 构建号 BP4A.*）  → **0 个**
+#
+#   ⚠ 不能改用 MiuiSystemUI / miui-framework 目录当判据：
+#     查过真 HyperOS 的报告，那两个目录**根本没被列出来**，用它当门会误伤真小米用户。
+# ---------------------------------------------------------------------------
+_xm_exclusive_font() {
+  local d f b
+  for d in $(slot_dirs 2>/dev/null); do
+    [ -d "$FSROOT$d" ] || continue
+    for f in "$FSROOT$d"/*.ttf "$FSROOT$d"/*.otf "$FSROOT$d"/*.ttc \
+             "$FSROOT$d"/*.TTF "$FSROOT$d"/*.OTF; do
+      [ -f "$f" ] || continue
+      b=${f##*/}
+      case "$b" in
+        # 小米/红米/POCO 的专有字体名（真机实测出现过的那批）
+        MiSans*|MiLanPro*|MiHaus*|MiClock*|MiSansVF*|MiSansLatinVF*|MiSansTCVF*) return 0 ;;
+      esac
+    done
+  done
+  return 1
+}
+
+
 # ---------------------------------------------------------------------------
 _rom_props() {
   # 一次读完全部属性并缓存（getprop 不带参数 = 全量转储）。之后查询走内存，不起进程。
@@ -84,12 +115,26 @@ detect_rom() {
     *) weak="" ;;
   esac
   if [ -n "$weak" ]; then
-    # 小米品牌：有强属性就直接认定；没强属性但有小米目录也算（老 MIUI 可能没那个属性）
-    if [ -n "$strong" ] || _rom_has_dir /system_ext/priv-app/MiuiSystemUI /system/framework/miui-framework.jar; then
+    # ★ 2026-10-15 真机修正：**小米这一家也要求实证**，不再"品牌是小米 + 有强属性"就认。
+    #   证据（三份真机报告对照）：
+    #     · 类原生：小米 2210132C / AOSP 构建号 BP4A.* → 小米专有字体 **0 个**，
+    #       字体目录全是 AOSP 字体包（ACFilmstrip/Aclonica/AlphaClouds…），
+    #       但 `ro.miui.ui.version.name=V816` 之类的属性**残留着** → 被误判成 HyperOS。
+    #     · 真 HyperOS：小米 23116PN5BC / 红米 25102RKBEC → 小米专有字体 60 / 51 个。
+    #   关键认识：`ro.product.brand` 是**硬件品牌**（小米机器刷什么 ROM 都是 xiaomi），
+    #   它证明不了 ROM；而 `ro.miui.*` 属性在移植包上会残留。
+    #   ⚠ 实证不能用 MiuiSystemUI / miui-framework —— 查过真 HyperOS 的报告，
+    #     那两个目录在报告里**根本没被列出来**，用它当门会把真小米用户误判成 aosp。
+    #     用"小米专有字体存不存在"：真机 51~60 个、类原生 0 个，干净。
+    if _xm_exclusive_font; then
       echo "hyperos"; return 0
     fi
-  elif [ -n "$strong" ] && _rom_has_dir /system_ext/priv-app/MiuiSystemUI /system/framework/miui-framework.jar; then
-    # 品牌不像小米，但有小米目录实证 → 移植/换皮，仍按小米处理
+    if [ -z "$strong" ] && _rom_has_dir /system_ext/priv-app/MiuiSystemUI /system/framework/miui-framework.jar; then
+      # 老 MIUI 可能没有 ro.miui.* 属性 —— 那时靠目录实证（但**不能**只靠品牌）
+      echo "hyperos"; return 0
+    fi
+  elif [ -n "$strong" ] && { _rom_has_dir /system_ext/priv-app/MiuiSystemUI /system/framework/miui-framework.jar || _xm_exclusive_font; }; then
+    # 品牌不像小米，但有小米实证（目录 或 专有字体）→ 移植/换皮，仍按小米处理
     echo "hyperos"; return 0
   fi
   # 走到这里：光有 MIUI 属性、品牌却是 google/类原生 → **不认**，继续往下判（最终落到 aosp）
@@ -191,10 +236,10 @@ rom_name() {
     coloros)  echo "ColorOS/OPPO/一加/realme" ;;
     originos) echo "OriginOS/vivo/iQOO" ;;
     flyme)    echo "Flyme/魅族" ;;
-    samsung)  echo "三星 One UI（通用适配）" ;;
-    honor)    echo "荣耀 MagicOS（通用适配）" ;;
-    huawei)   echo "华为 EMUI/鸿蒙（通用适配）" ;;
-    nothing)  echo "Nothing OS（通用适配）" ;;
+    samsung)  echo "三星 One UI" ;;
+    honor)    echo "荣耀 MagicOS（自动发现）" ;;
+    huawei)   echo "华为 EMUI/鸿蒙（自动发现）" ;;
+    nothing)  echo "Nothing OS（自动发现）" ;;
     aosp)     echo "原生/类原生/谷歌Pixel" ;;
     *)        echo "未知系统" ;;
   esac
