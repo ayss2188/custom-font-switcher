@@ -15,6 +15,10 @@ if grep -rlI "$CR" "$ROOT/module" >/dev/null 2>&1; then
   exit 1
 fi
 
+# 更新日志也打进包里：raw.githubusercontent.com 在国内经常连不上，
+# 没网时 WebUI 的「更新日志」就靠 module/changelog.md 这一份兜底
+cp -f "$ROOT/CHANGELOG.md" "$ROOT/module/changelog.md"
+
 cd "$ROOT/module"
 zip -r -9 -X "$OUT" . -x '*.DS_Store' >/dev/null
 echo "已生成：$OUT"
