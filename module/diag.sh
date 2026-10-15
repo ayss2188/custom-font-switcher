@@ -36,6 +36,12 @@
 
 MODDIR=${0%/*}
 [ -n "$MODDIR" ] || MODDIR=/data/adb/modules/custom_font_switcher
+# ★ 2026-10-15：`sh diag.sh`（相对路径、不带目录）时 `${0%/*}` 会得到字面量 `.`，
+#   报告里那行"运行位置: ."看着莫名其妙，而且后面拼 "$MODDIR/common.sh" 也是 "./common.sh"。
+#   这里把 `.` / 空 都归一化成真正的绝对路径。
+case "$MODDIR" in
+  .|"") MODDIR=$(pwd 2>/dev/null || echo /data/adb/modules/custom_font_switcher) ;;
+esac
 # ⚠ 别写成 `. "$MODDIR/x.sh" 2>/dev/null`：`.` 是特殊内建，**打不开文件会直接结束整个脚本**
 #   （`2>/dev/null` 只藏报错信息，挡不住它退出；实测退出码 2）。缺一个必需文件时，
 #   宁可给一句能看懂的话，也不要"报告打不开、用户不知道为什么"。
@@ -660,7 +666,7 @@ done
 #       轻量模式也要付这个钱）。现在只做"便宜初判"给结论用，完整清单留到需要它的那一节再算。
 PKG_FONT=""; PKG_DONE=0
 S_FONT=""; SFONT_DONE=0
-DFONT_LIST=""; DFONT_CFG=""; DFONT_DONE=0
+DFONT_LIST=""; DFONT_CFG=""; DFONT_DONE=0; G_DFONT_NAMES=""
 G_FLIP=0
 # 字体包（flipfont）住的目录：注意现在应用装成 /data/app/~~<hash>==/<包名>-<hash>==/，
 # 只扫 /data/app/*font* 会漏掉（三星装字体包时全是这种路径）—— 所以多扫一层
@@ -672,7 +678,7 @@ G_DFONT=0
 if [ -d /data/fonts ]; then
   for _df in /data/fonts/*.ttf /data/fonts/*.otf /data/fonts/*.ttc \
              /data/fonts/*/*.ttf /data/fonts/*/*.otf /data/fonts/*/*.ttc; do
-    [ -f "$_df" ] && { G_DFONT=1; break; }
+    [ -f "$_df" ] && { G_DFONT=1; _bn=${_df##*/}; G_DFONT_NAMES="$G_DFONT_NAMES $_bn"; }
   done
 fi
 
@@ -940,7 +946,7 @@ dir_conclusion() {
 #                                   授予过 root 的 App（allow_su）不卸
 # ---------------------------------------------------------------------------
 AS_MINE=""; AS_LIST=""; AS_READ=0; AS_RISK=0; AS_HIDDEN=0
-AS_KREL=""; AS_FEATURE=""; AS_DOTUM=""; AS_METAUM=""
+AS_KREL=""; AS_FEATURE=""; AS_FEATURE_HINT=""; AS_DOTUM=""; AS_METAUM=""
 
 # 关键文件完整性：缺哪个就列出来。
 #   缺 common/slots/mount = 整个模块不可用（fontctl.sh 会明确报错退出）；
@@ -986,10 +992,23 @@ app_side_probe() {
   fi
   # 管理器侧"卸载模块"的现场：原样列出（不猜文件格式，作者一眼就能看懂）
   if [ -f /data/adb/ksu/.feature_config ]; then
+    # ★ 2026-10-15：这个文件里那一行就是**全局一次搞定**的开关 ——
+    #   `kernel_umount=0` 一写，所有 App 都不再被卸载模块（不用逐个 App 点）。
+    #   所以：查到就把"怎么改"一起写出来，别只当现场信息列着。
     AS_FEATURE=$(grep -a -i 'umount' /data/adb/ksu/.feature_config 2>/dev/null | head -n1)
-    [ -n "$AS_FEATURE" ] || AS_FEATURE="（文件在，但没有含 umount 的项）"
+    if [ -n "$AS_FEATURE" ]; then
+      case "$AS_FEATURE" in
+        *umount=0*|*umount=false*|*umount=off*|*umount=no*) AS_FEATURE_HINT="（= 已关闭卸载，这是对的）" ;;
+        *) AS_FEATURE_HINT="（= 开着卸载；改成 kernel_umount=0 可一次性对所有 App 生效）" ;;
+      esac
+    else
+      AS_FEATURE="（文件在，但没有含 umount 的项）"
+      AS_FEATURE_HINT="（默认就是卸载；加一行 kernel_umount=0 可一次性对所有 App 生效）"
+    fi
   else
     AS_FEATURE="（没有 /data/adb/ksu/.feature_config）"
+    # 没有这个文件 = 用的是内核默认值"卸载"，所以这里就是解法所在
+    AS_FEATURE_HINT="（走内核默认值：会卸载；建这个文件并写一行 kernel_umount=0 即可对所有 App 生效）"
   fi
   if [ -f /data/adb/ksu/.umount ]; then
     AS_DOTUM=$(head -c 120 /data/adb/ksu/.umount 2>/dev/null | tr '\n' ' ')
@@ -998,7 +1017,9 @@ app_side_probe() {
     AS_DOTUM="（没有 /data/adb/ksu/.umount）"
   fi
   # 元模块（Hybrid Mount 这类）自己也有"卸载/隐藏"开关，配置里叫 disable_umount
-  for _asf in /data/adb/hybrid-mount/config.toml /data/adb/hybrid_mount/config.toml /data/adb/magic_mount/config.toml; do
+  for _asf in /data/adb/hybrid-mount/config.toml /data/adb/hybrid_mount/config.toml \
+               /data/adb/magic_mount/config.toml /data/adb/modules/mountify/config.toml \
+               /data/adb/mountify/config.toml; do
     [ -f "$_asf" ] || continue
     _asdu=$(sed -n 's/^[[:space:]]*disable_umount[[:space:]]*=[[:space:]]*//p' "$_asf" 2>/dev/null | head -n1)
     _asiu=$(sed -n 's/^[[:space:]]*vfs_isolate_uids[[:space:]]*=[[:space:]]*//p' "$_asf" 2>/dev/null | head -n1)
@@ -1476,6 +1497,24 @@ sec_unadapted() {
           _should=0 ;;
       esac
     fi
+    # ★ 2026-10-15 真机补：**再问一次 `_xml_family_ok`** ——
+    #   它是"哪些族本来就被排除"的唯一权威（EMOJI/SYMBOL/MONO/CURSIVE/CASUAL/
+    #   MATH/MUSIC/CLOCK，以及 SERIF）。
+    #   魅族真机报告（完整体检报告(2)(2).txt）里 ComingSoon.ttf / DancingScript-Regular.ttf
+    #   被标成 [★要修]，但它们的族名就是 `casual` / `cursive` —— 属于装饰字体，
+    #   `_xml_family_ok` 明确排除，没进计划是**正确**的。按文件名看不出来
+    #   （文件名里没有那些词）；上面那条只覆盖 clock/emoji 这类，覆盖不到 casual/cursive。
+    #   保守：只有确实查到族名、且判定为不该要时才降级；查不到就保持原判断，
+    #   免得把真问题掩盖掉。
+    if [ "$_should" = 1 ] && [ -f "${D2_TMP:-/nonexistent}/famfile" ] &&
+       command -v _xml_family_ok >/dev/null 2>&1; then
+      _fid=$(sed -n "s/^$(printf '%s' "$_fl" | sed 's/[.[\*^$]/\\&/g')|//p" "$D2_TMP/famfile" 2>/dev/null | head -n1)
+      if [ -n "$_fid" ]; then
+        for _one in $_fid; do
+          if ! _xml_family_ok "$_one" ""; then _should=0; break; fi
+        done
+      fi
+    fi
     if [ "$_should" = 1 ]; then
       _un=$((_un + 1))
       printf '  [★要修]   %-44s (语言 %s)\n' "$_fl" "$_lg"
@@ -1650,7 +1689,32 @@ conclusion() {
     echo "   这种情况下替换 /system/fonts 是无效的，需要先选回「默认」（或系统自带字体）再重启。"
   fi
   if [ "$G_DFONT" = 1 ]; then
-    echo "⚠ 另外：存在 /data/fonts（Android 可更新字体），它会盖过 /system/fonts（见第 7 节）。"
+    # ★ 2026-10-15 真机订正：以前这里写"**会**盖过 /system/fonts"（确定语气），
+  #   但第 7 节和脚注都写"各机型不一样，本报告不替你下结论" —— 自相矛盾。
+  #   而 realme RMX5010 的报告证明那句说满了：/data/fonts 里有 SysSans-En-Regular.ttf，
+  #   框架读的却是 /system/fonts/SysSans-En-Regular.ttf，这次并没有被盖过。
+  #   现在改成**用我们自己的计划对照**：列出"名字重叠、有被盖风险"的那几个，
+  #   具体、可核对；不再下绝对结论。
+  # 对照对象用 $M/slots.map（本次实际会替换的槽位清单）。
+  # ⚠ 不是 ${APPLIED}：报告里那个变量叫 APPLIED_LIST（读的是 slots.applied）。
+  #   比对用 shell 内建 case，不起 grep（报告里这种小循环很多，省进程）。
+  _df_hit=""
+  if [ -n "${G_DFONT_NAMES:-}" ] && [ -s "${M:-/nonexistent}/slots.map" ]; then
+    _df_all=$(cat "${M}/slots.map" 2>/dev/null)
+    for _dn in $G_DFONT_NAMES; do
+      case "$_df_all" in
+        *"/$_dn "*) _df_hit="$_df_hit $_dn" ;;
+      esac
+    done
+  fi
+  if [ -n "$_df_hit" ]; then
+    echo "⚠ 另外：存在 /data/fonts（Android 可更新字体），其中有 ${_df_hit# }"
+    echo "     这几个名字**也在本次替换计划里** —— 若系统优先读 /data/fonts，"
+    echo "     这几处就轮不到我们（见第 7 节；是否真优先，各机型不同）。"
+  else
+    echo "ℹ 另外：存在 /data/fonts（Android 可更新字体），但与本次替换计划**没有同名文件**，"
+    echo "     不影响我们（详见第 7 节）。"
+  fi
   fi
   if [ "$G_MIUI" = 1 ]; then
     echo "⚠ 另外：检测到 MIUI / HyperOS 个性字体（主题字体）：$MIUI_DIRS"
@@ -2342,12 +2406,16 @@ sec11() {
   echo
   echo "  3) 管理器侧的现场（原样列出，不做格式猜测）"
   echo "     kernel_umount（.feature_config）: $AS_FEATURE"
+  echo "        ${AS_FEATURE_HINT:-}"
   echo "     /data/adb/ksu/.umount           : $AS_DOTUM"
   echo "     元模块配置                       : ${AS_METAUM:-（没找到 config.toml）}"
   echo "     （找不到这些文件不代表没这个机制：名单也可能只在管理器内部或内核里）"
   echo
   echo "  4) 怎么办（按顺序试，一次只改一个，改完重启再看同一个 App）"
-  echo "     ① 管理器 → 设置 → 关掉「默认卸载模块」"
+  echo "     ⓪ 最省事：给 KernelSU 加一个全局开关（一次对所有 App 生效，不用逐个点）"
+  echo "        /data/adb/ksu/.feature_config  里加一行：kernel_umount=0"
+  echo "        （文件不存在就新建，只写这一行也行；改完重启。）"
+  echo "     ① 或者：管理器 → 设置 → 关掉「默认卸载模块」"
   echo "        （= 黑名单模式：以后只有你手动开的 App 才卸）"
   echo "     ② 或者只给那一个 App 关：管理器的「应用配置 / App Profile」里把它的「卸载模块」关掉"
   echo "     ③ 装了元模块（Hybrid Mount 等）的：把它的「禁用卸载 / disable_umount」改成 true"
