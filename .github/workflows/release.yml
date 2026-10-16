@@ -132,7 +132,16 @@ jobs:
             *) echo "::error::算不出线上附件指纹（SHA='$SHA'）—— 拒绝写账本"; exit 1 ;;
           esac
           echo "线上附件指纹：$SHA"
-          head -n 20 dist/notes.md > "UPDATE-$VER.md"   # 保留：Release 页的短说明
+          # ★ 2026-10-17 修：以前这里是 `head -n 20 dist/notes.md > UPDATE-$VER.md`
+          #   —— 无条件覆盖，会把作者手写的发布文案**硬截断**（正好断在条目中间）。
+          #   现在跟子项目 CI 一致：**仓库里已经有就原样保留**，没有才用 notes 兜底。
+          if [ -s "UPDATE-$VER.md" ]; then
+            _un=$(wc -c < "UPDATE-$VER.md")
+            echo "UPDATE-$VER.md 已存在（$_un 字节）—— 原样保留，不覆盖"
+          else
+            cp dist/notes.md "UPDATE-$VER.md"
+            echo "仓库里没有 UPDATE-$VER.md，已用 dist/notes.md 兜底生成"
+          fi
           # ★ 账本里的 changelog 指向 **CHANGELOG.md（完整历史）**，不指向按版本命名的短日志。
           # 为什么（作者要求，2026-10-12）：管理器点更新时弹的窗、以及界面的「更新日志」，
           #   都应该能看到**历史**；短日志只有本版那一小段，用户翻不到以前的改动。
