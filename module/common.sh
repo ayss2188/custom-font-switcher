@@ -4,6 +4,19 @@
 # 槽位发现见 slots.sh，自带挂载见 mount.sh；脚本中通过 source 引入
 
 LIB=${LIB:-/data/adb/custom_font_lib}
+
+# 字体库里所有"可用的字体 id"（不含扩展名）。
+# ★ 2026-10-18：抽出来是为了让 grp_load 这类"遍历字库"的地方不乱 glob ——
+#   子项目还要认内置配色 builtin_*，各项目在这里各写各的规则，
+#   上层代码统一用 $(lib_font_ids)，就不会在同步时被互相覆盖。
+lib_font_ids() {
+  local f
+  for f in "$LIB"/f[0-9]*.ttf; do
+    [ -f "$f" ] || continue
+    basename "$f" .ttf
+  done
+}
+
 SETTINGS="$LIB/settings.conf"
 
 getp() { getprop "$1" 2>/dev/null | tr -d '\r\n'; }
