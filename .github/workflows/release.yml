@@ -89,21 +89,11 @@ jobs:
       - name: 提取本版更新说明
         run: |
           VER="${{ steps.ver.outputs.ver }}"
-          # ★ 2026-10-17 改：**优先用作者写的发布文案 UPDATE-<版本>.md**
-          #   以前只从 CHANGELOG 抽"## 版本"那一段，而 CHANGELOG 是流水账，
-          #   里面没有「怎么升级」「遇到问题怎么办」这两节 ——
-          #   结果 Release 页面比作者写的文案少了结尾（真机发版时发现）。
-          if [ -s "UPDATE-$VER.md" ]; then
-            cp "UPDATE-$VER.md" dist/notes.md
-            echo "用 UPDATE-$VER.md 作为 Release 说明（$(wc -c < dist/notes.md) 字节）"
-          else
-            awk -v v="## $VER" '
-              $0 == v { on = 1; next }
-              on && /^## / { exit }
-              on { print }
-            ' CHANGELOG.md > dist/notes.md
-            echo "仓库里没有 UPDATE-$VER.md，退回到从 CHANGELOG 抽取"
-          fi
+          awk -v v="## $VER" '
+            $0 == v { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > dist/notes.md
           [ -s dist/notes.md ] || echo "见 CHANGELOG.md" > dist/notes.md
 
       - name: 发布 Release（附件只上传这一次）
@@ -142,16 +132,7 @@ jobs:
             *) echo "::error::算不出线上附件指纹（SHA='$SHA'）—— 拒绝写账本"; exit 1 ;;
           esac
           echo "线上附件指纹：$SHA"
-          # ★ 2026-10-17 修：以前这里是 `head -n 20 dist/notes.md > UPDATE-$VER.md`
-          #   —— 无条件覆盖，会把作者手写的发布文案**硬截断**（正好断在条目中间）。
-          #   现在跟子项目 CI 一致：**仓库里已经有就原样保留**，没有才用 notes 兜底。
-          if [ -s "UPDATE-$VER.md" ]; then
-            _un=$(wc -c < "UPDATE-$VER.md")
-            echo "UPDATE-$VER.md 已存在（$_un 字节）—— 原样保留，不覆盖"
-          else
-            cp dist/notes.md "UPDATE-$VER.md"
-            echo "仓库里没有 UPDATE-$VER.md，已用 dist/notes.md 兜底生成"
-          fi
+          head -n 20 dist/notes.md > "UPDATE-$VER.md"   # 保留：Release 页的短说明
           # ★ 账本里的 changelog 指向 **CHANGELOG.md（完整历史）**，不指向按版本命名的短日志。
           # 为什么（作者要求，2026-10-12）：管理器点更新时弹的窗、以及界面的「更新日志」，
           #   都应该能看到**历史**；短日志只有本版那一小段，用户翻不到以前的改动。
