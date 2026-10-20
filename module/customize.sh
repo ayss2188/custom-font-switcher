@@ -25,6 +25,128 @@ RM=$(root_manager)
 echo "$ROM_ID" > "$MODPATH/current_rom"
 ui_print "- 已识别：$ROM_NAME"
 
+# ★ 2026-10-17（作者定的架构）：**扫描只在这里做一次，之后永远读文件**
+#
+# 作者原话：「扫描是在什么时候，就是安装的时候那一次扫描，
+#            把扫描到的东西全部加进文件里永久保存，除非卸载模块」
+#
+# 这一步把"这台设备上有哪些字体、各自什么角色、在哪个目录"全部写进
+# $LIB/.device_fonts。之后 apply / reapply **只读这个文件** ——
+# 不再解析 8 个字体配置 XML，也不再扫十几个字体目录。
+#
+# 什么时候需要重扫：
+#   · 换了一整套系统字体（或系统大版本更新）
+#   · 界面里字体少得不对劲
+#   → 跑 `fontctl.sh rescan`（见模块目录的说明）
+MODDIR="$MODPATH"
+export MODDIR
+. "$MODPATH/slots.sh" 2>/dev/null
+# ★ 2026-10-19（作者要求）：**从旧版本升上来，一律重新扫描 + 重新合成**。
+#   旧版留下的派生数据不能信：
+#     · 1.3.5~1.3.7 的 scanned/ttc.list 写的时候被自己截断成空，
+#       读取端把"空"当结论 → 中文合集永久不换（三星中文一直没变过）
+#     · 旧的合成 .ttc 可能是在"只换 2 号"的兜底逻辑下造的，照用就是错的
+#   所以版本号一变就整份作废，让 slot_build_slots 重新扫、让 apply 重新合成。
+#   字体文件 / .name / .meta / settings.conf / last_selection 都不动（用户数据）。
+_MK="$LIB/.scan_version"
+_CUR=$(sed -n 's/^versionCode=//p' "$MODPATH/module.prop" 2>/dev/null | head -n1 | tr -d '\r\n')
+_OLD=$(cat "$_MK" 2>/dev/null | tr -d '\r\n')
+if [ -n "$_CUR" ] && [ "$_OLD" != "$_CUR" ]; then
+  rm -rf "$LIB/scanned" 2>/dev/null
+  rm -f "$LIB"/*.ttc[0-9]* 2>/dev/null
+  rm -f "$LIB/.verify.cache" "$LIB/.device_fonts" "$LIB/.cand.cache" \
+        "$LIB/.plan.cache" "$LIB/.plan.marks" 2>/dev/null
+  _FORCED_RESCAN=1
+  [ -n "$_OLD" ] && ui_print "- 从旧版本升级：重新扫描字体、重建中文合集"
+  printf '%s' "$_CUR" > "$_MK" 2>/dev/null
+fi
+
+# ★ 2026-10-19：补齐缺失的字体大小记录。
+#   界面显示字体大小读的是 meta 里的 size= / outline_sz=（都是导入时写好的真实字节数）。
+#   极少数旧记录两个都没有，界面就会显示成「—」。这里一次性补上：
+#   只在"两个都没有"时才追加，已有记录一个字不动。
+for _mf in "$LIB"/*.meta; do
+  [ -f "$_mf" ] || continue
+  grep -q '^size=\|^outline_sz=' "$_mf" 2>/dev/null && continue
+  _tf="${_mf%.meta}.ttf"
+  [ -f "$_tf" ] || continue
+  _bsz=$(stat -c '%s' "$_tf" 2>/dev/null | tr -dc '0-9')
+  [ -n "$_bsz" ] || _bsz=$(wc -c < "$_tf" 2>/dev/null | tr -dc '0-9')
+  [ -n "$_bsz" ] || continue
+  printf 'size=%s\n' "$_bsz" >> "$_mf" 2>/dev/null
+done
+
+
+if command -v slot_build_slots >/dev/null 2>&1; then
+  # ★ 2026-10-18：文案要如实 —— 首次安装才真扫描；升级时复用上次的扫描结果，
+  #   只重新做"和 targets 的合并"，所以很快。别让用户以为每次都在扫。
+  if [ -s "$LIB/scanned/device.list" ]; then
+    ui_print "- 正在更新槽位清单（复用上次扫描结果，不用重扫）…"
+  else
+    ui_print "- 正在扫描本机字体并生成槽位清单（只这一次，以后切换都不再扫描）…"
+  fi
+  if slot_build_slots "$MODPATH" 2>/dev/null; then
+    # 口径：机型清单里的 = targets 里且设备上真实存在的；本机扫描补的 = 其余
+    _tn=$(sed -n 's/^targets=//p' "$LIB/scanned/slots.meta" 2>/dev/null)
+    _en=$(sed -n 's/^extra=//p' "$LIB/scanned/slots.meta" 2>/dev/null)
+    _an=$(sed -n 's/^total=//p' "$LIB/scanned/slots.meta" 2>/dev/null)
+    ui_print "- 槽位总数 ${_an:-?} 个（机型清单 ${_tn:-0} 个 + 本机扫描补 ${_en:-0} 个）"
+  else
+    ui_print "- 清单生成未完成（第一次切换时会自动再试）"
+  fi
+fi
+
+# ============================================================================
+# 升级迁移（2026-10-18，v1.3.1 架构改动）
+#
+# 这一版把"每次切换都扫描"改成了"刷入时扫一次、之后只读清单"，
+# 所以从旧版升级上来时要收拾一下旧残留，否则可能读到过时的东西。
+#
+# ⚠️ 原则：**只清"模块自己生成的中间文件"，绝对不碰用户的字体库**。
+#    字体库 = $LIB/f*.ttf + *.meta + *.name + builtin_* ← 一个字都不动。
+# ============================================================================
+_OLDVER=$(sed -n 's/^version=//p' "$OLD/module.prop" 2>/dev/null | head -n1 | tr -d '\r\n')
+_NEWVER=$(sed -n 's/^version=//p' "$MODPATH/module.prop" 2>/dev/null | head -n1 | tr -d '\r\n')
+# ---------------------------------------------------------------------------
+# 判断该不该"迁移"：**看实际状态，不看版本号**
+#
+#   scanned/device.list 存在 = 这台机器已经有扫描结果（新架构装过，或之前扫过）
+#     → 只更新清单，**不迁移、不重扫**（哪怕版本号变了，v1.3.1 → v1.3.2 也走这条）
+#   不存在 = 旧架构装过 / 全新安装
+#     → 清掉旧架构的中间文件，然后扫一次（只有这一次）
+#
+# 为什么不用版本号判断：版本号每升一次都会变，但"要不要迁移"取决于
+# **上次是不是旧架构的产物**，而不是版本号本身。
+# ---------------------------------------------------------------------------
+# 扫描结果的可信度检查：太小就当没扫过（半成品不能用）
+_DCNT=$(grep -c . "$LIB/scanned/device.list" 2>/dev/null || echo 0)
+case "${_DCNT:-0}" in ''|*[!0-9]*) _DCNT=0 ;; esac
+if [ "${_DCNT}" -ge 10 ]; then
+  # ★ 2026-10-19：刚才是"版本变了→强制重扫"，就不能再说"直接复用"（真机日志会自相矛盾）
+  if [ "${_FORCED_RESCAN:-0}" = "1" ]; then
+    [ -n "$_OLDVER" ] && ui_print "- 从 $_OLDVER 升级到 $_NEWVER：已重新扫描（$_DCNT 条）并重建中文合集"
+  else
+    [ -n "$_OLDVER" ] && ui_print "- 从 $_OLDVER 升级到 $_NEWVER（已有扫描结果 $_DCNT 条，直接复用）"
+  fi
+else
+  [ "${_DCNT}" -gt 0 ] && ui_print "- 上次的扫描结果不完整（只有 $_DCNT 条），重新扫一次"
+  if [ -n "$_OLDVER" ]; then
+    ui_print "- 从 $_OLDVER 升级到 $_NEWVER：架构有变，需要重新扫描一次"
+    # ① 旧架构的缓存文件（新版完全不用它们了）
+    rm -f "$LIB/.cand.cache" "$LIB/.plan.cache" "$LIB/.plan.marks" \
+          "$LIB/.skipscan.cache" "$LIB/.extra.cache" "$LIB/.xmlnames.cache" \
+          "$LIB/.dirnames.cache" "$LIB/.oemnames.cache" "$LIB/.verify.cache" \
+          "$LIB/.conflicts.cache" 2>/dev/null
+    rm -rf "$LIB/.scan" 2>/dev/null
+    # ② 旧版的挂载状态 / 计划（让新版按新清单重新生成）
+    rm -f "$MODPATH/slots.map" "$MODPATH/slots.applied" "$MODPATH/slots.marks" \
+          "$MODPATH/slots.sources" "$MODPATH/mount.state" 2>/dev/null
+    # ③ 旧版把扫描结果存在过别的文件名里
+    rm -f "$LIB/.device_fonts" 2>/dev/null
+    ui_print "- 已清理旧版中间文件（字体库原样保留）"
+  fi
+fi
+
 # 旧版设置在模块目录里，迁移到字体库目录（以后更新不会丢）
 [ -f "$SETTINGS" ] || { [ -f "$OLD/settings.conf" ] && cp -f "$OLD/settings.conf" "$SETTINGS"; }
 
@@ -68,8 +190,7 @@ if [ -z "$LAST" ]; then
   done)
   if [ -n "$_cand" ]; then
     LAST="$_cand"
-    ui_print "  ⚠ 没找到"
-    ui_print "     "上次用哪套" 的记录"
+    ui_print "  ⚠ 没找到「上次用哪套」的记录"
     ui_print "     （可能是上一次切换失败留下的）"
     ui_print "     已按最近用过的恢复：$_cand"
   fi
@@ -93,17 +214,22 @@ fi
 
 RESTORED=0
 if [ "$LAST" != none ]; then
-  ui_print "- 正在恢复上次的字体选择..."
-  # ★ 2026-10-14：加"要等一会儿"的提示。
-  #   为什么必须加：下一行 `fontctl.sh apply` 要**扫一遍机器上的字体配置 + 逐文件判定**，
-  #   字体多的机器上要十几秒到一分钟。而这段时间安装界面**一行输出都没有** ——
-  #   用户会以为卡死了、甚至去强杀管理器。真机反馈过。
-  #   提示要写在 apply **之前**（写在后面就是马后炮了，用户已经等完了）。
-  #   ⚠️ 改这里时别删：它不参与任何逻辑，纯粹是给用户看的。
-  ui_print "  ⏳ 正在扫描你机器上的字体"
-      ui_print "     大概十几秒到一分钟。"
-      ui_print "     卡住不动是正常的，请稍等…"
-  OUT=$(sh "$MODPATH/fontctl.sh" apply "$LAST" 2>&1 | tail -n1)
+  ui_print "- 正在恢复上次的字体选择…"
+  # ★ 2026-10-18（文案跟上实情）：这行提示是 v1.2.x 时代留下的 ——
+  #   那时候 `apply` 真的要"扫一遍机器上的字体配置 + 逐文件判定"，十几秒到一分钟。
+  #   现在槽位清单在刷入时已经生成好了（scanned/slots.list），
+  #   `apply` 只是读文件 + 写 map，实测 **0.5 秒**。
+  #   所以按实际状态说话：有清单就说"很快"，没清单（极少数情况）才提示要等。
+  if [ -s "$LIB/scanned/slots.list" ]; then
+    ui_print "  正在套用（清单已就绪，很快）…"
+  else
+    ui_print "  ⏳ 正在扫描本机字体并生成槽位清单"
+    ui_print "     大概十几秒到一分钟。"
+    ui_print "     卡住不动是正常的，请稍等…"
+  fi
+  # ★ 用 sed 取最后一个非空行 —— tail -n1 遇到末尾空行会拿到空串，
+  #   于是 OK:* 匹配不上，把一次成功的恢复误判成失败（会把用户字体清成 none）。
+  OUT=$(sh "$MODPATH/fontctl.sh" apply "$LAST" 2>&1 | sed '/^[[:space:]]*$/d' | tail -n1)
   case "$OUT" in
     OK:*)
       RESTORED=1
@@ -131,10 +257,11 @@ fi
 sh "$MODPATH/fontctl.sh" prop >/dev/null 2>&1
 
 LIB_COUNT=$(ls "$LIB"/f*.ttf 2>/dev/null | wc -l)
-# ★ 2026-10-14：`conflicts` 也要扫一遍机器上的字体配置，会停一会儿。
-#   上面第 100-102 行那两句是静默的，加上这句提示，用户才不会以为卡死。
+# ★ 2026-10-18（文案跟上实情）：
+#   原来写的是"也会扫一遍字体配置，稍等" —— 其实 list_conflicts 扫的是
+#   **其它模块目录**（看谁也在改字体），而且从 2026-10-17 起带了缓存，
+#   第二次起几乎是瞬时。这行字既不准、又让人以为要等很久。
 ui_print "- 正在检查有没有其它字体模块…"
-ui_print "  （也会扫一遍字体配置，稍等）"
 CONFLICTS=$(sh "$MODPATH/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')
 
 ui_print " "
@@ -191,6 +318,45 @@ if [ -f "$MODPATH/diag.sh" ]; then
 fi
 ui_print "===================================="
 ui_print "- 完成"
+
+
+# ---------------------------------------------------------------------------
+# 字体档案：给已有字体补 .fdata（结构清单），诊断报告要用
+#   放在安装结束前跑，用户打开界面时档案已经在了
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 扫描缓存：1.4.5 强制重扫一次（之后不再随版本重扫）
+#
+#   为什么：老版本扫出来的 device.list 缺了后来新增的目录和规则。
+#   为什么只做一次：扫描是安装/开机链路上最慢的一步，永久目录就是为了省它。
+#   以后只有"改了扫描逻辑"的版本才需要重扫 —— 那时把下面的 ID 改一下即可。
+# ---------------------------------------------------------------------------
+# 兜底：确保 LIB 有值（没定义时绝不能对空路径做 rm）
+LIB="${LIB:-/data/adb/custom_font_lib}"
+FORCE_SCAN_ID="2026-10-21-first-refresh"
+if [ -d "$LIB/scanned" ] && [ ! -f "$LIB/scanned/.force_$FORCE_SCAN_ID" ]; then
+  rm -f "$LIB/scanned/device.list" "$LIB/scanned/slots.list" "$LIB/scanned/slots.meta" \
+        "$LIB/scanned/skip.list" "$LIB/scanned/ttc.list" "$LIB/scanned/env.list" \
+        "$LIB/scanned/.schema" 2>/dev/null
+  : > "$LIB/scanned/.force_$FORCE_SCAN_ID" 2>/dev/null
+  ui_print "- 已清空旧的字体扫描缓存（本版强制重扫一次）"
+fi
+
+
+# ---------------------------------------------------------------------------
+# 清空缓存后立刻重建（否则界面「槽位总数 / 机型清单 / 本机扫描」会显示为空）
+#   这一次扫描就发生在安装时，开机和应用路径上仍然是读缓存，速度不受影响。
+# ---------------------------------------------------------------------------
+if [ -f "$MODPATH/fontctl.sh" ]; then
+  sh "$MODPATH/fontctl.sh" rescan >/dev/null 2>&1 && \
+    ui_print "- 已重建字体槽位清单"
+fi
+
+if [ -f "$MODPATH/fdata.sh" ]; then
+  sh "$MODPATH/fdata.sh" 2>/dev/null | sed 's/^/  /' >/dev/null 2>&1
+  ui_print "- 已为已有字体补充结构档案"
+fi
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh gms_cache.sh nameclone.sh action.sh \
