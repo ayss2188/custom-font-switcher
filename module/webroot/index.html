@@ -241,7 +241,7 @@ body { min-height: 100%; }
     background: var(--toast-bg); color: #fff; padding: 10px 16px; border-radius: 14px;
     font-size: 13px; line-height: 1.45; text-align: center; opacity: 0;
     transition: opacity .25s ease, transform .25s cubic-bezier(.22,.8,.34,1);
-    pointer-events: none; max-width: 88vw; box-shadow: 0 10px 30px -12px rgba(0,0,0,.5); z-index: 30;
+    pointer-events: none; max-width: 88vw; box-shadow: 0 10px 30px -12px rgba(0,0,0,.5);
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
@@ -324,7 +324,8 @@ body { min-height: 100%; }
 
   /* 弹窗 */
   .modal-mask {
-    position: fixed; top: 0; right: 0; bottom: 0; left: 0; inset: 0; z-index: 20; background: rgba(0,0,0,.55);
+    position: fixed; top: 0; right: 0; bottom: 0; left: 0; inset: 0; z-index: 95;   /* ★ 2026-10-21：必须高于合成/选择菜单面板(86/92)，
+                     否则面板里弹出的确认框会被盖住，await 永远不返回 = 界面卡死 */; background: rgba(0,0,0,.55);
     display: flex; align-items: center; justify-content: center;
     /* ★ 2026-10-14：留出手势条 / 导航栏。只写 padding:24px 的话，
        在"手势条悬浮"的机器上弹窗底部会贴到手势条下面，底部按钮被挡住 ——
@@ -917,7 +918,9 @@ body { min-height: 100%; }
   .po-panel{animation:uiLift .3s cubic-bezier(.2,.9,.25,1) both}
 
   /* ── 提示条 ── */
-  .toast.show{animation:uiToast .24s cubic-bezier(.2,.9,.25,1) both}
+  /* ★ 2026-10-21：这里原来挂了 uiToast 动画，关键帧只写 translateY/scale，
+     会把 .toast 居中的 translate(-50%,0) 覆盖掉 → 提示条整体右偏半个身位。
+     .toast 自身已有 transition，动画是多余的，删掉。 */
 
   /* ── 折叠展开更顺 ── */
   .lib-box{transition:grid-template-rows .26s cubic-bezier(.3,.9,.3,1)}
@@ -1096,7 +1099,27 @@ try {
     <button class="g-btn" id="enableBtn" onclick="googleAction('enable')">开启兼容</button>
     <button class="g-btn" id="restoreBtn" onclick="googleAction('restore')">关闭兼容</button>
   </div>
-  <div class="g-hint fade">开启/关闭立即生效（用于 Chrome / Gmail 等被 GMS 下载字体覆盖的情况）。只会恢复本模块停用过的组件，卸载模块时自动恢复。</div>
+  <div class="g-hint fade"><b>这条路 = 停用 GMS 的字体提供器</b>：Chrome / Gemini 这类会用上你的字体。
+    <b>副作用</b>：凡是要向 GMS 要字体的 Google 应用可能排版异常。<br>
+    <b>Play 商店两种方式都改不了</b>（它自带 ProductSans），别为它纠结。</div>
+
+  <div class="status-box fade" style="margin-top:10px">
+    <div class="status-row">
+      <span class="label">Google 应用（桥接）</span>
+      <span class="value off" id="gmsBridgeLabel">正在读取…</span>
+    </div>
+  </div>
+  <div class="btn-row fade">
+    <button class="g-btn" onclick="refreshGoogleBridge()">重新检测</button>
+    <button class="g-btn" onclick="gmsBridgeAction(true)">开启桥接</button>
+    <button class="g-btn" onclick="gmsBridgeAction(false)">关闭桥接</button>
+  </div>
+  <div class="g-hint fade"><b>这条路 = 不停用字体提供器</b>：把 GMS 缓存里的字体文件换成
+    「字形是你的、身份自称 Google Sans」的克隆，专门给<b>真的会去 GMS 要字体</b>的应用用
+    （Chrome / Gemini / 部分 Google 应用）。<br>
+    <b>管不到 Play 商店</b>：商店的拉丁字形来自它 APK 自带的 ProductSans，替换系统文件改不了它
+    （中文那部分走系统字体，本来就跟着你换了）。<br>
+    <b>两个别同时开</b>：上面那个停用提供器后，桥接就没了意义。换路之前先把另一条关掉再重启。</div>
 
   <div class="divider"></div>
 
@@ -2508,6 +2531,395 @@ function nameWithSuffix(nameBytes, suffix) {
   }
 }
 
+
+/* 扩展 gvar：让可变字体在接受新字形后仍然合法
+   gvar 结构：
+     uint16 major, uint16 minor, uint16 axisCount, uint16 sharedTupleCount,
+     Offset32 sharedTuplesOffset, uint16 glyphCount, uint16 flags,
+     Offset32 glyphVariationDataArrayOffset,
+     Offset16/32 glyphVariationDataOffsets[glyphCount + 1]
+   做法：把 glyphCount 改成新字形数，offsets 数组尾部重复最后一个偏移
+        （零长度 = 这个字形在所有 master 上都没有变化，即"静态字形"）。 */
+function ttfExtendGvar(gvar, newGlyphCount) {
+  if (!gvar || gvar.length < 20) return gvar;
+  const u16 = (o) => (gvar[o] << 8) | gvar[o + 1];
+  const u32 = (o) => ((gvar[o] << 24) >>> 0) + (gvar[o + 1] << 16) + (gvar[o + 2] << 8) + gvar[o + 3];
+  const axisCount = u16(4);
+  const sharedTupleCount = u16(6);
+  const sharedTuplesOffset = u32(8);
+  const oldCount = u16(12);
+  const flags = u16(14);
+  const dataOffset = u32(16);
+  const longOff = (flags & 1) === 1;
+
+  // 原 offsets（相对 glyphVariationDataArrayOffset）
+  const offs = [];
+  for (let i = 0; i <= oldCount; i++) {
+    const p = 20 + i * (longOff ? 4 : 2);
+    offs.push(longOff ? u32(p) : u16(p) * 2);
+  }
+  const endOff = offs[offs.length - 1];
+
+  // 共享 tuple 与变化数据原样搬过来
+  const sharedLen = sharedTupleCount * axisCount * 2;
+  const shared = gvar.subarray(sharedTuplesOffset, sharedTuplesOffset + sharedLen);
+  const data = gvar.subarray(dataOffset, dataOffset + endOff);
+
+  // 新偏移表：原有 + 新字形（都指向末尾 = 零变化）
+  const newOffs = offs.slice();
+  while (newOffs.length <= newGlyphCount) newOffs.push(endOff);
+
+  // gvar 规范的硬性规定：**偏移数组紧跟在 20 字节头部之后**。
+  //   不能把共享 tuple 放在它前面 —— 否则读字体的一方会把 tuple 数据当成偏移，
+  //   报 "point N out of range in 'gvar' table"。
+  const offsetsLen = newOffs.length * 4;              // 统一用 32 位偏移
+  const offsetsPos = 20;
+  const sharedPos = offsetsPos + offsetsLen;
+  const dataPos = sharedPos + sharedLen;
+  const out = new Uint8Array(dataPos + endOff);
+
+  out[0] = 0; out[1] = 1;                             // major=1
+  out[2] = 0; out[3] = 0;                             // minor=0
+  const w16 = (v, p) => { out[p] = (v >> 8) & 255; out[p + 1] = v & 255; };
+  const w32 = (v, p) => { out[p] = (v >>> 24) & 255; out[p + 1] = (v >>> 16) & 255; out[p + 2] = (v >>> 8) & 255; out[p + 3] = v & 255; };
+  w16(axisCount, 4);
+  w16(sharedTupleCount, 6);
+  w32(sharedPos, 8);
+  w16(newGlyphCount, 12);
+  w16(1, 14);                                          // flags: 32 位偏移
+  w32(dataPos, 16);
+
+  out.set(shared, sharedPos);
+  for (let i = 0; i < newOffs.length; i++) w32(newOffs[i], offsetsPos + i * 4);
+  out.set(data, dataPos);
+  return out;
+}
+
+
+/* ===========================================================================
+   ★ 2026-10-21：把素材（可变字体）的 gvar 变化数据搬到合并结果里
+   ---------------------------------------------------------------------------
+   为什么：合并时我们只搬了轮廓，新字形在整个字重轴上都是同一形状 ——
+          所以"中文能变粗、拉丁/数字不变"。素材本身是可变的，它的变化数据
+          就在文件里，把它取过来一起用，数字/拉丁就能跟着滑块变。
+
+   做法（已在电脑上用 bahnschrift + SegUIVar 验证：10 个数字里 9 个轮廓随字重变化）：
+     · 素材该字形的 GlyphVariationData 整块拷贝（结构不动，只改坐标）
+     · 峰值/中间区间坐标：源归一化 → 用户值 → 基座归一化（按各自 min/default/max）
+     · 素材的共享 tuple 表接到基座共享表后面，并把 tuple 索引改指向新位置
+     · 只处理轴数量相同的情况；不一致就跳过（保持零变化，文件仍然合法）
+   =========================================================================== */
+function ttfReadFvar(b, t) {
+  if (!t.fvar) return null;
+  const o = t.fvar.off;
+  const axesOffset = TTF.u16(b, o + 4);
+  const axisCount = TTF.u16(b, o + 8);
+  const axisSize = TTF.u16(b, o + 10);
+  const axes = [];
+  for (let i = 0; i < axisCount; i++) {
+    const p = o + axesOffset + i * axisSize;
+    axes.push({
+      tag: String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]),
+      min: TTF.u32(b, p + 4) / 65536,
+      def: TTF.u32(b, p + 8) / 65536,
+      max: TTF.u32(b, p + 12) / 65536,
+    });
+  }
+  return { axes, axisCount };
+}
+
+function ttfReadGvar(b, t) {
+  if (!t.gvar) return null;
+  const o = t.gvar.off;
+  const axisCount = TTF.u16(b, o + 4);
+  const sharedTupleCount = TTF.u16(b, o + 6);
+  const sharedOff = TTF.u32(b, o + 8);
+  const glyphCount = TTF.u16(b, o + 12);
+  const flags = TTF.u16(b, o + 14);
+  const dataOff = TTF.u32(b, o + 16);
+  const longOff = (flags & 1) === 1;
+  const offs = [];
+  for (let i = 0; i <= glyphCount; i++) {
+    offs.push(longOff ? TTF.u32(b, o + 20 + i * 4) : TTF.u16(b, o + 20 + i * 2) * 2);
+  }
+  const shared = [];
+  for (let i = 0; i < sharedTupleCount; i++) {
+    const p = o + sharedOff + i * axisCount * 2;
+    const arr = [];
+    for (let a = 0; a < axisCount; a++) arr.push(TTF.i16(b, p + a * 2) / 16384);
+    shared.push(arr);
+  }
+  return {
+    axisCount, offs, shared,
+    dataStart: o + dataOff,
+    sharedRaw: b.subarray(o + sharedOff, o + sharedOff + sharedTupleCount * axisCount * 2),
+  };
+}
+
+// 把一个字形的变化数据里的坐标按轴映射（原地改）
+function mgPatchGlyphVar(buf, axisCount, mapFn, sharedBase) {
+  const count = TTF.u16(buf, 0) & 0x0fff;
+  let pos = 4;
+  const heads = [];
+  for (let i = 0; i < count; i++) {
+    let idx = TTF.u16(buf, pos + 2);
+    if (!(idx & 0x8000) && sharedBase >= 0) {
+      const ni = sharedBase + (idx & 0x0fff);
+      idx = (idx & 0xf000) | (ni & 0x0fff);
+      buf[pos + 2] = (idx >> 8) & 255;
+      buf[pos + 3] = idx & 255;
+    }
+    let p = pos + 4;
+    const hasPeak = (idx & 0x8000) !== 0;
+    const hasInter = (idx & 0x4000) !== 0;
+    heads.push({ peak: hasPeak ? p : -1, inter: hasInter ? p + (hasPeak ? axisCount * 2 : 0) : -1 });
+    p += hasPeak ? axisCount * 2 : 0;
+    if (hasInter) p += axisCount * 4;
+    pos = p;
+  }
+  const w16 = (v, p) => { buf[p] = (v >> 8) & 255; buf[p + 1] = v & 255; };
+  const writeMapped = (at) => {
+    const src = [];
+    for (let a = 0; a < axisCount; a++) src.push(TTF.i16(buf, at + a * 2) / 16384);
+    const mapped = mapFn(src);
+    for (let a = 0; a < axisCount; a++) {
+      let v = Math.round((mapped[a] || 0) * 16384);
+      if (v > 32767) v = 32767;   // F2Dot14: 1.0 = 16384
+      if (v < -32768) v = -32768;
+      w16(v < 0 ? v + 0x10000 : v, at + a * 2);
+    }
+  };
+  const F2_ONE = 0x4000;              // F2Dot14 里的 1.0
+  const readPeak = (at) => {
+    const arr = [];
+    for (let a = 0; a < axisCount; a++) arr.push(TTF.i16(buf, at + a * 2) / 16384);
+    return arr;
+  };
+  const writeF2 = (v, at) => {
+    let n = Math.round(v * 16384);
+    if (n > 32767) n = 32767;
+    if (n < -32768) n = -32768;
+    if (n < 0) n += 0x10000;
+    buf[at] = (n >> 8) & 255;
+    buf[at + 1] = n & 255;
+  };
+  heads.forEach(h => {
+    if (h.peak < 0) return;
+    writeMapped(h.peak);
+    if (h.inter < 0) return;
+    const startAt = h.inter, endAt = h.inter + axisCount * 2;
+    writeMapped(startAt);
+    writeMapped(endAt);
+    // ★ 关键的修正：最外侧区间要"保持"到轴端点，不能到峰值之后回落。
+    //   峰值 > 0 且区间终点在峰值右侧 → 终点推到 +1.0
+    //   峰值 < 0 且区间起点在峰值左侧 → 起点推到 -1.0
+    const peak = readPeak(h.peak);
+    const st = readPeak(startAt);
+    const en = readPeak(endAt);
+    for (let a = 0; a < axisCount; a++) {
+      if (peak[a] > 0.0001 && en[a] > peak[a] - 0.0001) {
+        en[a] = 1.0;
+      }
+      if (peak[a] < -0.0001 && st[a] < peak[a] + 0.0001) {
+        st[a] = -1.0;
+      }
+      writeF2(st[a], startAt + a * 2);
+      writeF2(en[a], endAt + a * 2);
+    }
+  });
+  return buf;
+}
+
+function mgMakeAxisMapper(srcAxes, dstAxes) {
+  return (peakSrc) => {
+    const out = [];
+    for (let i = 0; i < dstAxes.length; i++) {
+      const d = dstAxes[i];
+      const si = srcAxes.findIndex(x => x.tag === d.tag);
+      if (si < 0) { out.push(0); continue; }
+      const sAx = srcAxes[si];
+      const n = peakSrc[si] || 0;
+      const v = n >= 0 ? sAx.def + n * (sAx.max - sAx.def)
+                       : sAx.def + n * (sAx.def - sAx.min);
+      let nb;
+      if (v >= d.def) nb = (d.max === d.def) ? 0 : (v - d.def) / (d.max - d.def);
+      else nb = (d.def === d.min) ? 0 : (v - d.def) / (d.def - d.min);
+      out.push(Math.max(-1, Math.min(1, nb)));
+    }
+    return out;
+  };
+}
+
+// 用新的 gvar 替换字体里的 gvar 表，重新组装（含校验和）
+function ttfReplaceTables(fontBytes, overrides) {
+  const t = ttfTables(fontBytes);
+  const tags = Object.keys(t).sort();
+  const n = tags.length;
+  const pow2 = 2 ** Math.floor(Math.log2(n));
+  let off = 12 + n * 16;
+  const recs = [];
+  const bodies = [];
+  for (const tag of tags) {
+    let body = overrides[tag] || fontBytes.subarray(t[tag].off, t[tag].off + t[tag].len);
+    const pad = (4 - (body.length % 4)) % 4;
+    const padded = new Uint8Array(body.length + pad);
+    padded.set(body, 0);
+    recs.push({ tag, off, len: body.length, padded });
+    bodies.push(padded);
+    off += padded.length;
+  }
+  const out = new Uint8Array(off);
+  const w16 = (v, p) => { out[p] = (v >> 8) & 255; out[p + 1] = v & 255; };
+  const w32 = (v, p) => {
+    out[p] = (v >>> 24) & 255; out[p + 1] = (v >>> 16) & 255;
+    out[p + 2] = (v >>> 8) & 255; out[p + 3] = v & 255;
+  };
+  const csum = (buf) => {
+    let sum = 0;
+    for (let i = 0; i < buf.length; i += 4) {
+      sum = (sum + (((buf[i] << 24) >>> 0) + (buf[i + 1] << 16) + (buf[i + 2] << 8) + buf[i + 3])) >>> 0;
+    }
+    return sum >>> 0;
+  };
+  w32(0x00010000, 0);
+  w16(n, 4); w16(pow2 * 16, 6); w16(Math.log2(pow2), 8); w16(n * 16 - pow2 * 16, 10);
+  recs.forEach((rec, i) => {
+    const p = 12 + i * 16;
+    for (let k = 0; k < 4; k++) out[p + k] = rec.tag.charCodeAt(k);
+    w32(csum(rec.padded), p + 4);
+    w32(rec.off, p + 8);
+    w32(rec.len, p + 12);
+  });
+  recs.forEach((rec, i) => out.set(bodies[i], rec.off));
+  const headRec = recs.find(r => r.tag === "head");
+  if (headRec) {
+    w32(0, headRec.off + 8);
+    w32((0xB1B0AFBA - csum(out)) >>> 0, headRec.off + 8);
+  }
+  return out;
+}
+
+/**
+ * 把素材的可变数据搬到合并结果里
+ * @param {Uint8Array} merged 合并结果（新字形是零变化）
+ * @param {Uint8Array} baseBuf 基座
+ * @param {Uint8Array} srcBuf 素材
+ * @param {Array<{mergedGid:number, srcGid:number}>} pairs
+ * @returns {{bytes:Uint8Array, moved:number, skip?:string}}
+ */
+function mgGvarTransplant(merged, baseBuf, srcBuf, pairs) {
+  const mt = ttfTables(merged), bt = ttfTables(baseBuf), st = ttfTables(srcBuf);
+  if (!mt.gvar || !bt.gvar) return { bytes: merged, moved: 0, skip: "基座不是可变字体" };
+  if (!st.gvar) return { bytes: merged, moved: 0, skip: "素材不是可变字体" };
+  const baseF = ttfReadFvar(baseBuf, bt);
+  const srcF = ttfReadFvar(srcBuf, st);
+  if (!baseF || !srcF) return { bytes: merged, moved: 0, skip: "缺 fvar" };
+  if (baseF.axisCount !== srcF.axisCount) {
+    return { bytes: merged, moved: 0, skip: "轴数量不同（基座 " + baseF.axisCount + " / 素材 " + srcF.axisCount + "）" };
+  }
+  // ★ 关键：素材的轴必须基座都有，否则映射后会出现"全 0 峰值"的 tuple
+  //   （规范里非法）→ 有的引擎会整张表当成坏的，表现为"到某个字重突然跳回默认"。
+  {
+    const baseTags = baseF.axes.map(a => a.tag);
+    const missing = srcF.axes.filter(a => baseTags.indexOf(a.tag) < 0).map(a => a.tag);
+    if (missing.length) {
+      return {
+        bytes: merged, moved: 0,
+        skip: "素材有基座没有的轴（" + missing.join(",") + "），搬过来会产生非法峰值",
+      };
+    }
+  }
+  const mapper = mgMakeAxisMapper(srcF.axes, baseF.axes);
+  const srcG = ttfReadGvar(srcBuf, st);
+  const mG = ttfReadGvar(merged, mt);
+  if (!srcG || !mG) return { bytes: merged, moved: 0, skip: "缺 gvar" };
+
+  const baseGlyphCount = TTF.u16(baseBuf, bt.maxp.off + 4);
+  const total = mG.offs.length - 1;
+  const baseSharedCount = mG.shared.length;
+
+  // 素材共享 tuple → 映射后接在基座后面
+  const srcSharedMapped = srcG.shared.map(arr => mapper(arr));
+
+  // 数据尾
+  let dataLen = 0;
+  for (let g = 0; g < mG.offs.length - 1; g++) {
+    if (mG.offs[g + 1] > mG.offs[g]) dataLen = Math.max(dataLen, mG.offs[g + 1]);
+  }
+  const baseData = merged.subarray(mG.dataStart, mG.dataStart + dataLen);
+
+  const blocks = new Map();
+  let moved = 0;
+  for (const pr of pairs) {
+    const s = srcG.dataStart + srcG.offs[pr.srcGid];
+    const e = srcG.dataStart + srcG.offs[pr.srcGid + 1];
+    if (e <= s) continue;
+    const buf = new Uint8Array(srcBuf.subarray(s, e));
+    mgPatchGlyphVar(buf, baseF.axisCount, mapper, baseSharedCount);
+    blocks.set(pr.mergedGid, buf);
+    moved++;
+  }
+  if (!moved) return { bytes: merged, moved: 0, skip: "素材里没有可搬的变化数据" };
+
+  // 共享表：基座 + 素材
+  const per = baseF.axisCount * 2;
+  const sharedOut = new Uint8Array(mG.sharedRaw.length + srcSharedMapped.length * per);
+  sharedOut.set(mG.sharedRaw, 0);
+  srcSharedMapped.forEach((arr, i) => {
+    const at = mG.sharedRaw.length + i * per;
+    for (let a = 0; a < baseF.axisCount; a++) {
+      let v = Math.round((arr[a] || 0) * 16384);
+      if (v > 32767) v = 32767;   // F2Dot14: 1.0 = 16384
+      if (v < -32768) v = -32768;
+      if (v < 0) v += 0x10000;
+      sharedOut[at + a * 2] = (v >> 8) & 255;
+      sharedOut[at + a * 2 + 1] = v & 255;
+    }
+  });
+
+  // 偏移：基座原样；新字形按 gid 顺序追加
+  const parts = [];
+  let cur = dataLen;
+  const offs = new Array(total + 1).fill(dataLen);
+  // ★ 基座有 baseGlyphCount 个字形（0..baseGlyphCount-1），第一个新字形的 gid 就是
+  //   baseGlyphCount —— 这里原来写成 +1，会把第一个新字形（往往就是 '0'）漏掉。
+  for (let g = 0; g < baseGlyphCount && g <= total; g++) offs[g] = mG.offs[g];
+  for (let g = baseGlyphCount; g <= total; g++) {
+    offs[g] = cur;
+    const bb = blocks.get(g);
+    if (bb) {
+      parts.push(bb);
+      cur += bb.length;
+      if (cur % 2) { parts.push(new Uint8Array(1)); cur++; }
+    }
+  }
+  offs[total] = cur;
+
+  const headLen = 20;
+  const sharedPos = headLen + (total + 1) * 4;
+  const dataPos = sharedPos + sharedOut.length;
+  const out = new Uint8Array(dataPos + cur);
+  const w16 = (v, p) => { out[p] = (v >> 8) & 255; out[p + 1] = v & 255; };
+  const w32 = (v, p) => {
+    out[p] = (v >>> 24) & 255; out[p + 1] = (v >>> 16) & 255;
+    out[p + 2] = (v >>> 8) & 255; out[p + 3] = v & 255;
+  };
+  w16(1, 0); w16(0, 2);
+  w16(baseF.axisCount, 4);
+  w16(baseSharedCount + srcSharedMapped.length, 6);
+  w32(sharedPos, 8);
+  w16(total, 12);
+  w16(1, 14);
+  w32(dataPos, 16);
+  for (let g = 0; g <= total; g++) w32(offs[g], headLen + g * 4);
+  out.set(sharedOut, sharedPos);
+  out.set(baseData, dataPos);
+  let p = dataPos + dataLen;
+  parts.forEach(chunk => { out.set(chunk, p); p += chunk.length; });
+
+  return { bytes: ttfReplaceTables(merged, { gvar: out }), moved, skip: "" };
+}
+
 function mergeFonts(baseBuf, sources) {
   const bt = ttfTables(baseBuf);
   if (!bt.glyf || !bt.loca) throw new Error("基座不支持（需要 TrueType glyf 字体）");
@@ -2637,11 +3049,23 @@ function mergeFonts(baseBuf, sources) {
   //   它们的长度钉死了原来的字形数。我们追加了字形却没扩展它们
   //   → 系统读到越界数据 → 开机阶段崩溃（真机卡开机三次的元凶）。
   //   这三张表都只是加速用的提示信息，丢掉不影响渲染。
-  const skip = ["DSIG", "fvar", "gvar", "HVAR", "VVAR", "MVAR", "avar", "STAT", "cvar",
-                "hdmx", "LTSH", "VDMX"];
+  // 基座自带可变结构（fvar+gvar，且 glyf 轮廓）→ 保留它，做「可变 + 静态字形」混合
+  const keepVar = !!(bt.fvar && bt.gvar && bt.glyf);
+  const skip = ["DSIG", "hdmx", "LTSH", "VDMX"];
+  if (!keepVar) {
+    // 静态输出：可变表全丢（否则表之间自相矛盾，系统会崩）
+    skip.push("fvar", "gvar", "HVAR", "VVAR", "MVAR", "avar", "STAT", "cvar");
+  }
   for (const tag of Object.keys(bt)) {
     if (tables[tag] || skip.includes(tag)) continue;
     tables[tag] = new Uint8Array(baseBuf.subarray(bt[tag].off, bt[tag].off + bt[tag].len));
+  }
+
+  // ★ 可变基座：gvar 必须扩成「新字形 = 零变化」，否则 glyphCount 与 maxp 对不上，
+  //   系统/引擎会拒绝加载（真机表现就是"字体无法被渲染引擎加载"）。
+  if (keepVar && bt.gvar) {
+    tables["gvar"] = ttfExtendGvar(
+      new Uint8Array(baseBuf.subarray(bt.gvar.off, bt.gvar.off + bt.gvar.len)), total);
   }
 
   const tags = Object.keys(tables).sort();
@@ -2752,7 +3176,10 @@ function mgReport(info) {
     kv("编号", info.id),
     kv("体积", info.sizeMB ? info.sizeMB.toFixed(2) + " MB" : "—"),
     kv("耗时", info.secs ? info.secs.toFixed(1) + " 秒" : "—"),
-    kv("结构自检", info.validate === "OK" ? okMark : (info.validate || "—"), true)
+    kv("结构自检", info.validate === "OK" ? okMark : (info.validate || "—"), true),
+    kv("可变数据", (typeof MG_VARUSE !== "undefined" && MG_VARUSE.length)
+      ? MG_VARUSE.join("；")
+      : "素材是静态字体（没有变化数据可搬）", true)
   );
 
   if (info.zones && info.zones.length) {
@@ -2784,7 +3211,10 @@ function mgReport(info) {
   const tip = document.createElement("div");
   tip.className = "mg-est";
   tip.textContent = info.ok
-    ? "下一步：在字体库里点它 → 应用 → 重启。注意：合成结果是静态字体，粗细固定一档。"
+    ? ("下一步：在字体库里点它 → 应用 → 重启。"
+       + (info.vfBase
+           ? "合成结果仍然是可变字体：中文可调粗细，新增的拉丁/数字固定一档。"
+           : "合成结果是静态字体，粗细固定一档。"))
     : (info.err || "");
   const close = document.createElement("button");
   close.className = "mg-go";
@@ -2833,8 +3263,34 @@ async function mgBuf(id) {
   return c2 ? c2.buf : null;
 }
 
-function mgSheet() {
+async function mgEnsureMeta() {
+  // 打开合成面板前：把档案不全的字体当场探一遍（只读表目录，很快）。
+  // 这样"能不能合"的判断基于真实数据，不会出现"看着能选、合到一半才报错"。
+  const need = (fonts || []).filter(f => !f.meta || !f.meta.outline_type);
+  if (!need.length) return 0;
+  showToast("正在检测 " + need.length + " 份字体的结构…", true);
+  let ok = 0;
+  for (const f of need) {
+    try {
+      const m = await probeFont(LIB + "/" + f.id + ".ttf");
+      f.meta = Object.assign({}, f.meta || {}, m);
+      ok++;
+    } catch (e) { /* 单份失败不影响其它 */ }
+  }
+  clearToast();
+  return ok;
+}
+
+async function mgSheet() {
   if (!fonts || !fonts.length) { showToast("字体库是空的"); return; }
+  // ★ 档案正常应该在刷入时（metaprobe.sh）就写好，这里再兜一次：
+  //   只对"仍缺档案"的字体补探，而且**先补再画**（避免先显示不可用、几秒后又变好）。
+  if ((fonts || []).some(f => !f.meta || !f.meta.outline_type)) {
+    try {
+      const n = await mgEnsureMeta();
+      if (n) showToast("已补齐 " + n + " 份字体档案");
+    } catch (e) { /* 补不上就按现有档案画，会显示"检测中" */ }
+  }
   // 已经开着就不再叠一层（之前能点出好几个同样的面板）
   document.querySelectorAll(".mg-mask").forEach(el => el.remove());
   document.querySelectorAll(".mg-pick-mask").forEach(el => el.remove());
@@ -2882,7 +3338,14 @@ function mgSheet() {
   const note = document.createElement("div");
   note.className = "mg-est";
   note.style.marginBottom = "2px";
-  note.textContent = "合成结果是静态字体：各字形固定为一档，不支持粗细调节。";
+  const refreshNote = () => {
+    const bf2 = fonts.find(x => x.id === MG.base);
+    const vf = bf2 && bf2.meta && String(bf2.meta.vf) === "1";
+    note.textContent = vf
+      ? "基座是可变字体：合成后中文仍可调粗细，新增的拉丁/数字固定一档。"
+      : "合成结果是静态字体：各字形固定为一档，不支持粗细调节。";
+  };
+  refreshNote();
   const est = document.createElement("div");
   est.className = "mg-est"; est.textContent = "正在统计…";
   const go = document.createElement("button");
@@ -2919,6 +3382,16 @@ function mgSheet() {
     const est2 = baseSize ? baseSize + added * 620 : 0;   // 每字形约 620 字节
     est.textContent = "覆盖区新增约 " + added + " 个码位 · 预计体积 "
       + (est2 / 1048576).toFixed(2) + " MB（上限 64 MB）";
+    // ★ 基座不可用 → 直接禁用"生成"，并写明原因（不给点进来才发现失败的机会）
+    const _baseF = fonts.find(x => x.id === MG.base) || null;
+    const _bc = mgCapOf(_baseF);
+    if (!_bc.ok) {
+      go.disabled = true;
+      go.textContent = "基座不可用：换一份再合成";
+      est.textContent = "★ " + _bc.why;
+      return;
+    }
+    go.textContent = "生成并加入字体库";
     go.disabled = est2 > 64 * 1048576;
   };
 
@@ -2945,12 +3418,31 @@ function mgSheet() {
       return f ? f.name : "跟随基座";
     };
     b.textContent = label() + " ▾";
+    // ★ 这个区合成后会不会跟着调粗细（跟着基座/素材的实际能力写清楚）
+    const vNote = document.createElement("div");
+    vNote.className = "mg-desc";
+    vNote.style.cssText = "margin-top:4px;font-size:11px;line-height:1.5;opacity:.85";
+    const updNote = () => {
+      const srcF = fonts.find(x => x.id === MG.picks[zone.id]) || null;
+      const baseF = fonts.find(x => x.id === MG.base) || null;
+      const info = mgZoneVarInfo(
+        (MG.picks[zone.id] && MG.picks[zone.id] !== "__base__") ? srcF : null, baseF);
+      vNote.textContent = info.text;
+      vNote.style.color = info.bad ? "var(--err,#e5484d)"
+        : (info.follow ? "" : "var(--dim,#888)");
+    };
+    MG._notes = MG._notes || [];
+    MG._notes.push(updNote);
+    updNote();
     b.onclick = () => mgPickMenu(zone, (id) => {
       MG.picks[zone.id] = id;
       b.textContent = label() + " ▾";
       state.srcCmaps = {};
+      updNote();
       refresh();
     });
+    row.style.alignItems = "flex-start";
+    nm.append(vNote);
     row.append(b);
     return row;
   };
@@ -2961,7 +3453,16 @@ function mgSheet() {
   bn.className = "mg-name"; bn.style.width = "104px";
   const bnT = document.createElement("div"); bnT.textContent = "中文汉字基座";
   const bnD = document.createElement("div"); bnD.className = "mg-desc";
-  bnD.textContent = "字形最多的一份，汉字由它提供";
+  const baseDesc = () => {
+    const f = fonts.find(x => x.id === MG.base);
+    const c = mgCapOf(f);
+    if (!c.ok) return "★ 不能当基座：" + c.why;
+    return c.vf
+      ? "可变字体" + (c.range ? "（字重 " + c.range + "）" : "")
+        + " → 合成后中文仍可调粗细"
+      : "静态字体 → 合成结果是静态的，字重固定一档";
+  };
+  bnD.textContent = baseDesc();
   bn.append(bnT, bnD);
   const bb = document.createElement("button");
   bb.className = "mg-pick";
@@ -2972,6 +3473,9 @@ function mgSheet() {
   bb.textContent = bLabel();
   bb.onclick = () => mgPickMenu({ id: "base", name: "基座" }, (id) => {
     MG.base = id; state.srcCmaps = {}; bb.textContent = bLabel();
+    if (typeof bnD !== "undefined" && bnD) bnD.textContent = baseDesc();
+    (MG._notes || []).forEach(fn => { try { fn(); } catch (e) {} });
+    if (typeof refreshNote === "function") refreshNote();
     if (!MG.name || MG.name === MG._autoName) { MG.name = defName(); nameIn.value = MG.name; }
     MG._autoName = MG.name;
     refresh();
@@ -3017,6 +3521,40 @@ function mgSheet() {
     MG.busy = true; go.disabled = true;
     go.textContent = "正在合成…";
     try {
+      // 基座是可变字体（VF）时不能合成：我们的策略是「丢掉 fvar/gvar 做静态化」，
+      //   而 VF 基座静态化后渲染引擎（Chromium/OTS）会直接拒绝加载，
+      //   真机表现就是「字体无法被渲染引擎加载」。与其让用户看到一个笼统的失败，
+      //   不如提前说清楚。
+      // ★ 合成前的完整校验：先看基座能不能用，再看哪些区合成后不会变粗
+      {
+        const _bf = fonts.find(f => f.id === MG.base);
+        const _bc = mgCapOf(_bf);
+        if (!_bc.ok) {
+          throw new Error("这份字体不能当基座：" + _bc.why + "。请换一份 TrueType 轮廓的基座。");
+        }
+        // 收集"能合、但合成后不会跟着调粗细"的区，让用户确认
+        const _tips = [];
+        if (!_bc.vf) {
+          _tips.push("基座是静态字体 → 合成结果是静态的，字重固定一档");
+        } else {
+          for (const z of MERGE_ZONES) {
+            if (z.id === "hanzi") continue;               // 汉字就是基座，能变
+            const sid = MG.picks[z.id];
+            if (!sid || sid === "__base__") continue;
+            const sf = fonts.find(f => f.id === sid);
+            const info = mgZoneVarInfo(sf, _bf);
+            if (!info.follow) _tips.push(z.name + "：" + info.text);
+          }
+        }
+        if (_tips.length) {
+          const okGo = await dialog({
+            title: "合成后这些区不会跟着调粗细",
+            msg: _tips.join("\n") + "\n\n中文汉字不受影响。继续合成吗？",
+            okText: "继续合成",
+          });
+          if (!okGo) { return; }
+        }
+      }
       setProg(4, "读取基座：" + ((fonts.find(f => f.id === MG.base) || {}).name || ""));
       const baseBuf = new Uint8Array(await mgBuf(MG.base));
       setProg(18, "基座已读入 " + (baseBuf.length / 1048576).toFixed(1) + " MB");
@@ -3040,6 +3578,41 @@ function mgSheet() {
       const r = mergeFonts(baseBuf, sources);
       mgLog("merged", r.total + " 字形 / " + r.bytes.length + " 字节");
       setProg(50, "结构自检中…");
+      // ★ 搬素材的可变数据：让新增的拉丁/数字也随字重变化
+      MG_VARUSE = [];
+      try {
+        const bt2 = ttfTables(baseBuf);
+        if (bt2.gvar && bt2.fvar) {
+          const baseNum = TTF.u16(baseBuf, bt2.maxp.off + 4);
+          for (const src of sources) {
+            const st2 = ttfTables(src.buf);
+            if (!st2.gvar || !st2.fvar) continue;      // 静态素材没有变化数据
+            const mCmap = ttfCmap(r.bytes, ttfTables(r.bytes).cmap);
+            const sCmap = ttfCmap(src.buf, st2.cmap);
+            const pairs = [];
+            for (const [a, b] of src.ranges) {
+              for (let cp = a; cp <= b; cp++) {
+                const mg = mCmap.get(cp), sg = sCmap.get(cp);
+                if (mg === undefined || sg === undefined || mg < baseNum) continue;
+                pairs.push({ mergedGid: mg, srcGid: sg });
+              }
+            }
+            if (!pairs.length) continue;
+            const tr = mgGvarTransplant(r.bytes, baseBuf, src.buf, pairs);
+            if (tr.moved) {
+              r.bytes = tr.bytes;
+              MG_VARUSE.push("搬运 " + tr.moved + " 个字形");
+              mgLog("gvar", "搬运 " + tr.moved + " 个字形的变化数据");
+            } else if (tr.skip) {
+              MG_VARUSE.push("跳过：" + tr.skip);
+              mgLog("gvar", "跳过：" + tr.skip);
+            }
+          }
+        }
+      } catch (e) {
+        mgLog("gvar", "FAIL " + ((e && e.message) || e));
+      }
+
       const bad = mgValidate(r.bytes);
       mgLog("validate", bad || "OK");
       if (bad) throw new Error("自检未通过（" + bad + "），已放弃写入");
@@ -3057,13 +3630,24 @@ function mgSheet() {
       setProg(52, "合并完成：追加 " + r.added + " 个字形，正在写回设备…");
       // 字体库只认 $LIB/f<数字>.ttf，所以合成结果必须用这个命名，否则列表里看不到
       // 纯 shell 循环取最大编号：不依赖 grep/sed 在各 ROM 上的行为差异
-      const last = (await ksuExec(
+            // ★ 纯 shell 循环取最大编号（不依赖 grep/sed 在各 ROM 上的差异）
+      const lastOut = String(await ksuExec(
         `m=0; for f in ${shq(LIB)}/f*.ttf; do [ -e "$f" ] || continue; `
         + `b=\${f##*/}; n=\${b#f}; n=\${n%.ttf}; `
-        + `case "$n" in ''|*[!0-9]*) continue ;; esac; [ "$n" -gt "$m" ] && m=$n; done; echo $m`
-      )).trim();
-      const nextNo = (parseInt(last || "0", 10) || 0) + 1;
-      const newId = "f" + nextNo;
+        + `case "$n" in ''|*[!0-9]*) continue ;; esac; [ "$n" -le 9999 ] || continue; [ "$n" -gt "$m" ] && m=$n; done; echo $m`
+      ) || "0").trim();
+      let nextNo = (parseInt(lastOut.replace(/[^0-9]/g, ""), 10) || 0) + 1;
+      // 防御：编号异常（历史上有过 f1792564789 这种）→ 退回一个安全的数字
+      if (!isFinite(nextNo) || nextNo < 1 || nextNo > 99999) nextNo = 1;
+      while (true) {
+        const _probe = "f" + nextNo;
+        const _exists = String(await ksuExec(
+          `[ -e ${shq(LIB)}/${_probe}.ttf ] && echo Y || echo N`) || "N").trim();
+        if (_exists !== "Y") break;
+        nextNo++;
+        if (nextNo > 99999) { nextNo = 1; break; }
+      }
+const newId = "f" + nextNo;
       // 两阶段：先在 Download 里合成并校验（这台机器上已验证可靠），
       // 再 cp 一份完好的文件进字体库。不要在 $LIB 里边写边拼 —— 那个目录有异常。
       const stage = `/sdcard/Download/.merge-${newId}.stage`;
@@ -3159,7 +3743,7 @@ function mgSheet() {
           zones.push([z.name, cov.pct, changed]);
         }
         mgReport({
-          ok: true, name: showName, id: realId,
+          ok: true, name: showName, id: realId, vfBase: (() => { const b = fonts.find(x => x.id === MG.base); return !!(b && b.meta && String(b.meta.vf) === "1"); })(),
           sizeMB: r.bytes.length / 1048576,
           secs: (Date.now() - t0) / 1000,
           validate: "OK", zones: zones,
@@ -3201,6 +3785,86 @@ function mgSheet() {
 }
 
 // 素材选择菜单
+
+/* ===========================================================================
+   ★ 2026-10-21：合成能力判定 —— 每个字体能当基座 / 素材吗，结果会不会变粗
+   ---------------------------------------------------------------------------
+   判定只依赖字体档案（.meta），不需要读整个文件：
+     outline_type : glyf / cff2 / cff / ?
+     vf           : 是否可变字体
+     wgmin/wgmax  : 可变字体的字重轴范围
+   =========================================================================== */
+function mgCapOf(f) {
+  const m = (f && f.meta) || {};
+  const vf = !!(m.vf === 1 || m.vf === "1");
+  const ot = String(m.outline_type || "");
+  const range = (m.wgmin && m.wgmax) ? (m.wgmin + "–" + m.wgmax) : "";
+
+  if (m.ttc === 1 || m.ttc === "1") {
+    return { ok: false, kind: "ttc", label: "合集",
+      why: "字体合集（TTC），暂不支持拆开合成" };
+  }
+  if (ot === "cff2") {
+    return { ok: false, kind: "cff2", label: "CFF2",
+      why: "CFF2 轮廓（PostScript 可变字体）：变化数据写在 CFF2 表里，无法追加字形" };
+  }
+  if (ot === "cff") {
+    return { ok: false, kind: "cff", label: "CFF",
+      why: "CFF 轮廓（PostScript）：只能整体替换，不能按区拆分合并" };
+  }
+  if (ot === "") {
+    // 档案还没写（正常不会出现：刷入和开机都会补）。这里标成"检测中"，
+    // 而不是红色"不能用" —— 避免打开面板时先吓人一跳再自己变好。
+    return { ok: false, pending: true, kind: "nometa", vf: vf, label: "检测中",
+      why: "正在读取这份字体的结构信息…" };
+  }
+  if (ot !== "glyf") {
+    return { ok: false, kind: "unknown", label: "未知",
+      why: "没检测到 TrueType 轮廓（glyf），无法参与合成" };
+  }
+  if (vf) {
+    return { ok: true, kind: "vf", vf: true, range,
+      label: "可变" + (range ? " " + range : ""),
+      why: "可变字体" + (range ? "（字重 " + range + "）" : "") };
+  }
+  return { ok: true, kind: "static", vf: false, label: "静态",
+    why: "静态字体，只有一个字重" };
+}
+
+// 某份素材放进合成后，字重会不会跟着变（结合基座一起判断）
+function mgZoneVarInfo(srcF, baseF) {
+  const b = mgCapOf(baseF);
+  if (!b.ok) return { follow: false, text: "基座不可用", bad: true };
+  if (!srcF) return { follow: b.vf, text: b.vf ? "跟随基座（可调粗细）" : "跟随基座" };
+  const c = mgCapOf(srcF);
+  if (!c.ok) return { follow: false, text: "不能用作素材：" + c.why, bad: true };
+  if (!b.vf) {
+    return { follow: false, text: "基座是静态字体，整份都调不了粗细" };
+  }
+  if (!c.vf) {
+    return { follow: false, text: "素材是静态字体，这个区不会跟着调粗细" };
+  }
+  // 两边都是可变：检查素材的轴基座是否都有
+  const baseTags = mgAxisTags(baseF), srcTags = mgAxisTags(srcF);
+  if (baseTags.length && srcTags.length) {
+    const missing = srcTags.filter(t => baseTags.indexOf(t) < 0);
+    if (missing.length) {
+      return { follow: false,
+        text: "素材有基座没有的轴（" + missing.join(",") + "），这个区不会跟着调粗细" };
+    }
+  }
+  return { follow: true, text: "会跟着调粗细" };
+}
+
+// 从档案里取轴标签（没有就返回空数组）
+function mgAxisTags(f) {
+  const m = (f && f.meta) || {};
+  const raw = String(m.axistags || "");
+  if (raw) return raw.split(/[\s,]+/).filter(Boolean);
+  // 老档案没有轴标签：至少知道有没有 wght
+  return (m.wgmin || m.wgmax) ? ["wght"] : [];
+}
+
 function mgPickMenu(zone, cb) {
   // 同一时间只允许一个选区菜单
   document.querySelectorAll(".mg-pick-mask").forEach(el => el.remove());
@@ -3232,8 +3896,29 @@ function mgPickMenu(zone, cb) {
   if (zone.id !== "base") {
     list.append(mkItem("跟随基座", "（不替换这个区）", () => cb("__base__")));
   }
+  const baseF = fonts.find(x => x.id === MG.base) || null;
   for (const f of fonts) {
-    list.append(mkItem(f.name, (f.size ? (f.size / 1048576).toFixed(1) + " MB" : ""), () => cb(f.id)));
+    const c = mgCapOf(f);
+    const mb = f.size ? (f.size / 1048576).toFixed(1) + " MB" : "";
+    if (!c.ok) {
+      // 明确写清为什么不能用（按角色说不同的话）
+      const why = zone.id === "base" ? "不能当基座：" + c.why : "不能当素材：" + c.why;
+      const b = mkItem(f.name + "（" + c.label + "）", "", () => {});
+      b.disabled = true;
+      b.style.opacity = ".45";
+      const d = document.createElement("div");
+      d.style.cssText = "padding:0 4px 10px;font-size:11.5px;opacity:.72;line-height:1.5";
+      d.textContent = "★ " + why;
+      list.append(b, d);
+      continue;
+    }
+    if (zone.id === "base") {
+      list.append(mkItem(f.name, mb + " · " + c.label
+        + (c.vf ? "（中文可调粗细）" : "（静态，结果字重固定）"), () => cb(f.id)));
+    } else {
+      const info = mgZoneVarInfo(f, baseF);
+      list.append(mkItem(f.name, mb + " · " + c.label + " · " + info.text, () => cb(f.id)));
+    }
   }
   panel.append(head, list);
   mask.append(panel);
@@ -6519,6 +7204,7 @@ async function abCompare(targetId) {
     right.bx.textContent = v;
   };
 
+  PV_META = ((fonts.find(x => x.id === targetId) || {}).meta) || null;   // 滑块范围跟随要切换到的字体
   const wRow = document.createElement("div");
   wRow.className = "pv-wrow";
   const wLab = document.createElement("div");
@@ -6526,7 +7212,8 @@ async function abCompare(targetId) {
   const wLine = document.createElement("div");
   wLine.className = "pv-wline";
   const wIn = document.createElement("input");
-  wIn.type = "range"; wIn.min = "100"; wIn.max = "900"; wIn.step = "50"; wIn.value = "400";
+  wIn.type = "range"; wIn.min = String(wLo()); wIn.max = String(wHi());
+  wIn.step = "50"; wIn.value = String(wDef());
   wIn.className = "pv-wrange";
   const wVal = document.createElement("span");
   wVal.className = "pv-wval"; wVal.textContent = "400";
@@ -6632,12 +7319,14 @@ async function showFontInfo(id, name) {
   // 粗细滑块：可变字体真调；静态字体置灰（装到系统里也不会变）
   const wRow = document.createElement("div");
   wRow.className = "pv-wrow";
+  PV_META = meta;   // 滑块范围跟随这份字体
   const wLab = document.createElement("div");
   wLab.className = "pv-wlabel"; wLab.textContent = "粗细";
   const wLine = document.createElement("div");
   wLine.className = "pv-wline";
   const wIn = document.createElement("input");
-  wIn.type = "range"; wIn.min = "100"; wIn.max = "900"; wIn.step = "50";
+  wIn.type = "range"; wIn.min = String(wLo()); wIn.max = String(wHi());
+  wIn.step = "50"; wIn.value = String(wDef());
   wIn.className = "pv-wrange";
   const wVal = document.createElement("span");
   wVal.className = "pv-wval";
@@ -6680,7 +7369,7 @@ async function showFontInfo(id, name) {
   // 粗细滑块的状态与行为
   {
     const isVF = pvFlag(meta.vf);
-    wIn.value = meta.wght || 400;
+    wIn.value = String(Math.min(Math.max(meta.wght || wDef(), wLo()), wHi()));
     wVal.textContent = wIn.value;
     wIn.disabled = !isVF;
     wRow.style.opacity = isVF ? "" : ".45";
@@ -7134,21 +7823,27 @@ async function ensureFontData() {
   try {
     const ver = (document.getElementById("curVerLabel") || {}).textContent || "";
     if (!ver || ver === "-") return;
-    const doneKey = "cf_fdata_ver";
+    // ★ 按"模块版本号"判断要不要重探：
+    //   版本一变就把字体库所有档案重探一遍（新增字段自动补齐，
+    //   不用再逐个字段判断缺什么）。
+    const doneKey = "cf_meta_ver";
     let lastVer = "";
     try { lastVer = localStorage.getItem(doneKey) || ""; } catch (e) {}
-    if (lastVer === ver) return;                 // 这个版本已经补过
+    if (lastVer === ver) return;                 // 这个版本已经探过
 
     const out = String(await ksuExec(
+      // ★ 结构字段（轮廓类型/轴范围/轴标签）刷入时已由 metaprobe.sh 写好；
+      //   这里只补"缺 .fdata"的（老版本装的字体），且只在版本变化时跑一次。
       `for f in ${shq(LIB)}/f*.ttf; do [ -e "$f" ] || continue; `
-      + `i=\${f##*/}; i=\${i%.ttf}; [ -f "${LIB}/$i.fdata" ] || echo "$i"; done`
+      + `i=\${f##*/}; i=\${i%.ttf}; `
+      + `[ -f "${LIB}/$i.fdata" ] || echo "$i"; done`
     ) || "").trim();
     const ids = out.split(/\s+/).filter(x => /^f\d+$/.test(x));
     if (!ids.length) {
       try { localStorage.setItem(doneKey, ver); } catch (e) {}
       return;
     }
-    showToast("正在为 " + ids.length + " 个字体补充结构档案…", true);
+    showToast("新版本：正在重新探测 " + ids.length + " 个字体…", true);
     let ok = 0;
     for (let i = 0; i < ids.length; i++) {
       try {
@@ -7156,14 +7851,29 @@ async function ensureFontData() {
         ok++;
       } catch (e) { /* 单个失败不中断 */ }
       if (ids.length > 3 && (i + 1) % 2 === 0) {
-        showToast("正在补充字体档案 " + (i + 1) + "/" + ids.length, true);
+        showToast("重新探测字体档案 " + (i + 1) + "/" + ids.length, true);
       }
     }
     clearToast();
-    showToast("字体档案已补齐（" + ok + "/" + ids.length + "）");
+    showToast("字体档案已按新版本更新（" + ok + "/" + ids.length + "）");
     try { localStorage.setItem(doneKey, ver); } catch (e) {}
   } catch (e) { /* 补档失败不影响使用 */ }
 }
+
+
+/* 粗细滑块的取值范围：优先用字体自己的 wght 轴范围
+   （轴最大只有 700 的字体，滑块就到 700 —— 拖不过去，也就不会出现"越调越小"） */
+let PV_META = null;           // 当前正在预览的那份字体的 meta（创建滑块前赋值）
+function wAxisOf() {
+  if (PV_META) return PV_META;
+  try {
+    const f = (typeof fonts !== "undefined" && fonts || []).find(x => x.id === MG.pv) || null;
+    return (f && f.meta) || null;
+  } catch (e) { return null; }
+}
+function wLo() { const m = wAxisOf(); return (m && m.wgmin) ? m.wgmin : 100; }
+function wHi() { const m = wAxisOf(); return (m && m.wgmax) ? m.wgmax : 900; }
+function wDef() { const m = wAxisOf(); return (m && m.wgdef) ? m.wgdef : ((m && m.wght) || 400); }
 
 async function probeFont(path) {
   const head = await readHex(path, 0, 12);
@@ -7178,9 +7888,36 @@ async function probeFont(path) {
     tables[String.fromCharCode(dir[o], dir[o + 1], dir[o + 2], dir[o + 3])] = {off: u32(dir, o + 8), len: u32(dir, o + 12)};
   }
   const meta = {vf: tables["fvar"] ? 1 : 0};
+  // 可变字体：把 wght 轴的真实范围读出来，界面上的粗细滑块就限制在这个范围里
+  // （否则拖过轴上限后引擎会回落到默认实例，看起来就是"越调越小"）
+  if (tables["fvar"]) {
+    try {
+      const fv = await readHex(path, tables["fvar"].off, Math.min(tables["fvar"].len, 4096));
+      const axesOff = u16(fv, 4), axisCount = u16(fv, 8), axisSize = u16(fv, 10);
+      for (let i = 0; i < axisCount; i++) {
+        const p = axesOff + i * axisSize;
+        if (p + 16 > fv.length) break;
+        const tag = String.fromCharCode(fv[p], fv[p + 1], fv[p + 2], fv[p + 3]);
+        if (tag !== "wght") continue;
+        const fx = v => Math.round((((v[0] << 24) >>> 0) + (v[1] << 16) + (v[2] << 8) + v[3]) / 65536);
+        meta.axistags = [];
+        for (let j = 0; j < axisCount; j++) {
+          const q = axesOff + j * axisSize;
+          if (q + 4 > fv.length) break;
+          meta.axistags.push(String.fromCharCode(fv[q], fv[q + 1], fv[q + 2], fv[q + 3]));
+        }
+        meta.wgmin = fx([fv[p + 4], fv[p + 5], fv[p + 6], fv[p + 7]]);
+        meta.wgdef = fx([fv[p + 8], fv[p + 9], fv[p + 10], fv[p + 11]]);
+        meta.wgmax = fx([fv[p + 12], fv[p + 13], fv[p + 14], fv[p + 15]]);
+        break;
+      }
+    } catch (e) { /* 读不到就用默认范围 */ }
+  }
   if (tables["CFF "] || tables["CFF2"]) meta.cff = 1;
   // ---- 结构信息（诊断要看的：轮廓类型 + 按字形索引的表是否齐全 ----
-  meta.outline = tables["glyf"] ? "glyf" : (tables["CFF2"] ? "cff2" : (tables["CFF "] ? "cff" : "?"));
+  // ⚠️ 字段名必须是 outline_type：`outline` 是 has_outline 的布尔缓存（0/1），
+  //   占用了会让应用前的轮廓检查误判，报"这份字体里没有任何字形轮廓"。
+  meta.outline_type = tables["glyf"] ? "glyf" : (tables["CFF2"] ? "cff2" : (tables["CFF "] ? "cff" : "?"));
   meta.t_hdmx = tables["hdmx"] ? 1 : 0;
   meta.t_ltsh = tables["LTSH"] ? 1 : 0;
   meta.t_vdmx = tables["VDMX"] ? 1 : 0;
@@ -7681,11 +8418,13 @@ function impRender() {
   wt.className = "pv-wrow";
   const wtLab = document.createElement("div");
   wtLab.className = "pv-wlabel"; wtLab.textContent = "粗细";
+  PV_META = ((IMP.cache.get(IMP.cur) || {}).meta) || null;   // 滑块范围跟随当前选中的文件
   const wtLine = document.createElement("div");
   wtLine.className = "pv-wline";
   const wtIn = document.createElement("input");
   wtIn.type = "range"; wtIn.id = "impWeight";
-  wtIn.min = "100"; wtIn.max = "900"; wtIn.step = "50"; wtIn.value = "400";
+  wtIn.min = String(wLo()); wtIn.max = String(wHi());
+  wtIn.step = "50"; wtIn.value = String(wDef());
   wtIn.className = "pv-wrange";
   const wtVal = document.createElement("span");
   wtVal.className = "pv-wval"; wtVal.id = "impWeightVal"; wtVal.textContent = "400";
@@ -9112,6 +9851,41 @@ async function shWriteB64(text, path) {
   await ksuExec("printf '%s' '" + b64 + "' | base64 -d > " + path);
 }
 
+
+/* ===========================================================================
+   ★ 2026-10-21：上传优先走界面自己的 fetch
+   ---------------------------------------------------------------------------
+   背景：之前判定「WebView fetch 走不通」是因为**挂梯子时 WebView 不走代理**，
+        但那是特定网络环境的结论。而绝大多数用户：
+          · 设备上根本没有 curl（安卓默认不带）
+          · KernelSU 也不带 busybox
+        → 走 shell 的路在他们机器上永远是"没有可用工具"，功能等于摆设。
+
+   现在：fetch 先上（不需要外部命令），失败再退回 shell，最后兜底导出文件。
+   =========================================================================== */
+async function fbkSendViaFetch(txt, hdr) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 25000);      // 25 秒还连不上就换路
+  try {
+    const resp = await fetch(WORKER_URL + "/report", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "text/plain; charset=utf-8" }, hdr),
+      body: txt,
+      signal: ctl.signal,
+      cache: "no-store",
+    });
+    const out = String(await resp.text() || "");
+    if (/bad key/i.test(out)) throw new Error("服务器说口令不对（bad key）");
+    if (/too big/i.test(out)) throw new Error("报告太大（上限 8MB）");
+    if (/daily limit/i.test(out)) throw new Error("今天这台机器的上传次数用完了");
+    if (!resp.ok) throw new Error("HTTP " + resp.status + " " + out.slice(0, 80));
+    if (!/ok|"id"/i.test(out)) throw new Error("服务器没给成功回应：" + out.slice(0, 80));
+    return { raw: out, via: "fetch" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fbkSendViaShell(txt, hdr) {
   await shWriteB64(txt, UP_TMP);
 
@@ -9129,6 +9903,9 @@ async function fbkSendViaShell(txt, hdr) {
     'T=' + UP_TMP + '; U=' + WORKER_URL + '/report; ' +
     'if command -v curl >/dev/null 2>&1; then ' +
       'curl -sS -m 90 -X POST' + hs + ' --data-binary @$T $U; ' +
+    'elif command -v busybox >/dev/null 2>&1 && busybox wget --help >/dev/null 2>&1; then ' +
+      'busybox wget -q -O - --header "x-cfs-key: ' + WORKER_KEY + '" ' +
+      '--post-file $T $U 2>&1; ' +
     'elif toybox wget >/dev/null 2>&1; then ' +
       'toybox wget -q -O - --header "x-cfs-key: ' + WORKER_KEY + '" ' +
       '--post-file $T $U 2>&1; ' +
@@ -9167,8 +9944,20 @@ async function fbkSendWorker(txt) {
     "x-cfs-note": fbkHdr("快捷报告", 60),
     "x-cfs-desc": fbkHdr(typeof fbkDesc === "string" ? fbkDesc : "", 700),   // ★ 用户填的描述
   };
-  // ★ 走 shell —— WebView 的 fetch 不经过梯子，实测会 "Failed to fetch"
-  return await fbkSendViaShell(txt, hdr);
+  // ① 先试界面直连（不需要 curl / busybox，绝大多数机器走这条）
+  let err1 = null;
+  try {
+    return await fbkSendViaFetch(txt, hdr);
+  } catch (e) {
+    err1 = e;
+  }
+  // ② 退回 shell（挂了梯子、或者 fetch 被拦时才有用）
+  try {
+    return await fbkSendViaShell(txt, hdr);
+  } catch (e2) {
+    const e1 = errText(err1);
+    throw new Error("直连失败（" + e1 + "）；shell 也不行（" + errText(e2) + "）");
+  }
 }
 
 async function fbkQuickSend() {
@@ -9210,10 +9999,20 @@ async function fbkQuickSend() {
     // 失败一定要给出**可执行的下一步**，不能只说"失败"。
     // ★ 2026-10-16：只剩这一条通道了，所以提示必须直说"挂梯子"
     //   （workers.dev 在国内大多连不上；作者自己也是挂梯子用的）
-    fbkSay("❌ 上传失败：" + repEsc(errText(e)) +
-          "<br><b>挂个梯子再点一次就行</b> —— 这台服务器在国外，不挂梯子连不上。" +
-          "<br>报告已经存在 <b>Download/快捷报告.txt</b>，实在不行可以把这个文件发我。", "err");
-    showToast("上传失败，挂梯子再试");
+    // ★ 2026-10-21：失败不再只说"挂梯子"。
+    //   大多数用户设备上没有 curl/busybox，也不挂梯子 —— 那就把文件给他，
+    //   他发微信/酷安/邮件都行，比让他在手机上折腾 shell 现实得多。
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(String(txt || ""));
+      copied = true;
+    } catch (e2) { copied = false; }
+    fbkSay("❌ 自动上传没成功：" + repEsc(errText(e)) +
+          "<br><br><b>不用管它，报告已经存到手机里了：</b>" +
+          "<br><code>Download/快捷报告.txt</code>" +
+          (copied ? "<br>（也已复制到剪贴板，可以直接粘贴发我）" : "") +
+          "<br><br>把这个文件发给作者就行 —— <b>不需要装 curl、不需要挂梯子</b>。", "err");
+    showToast(copied ? "上传失败，但报告已复制到剪贴板" : "上传失败，报告已存到 Download");
   } finally {
     fbkBusy(false, "fbkQuickBtn");
   }
@@ -9345,9 +10144,39 @@ async function repSendServer() {
       'if command -v curl >/dev/null 2>&1; then ' +
         'curl -sS --connect-timeout 8 -m 35 --retry 1 --retry-connrefused ' +
         '-X POST' + hdr + ' --data-binary @$F $U; ' +
+      'elif command -v busybox >/dev/null 2>&1 && busybox wget --help >/dev/null 2>&1; then ' +
+        'busybox wget -q -O - --header "x-cfs-key: ' + WORKER_KEY + '" --post-file $F $U 2>&1; ' +
+      'elif toybox wget >/dev/null 2>&1; then ' +
+        'toybox wget -q -O - --header "x-cfs-key: ' + WORKER_KEY + '" --post-file $F $U 2>&1; ' +
       'else echo NOHTTPTOOL; fi';
     let out = "";
     let _lastErr = "";                     // ★ 必须定义：下面失败提示要用
+
+    // ★ 2026-10-21：先试界面直连（不需要 curl / busybox）。
+    //   完整报告可能几 MB，超过 3MB 就不往内存里读了，直接走 shell。
+    if (sz <= 3 * 1024 * 1024) {
+      try {
+        showToast("正在上传（直连）…");
+        const txt = String(await ksuExec(`cat ${shq(path)} 2>/dev/null`) || "");
+        if (txt.length > 100) {
+          const okResp = await fbkSendViaFetch(txt, {
+            "x-cfs-key": WORKER_KEY,
+            "x-cfs-device": fbkHdr(fbkDevTagFromKv(_kv2), 80),
+            "x-cfs-ver": fbkHdr((_kv2 && _kv2.ver) || "", 24),
+            "x-cfs-rom": fbkHdr((_kv2 && _kv2.rom) || "", 40),
+            "x-cfs-note": fbkHdr("完整报告 " + name, 120),
+            "x-cfs-desc": fbkHdr(repDesc, 700),
+          });
+          out = String(okResp.raw || "ok");
+          showToast("已上传，谢谢！");
+          if (btn) btn.disabled = false;
+          return;
+        }
+      } catch (eF) {
+        _lastErr = "直连失败：" + errText(eF).slice(0, 80);
+      }
+    }
+
     for (let _try = 1; _try <= 3; _try++) {
       if (_try > 1) showToast("网络不稳，重试第 " + _try + "/3 次…");
       try {
@@ -9365,7 +10194,8 @@ async function repSendServer() {
     if (/too big/i.test(out)) throw new Error("报告太大（服务器上限 8MB）");
     if (!/ok|"id"/i.test(out)) {
       throw new Error((_lastErr || "没有响应") +
-                      "（已试 3 次 —— 多半是网络：服务器在境外，需梯子覆盖该域名）");
+                      "（已试直连 + shell 3 次。报告已存在 Download/" + name +
+                      "，直接把这个文件发给作者即可）");
     }
 
     showToast("已上传，谢谢！");
@@ -9476,6 +10306,7 @@ async function refreshGoogle(fresh) {
     nogms: "未安装 Google Play 服务（无需开启）"
   };
   try {
+    try { await refreshGoogleBridge(); } catch (e) {}
     const out = (await ksuExec(`sh ${MODDIR}/google_font.sh status${fresh ? " fresh" : ""}`)).trim();
     setValue("googleLabel", GF_TEXT[out] || GF_TEXT.unknown);
     const on = out === "on";
@@ -9486,6 +10317,58 @@ async function refreshGoogle(fresh) {
   } catch (e) {
     setValue("googleLabel", "无法读取");
     el.classList.remove("ok"); el.classList.add("off");
+  }
+}
+
+/* ★ 2026-10-21：两条互斥的"谷歌字体"路线
+   A 停用 provider  —— 只有 Chrome/Gemini 生效；商店靠 provider 拿字体，会坏
+   B 桥接 GMS 缓存  —— provider 保持启用，把 Google Sans 文件顶掉；商店不会因"拿不到"而坏
+   UI 上分成两个按钮，状态各读各的。 */
+async function refreshGoogleBridge() {
+  const el = document.getElementById("gmsBridgeLabel");
+  if (!el) return;
+  try {
+    const out = (await ksuExec(`sh ${MODDIR}/google_font.sh bridge-status`)).trim();
+    // 输出形如：flag=1 found=14 mounted=14（flag=启用标志，mounted=账本里还挂着的）
+    const gm = out.match(/flag=(\d+)/);
+    const fm = out.match(/found=(\d+)/);
+    const mm = out.match(/mounted=(\d+)/);
+    const flag = gm ? parseInt(gm[1], 10) : 0;
+    const found = fm ? parseInt(fm[1], 10) : 0;
+    const mounted = mm ? parseInt(mm[1], 10) : 0;
+    const on = flag === 1;
+    let txt;
+    if (on) {
+      txt = "已开启（已挂载 " + mounted + " / 共 " + (found || mounted) + " 个字体文件）";
+    } else if (mounted > 0) {
+      txt = "已关闭（还有 " + mounted + " 个残留挂载，重启后消失）";
+    } else if (found) {
+      txt = "未开启（GMS 里有 " + found + " 个字体文件可桥接）";
+    } else {
+      txt = "未开启（没找到 GMS 字体缓存 —— 商店没下载过字体时是正常的）";
+    }
+    setValue("gmsBridgeLabel", txt);
+    el.classList.toggle("ok", on);
+    el.classList.toggle("off", !on);
+  } catch (e) {
+    setValue("gmsBridgeLabel", "读取失败");
+    el.classList.remove("ok"); el.classList.add("off");
+  }
+}
+
+async function gmsBridgeAction(on) {
+  if (busy) return;
+  busy = true;
+  showToast(on ? "正在桥接 GMS 字体…" : "正在还原 GMS 字体…", true);
+  await nextPaint();
+  try {
+    const out = await ksuExec(`sh ${MODDIR}/google_font.sh ${on ? "enable-bridge" : "bridge-off"}`);
+    showToast(String(out || (on ? "已桥接" : "已还原")).slice(0, 120));
+  } catch (e) {
+    showToast("执行失败：" + errText(e));
+  } finally {
+    busy = false;
+    await refreshGoogleBridge();
   }
 }
 
