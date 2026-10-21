@@ -132,19 +132,12 @@ if [ -f "$LIB/.gms_journal.conf" ] && [ -f "$MODDIR/google_font.sh" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 商店缓存桥接（与"停用提供器"是两条独立的路）
-#   ★ 2026-10-21 修：这段原来被裹在 [ -f "$LIB/.gms_journal.conf" ] 里，
-#     而那个账本只有"停用提供器"才写 → 只开桥接的用户开机永远不挂（真机实测）。
-#     现在只看自己的启用标志 $LIB/.gms_cache_on。
+# ★ 2026-10-21：商店缓存桥接整段摘除。
+#   原因：实测 Play 商店的字体打包在它自己的 APK 里（assets/ProductSans-*.ttf），
+#        替换 GMS 缓存文件对它完全无效；而 Chrome/Gemini 走的是「停用提供器」那条路。
+#        这条桥接既没用又会往 GMS 目录塞 44MB 克隆、force-stop GMS，
+#        是部分 Google 应用（Gemini 等）异常的可能来源，故移除。
 # ---------------------------------------------------------------------------
-if [ -f "$LIB/.gms_cache_on" ] && [ -f "$MODDIR/gms_cache.sh" ]; then
-  beat service "商店字体桥接：按账本重挂"
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 120 sh "$MODDIR/gms_cache.sh" on >/dev/null 2>&1
-  else
-    sh "$MODDIR/gms_cache.sh" on >/dev/null 2>&1
-  fi
-fi
 
 # 自带挂载模式下选了字体，但本次开机没有挂载记录 -> 提示用户
 # （主挂载在 post-fs-data，所以这一般意味着"Root 管理器开机时没运行模块脚本"：
