@@ -205,14 +205,12 @@ original_state() {
   fi
 }
 
-bridge() {   # 商店缓存桥接（让商店也生效）；测试环境不跑
-  [ -z "$CFS_ALLOW_NONROOT" ] || return 0
-  [ -f "$MODDIR/gms_cache.sh" ] || return 0
-  # ★ 2026-10-16：这里传 force —— 因为调用方是**界面上的按钮**（用户显式开启/关闭）。
-  #   而 gms_cache.sh 的 do_on 现在有一道门槛：账本不在就拒绝自动挂载
-  #   （修"关掉了还被开机脚本挂回去"那个 bug）。
-  #   用户点「开启兼容」时账本还没建立，不传 force 就会被那道门槛挡掉。
-  tmo 60 sh "$MODDIR/gms_cache.sh" "$1" force >/dev/null 2>&1
+bridge() {
+  # ★ 2026-10-21 停用：GMS 缓存桥接已整体摘除。
+  #   实测 Play 商店的字体在它自己 APK 里（assets/ProductSans-*.ttf），
+  #   替换 GMS 缓存文件对它无效；Chrome/Gemini 用的是「停用提供器」那条路。
+  #   保留这个空函数是为了兼容旧调用点（开兼容时会走到这里）。
+  return 0
 }
 cur_user() {
   local u=""
@@ -246,6 +244,21 @@ kill_consumers() {
   printf 'count=%s\ntime=%s\nboot=%s\n' "$n" "$(date +%s 2>/dev/null)" "$(cat "$BOOTID_FILE" 2>/dev/null)" > "$stamp" 2>/dev/null
   tmo 10 "$AM" kill --user "$u" "$GMS"     >/dev/null 2>&1
   tmo 10 "$AM" kill --user "$u" "$VENDING" >/dev/null 2>&1
+
+  # ★ 2026-10-21：`am kill` 只能清后台。Chrome / Gemini 这类在前台或被保活的进程
+  #   会把"用系统字体"这个结果缓存住，组件恢复启用后也不会重新去 GMS 拿字体
+  #   → 用户看到的就是"关了兼容，字体还是不回来"。
+  #   这里对几个明确的字体消费者做 force-stop（force-stop 会把进程彻底结束，
+  #   下次启动必然重新走字体加载）。只在装了这个包时才动手。
+  for _pkg in com.android.chrome \
+              com.google.android.apps.bard \
+              com.google.android.googlequicksearchbox \
+              com.google.android.gm \
+              com.google.android.apps.maps \
+              com.android.vending; do
+    [ -d "/data/data/$_pkg" ] || continue
+    tmo 10 "$AM" force-stop --user "$u" "$_pkg" >/dev/null 2>&1 || true
+  done
   return 0
 }
 
@@ -383,7 +396,6 @@ do_restore() {
     rm -f "$JOURNAL" 2>/dev/null
     put_status off
     kill_consumers "$u"
-    bridge off
     log_gf "已关闭谷歌字体兼容（用户 $u，按原状态 $orig 还原）"
     [ "$(journal_val original)" = unknown ] && printf 'OK：已关闭谷歌字体兼容（原来的状态没读到，按「启用」还原）\n' || printf 'OK：已关闭谷歌字体兼容\n'
     return 0
