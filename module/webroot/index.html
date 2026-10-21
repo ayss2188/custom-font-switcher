@@ -235,6 +235,7 @@ body { min-height: 100%; }
   .reboot-btn.urgent { background: var(--danger); animation: urgentPulse 1.6s ease-in-out 8; }
   .hint { text-align: center; color: var(--text-dim); font-size: 12px; margin-top: 10px; }
 
+  .badge-group{position:absolute;right:10px;top:8px;font-size:10.5px;line-height:1;padding:3px 6px;border-radius:8px;background:rgba(127,127,127,.18);color:inherit;opacity:.85}
   .toast {
     position: fixed; left: 50%; bottom: 30px; transform: translate(-50%, 14px);
     z-index: 9999;   /* 必须在所有面板之上：海报/合成/A-B 面板都会盖住底部 */
@@ -1038,6 +1039,7 @@ try {
     <div class="lib-wrap"><div class="lib-inner"><div id="fontList"></div></div></div>
   </div>
   <button class="batch-btn" id="batchBtn" style="display:none" onclick="batchDelete()">删除选中 (0)</button>
+      <button class="g-btn" id="groupBtn" onclick="groupAction()" style="display:none">组合为字重组</button>
 
 
   <div class="section-title fade" style="--d:.07s"><span>字体合成</span></div>
@@ -1067,6 +1069,16 @@ try {
     <div><div class="t">保留锁屏时钟字体</div><div class="d">小米/红米/POCO 的锁屏时钟有<b>自己专用的一份字体</b>，默认会一起换成你的字体。<br><b>开</b>：那几份保留原样，你还能在系统里换锁屏时钟样式。<br><b>关</b>：连锁屏时钟也换成你的字体。<br>（其他品牌没有这种专用字体，开关无影响）</div></div>
     <div class="sw" id="sw_keep_lockscreen"></div>
   </div>
+  <div class="switch-row fade" onclick="toggleSetting('pair_family')">
+    <div><div class="t">同族字重自动配对</div>
+      <div class="d"><b>关（默认）</b>：每份字体各自独立，互不影响。<br>
+      <b>开</b>：同一族的 Regular/Bold/Light 会按槽位需要的字重各就各位。<br>
+      ⚠ 开启前请确认「同族」的几份文件确实是<b>同一套字体的不同字重</b>；
+      混挂了不同字体可能出现缺字（方块）甚至开不了机。模块会做校验（轮廓 / upem / 语种 / 字形数），
+      不过还是会跳过可疑成员。</div></div>
+    <div class="sw" id="sw_pair_family"></div>
+  </div>
+
   <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
     <div><div class="t">自带挂载</div><div class="d"><b>开</b>：模块自己把字体挂上去（推荐，不用装元模块）。<br><b>关</b>：交给 Root 管理器 / 元模块来挂。</div></div>
     <div class="sw on" id="sw_mount_mode"></div>
@@ -1550,6 +1562,7 @@ let cbCounter = 0, busy = false, themePref = "auto", toastTimer = null, rebootin
 let fonts = [];            // [{id,name,size}]
 let activeId = "none", pendingId = "none";
 let manageMode = false;
+let showGroupMembers = "";     // 非空时：把该组长名下的字组成员也显示出来（临时展开）
 const selected = new Set();   // 字体库多选
 
 /* ---------- 基础工具 ---------- */
@@ -1989,11 +2002,8 @@ function makeCard(id, name, metaText, f) {
     if (f.meta.merge === "1" || f.meta.merge === 1) addTag("合成", "ok");
     if (f.meta.vf === "1") addTag("可变");
     else if (f.meta.wght) addTag("字重 " + f.meta.wght);
-    // 多字重配对：同族有几个字重，一眼看得出"加粗会不会真的变粗"
-    if (f.meta.fam) {
-      const sib = fonts.filter(x => x.meta.fam === f.meta.fam);
-      if (sib.length > 1) addTag("同族 " + sib.length + " 个字重", "ok");
-    }
+    // ★ 2026-10-21 作者要求：卡片上不再显示"同族 N 个字重"（容易误导）。
+    //   想组合请用卡片菜单里的「与同族字体组合」——那里会做校验。
   }
   info.append(n, meta);
   card.append(info);
@@ -2056,6 +2066,50 @@ function showFontSheet(id, name, isNone) {
   if (isNone) {
     sheet.append(mkItem("✓", "恢复系统默认字体", "apply", () => selectFont("none")));
   } else {
+    // ★ 字重组：组长卡片提供「展开成员 / 解散」
+    try {
+      const meG = fonts.find(x => x.id === id);
+      const gid = meG && meG.meta && String(meG.meta.group || "");
+      if (gid && gid === id) {
+        const mem = fonts.filter(x => x.meta && String(x.meta.group || "") === gid && x.id !== id);
+        if (mem.length >= 1) {
+          const open = showGroupMembers === id;
+          sheet.append(mkItem(open ? "▾" : "▸",
+            (open ? "收起" : "展开") + "字重组（" + (mem.length + 1) + " 档）", "",
+            () => { showGroupMembers = open ? "" : id; render(); }));
+          sheet.append(mkItem("⤫", "解散这个字重组", "", async () => {
+            const out = String(await ksuExec(
+              `sh ${MODDIR}/fontctl.sh group remove ${shq(id)}`) || "").trim();
+            showToast(/^\s*ERROR/.test(out) ? String(out).replace(/^\s*ERROR:?/, "").trim() : "已解散字重组");
+            showGroupMembers = "";
+            if (typeof refreshAll === "function") await refreshAll();
+          }));
+        }
+      }
+    } catch (e) { /* 菜单项失败不影响其它 */ }
+
+    // ★ 同族字体存在时，给一条直达入口（不用自己去多选里摸索）
+    try {
+      const me = fonts.find(x => x.id === id);
+      const myFam = me && me.meta && String(me.meta.fam || "");
+      if (myFam && myFam !== "none") {
+        const _isMerged = (x) => x && x.meta && String(x.meta.merged || "") === "1";
+        const sib = fonts.filter(x => x.id !== id && x.meta && !_isMerged(x)
+          && !_isMerged(me)
+          && String(x.meta.fam || "") === myFam && !String(x.meta.group || ""));
+        if (sib.length >= 1) {
+          sheet.append(mkItem("＋", "与同族字体组合（" + (sib.length + 1) + " 份）", "",
+            () => {
+              selected.clear();
+              selected.add(id);
+              sib.forEach(x => selected.add(x.id));
+              manageMode = true;
+              render();
+              showToast("已选好 " + selected.size + " 份，点「组合为字重组」");
+            }));
+        }
+      }
+    } catch (e) { /* 菜单项失败不影响其它 */ }
     const isCur = (id === activeId);
     if (isCur && id === pendingId) {
       // 真·当前在用（也已经是待生效的那个）→ 不用重复应用，但**给一条可点的重应用**，
@@ -3010,7 +3064,7 @@ function mergeFonts(baseBuf, sources) {
     "cmap": cmapOut, "glyf": glyfOut, "head": headOut, "hhea": hheaOut,
     "hmtx": hmtxOut, "loca": locaOut, "maxp": maxpOut, "post": postOut,
     // ⚠️ 必须改名：同族的判据是内部 name 表里的族名，不改就会跟基座算同一族
-    "name": nameWithSuffix(new Uint8Array(baseBuf.subarray(bt.name.off, bt.name.off + bt.name.len)), " 合成"),
+    "name": nameWithSuffix(new Uint8Array(baseBuf.subarray(bt.name.off, bt.name.off + bt.name.len)), " MG"),
   };
   if (bt["OS/2"]) {
     const os2 = new Uint8Array(baseBuf.subarray(bt["OS/2"].off, bt["OS/2"].off + bt["OS/2"].len));
@@ -3048,6 +3102,44 @@ function mergeFonts(baseBuf, sources) {
   if (keepVar && bt.gvar) {
     tables["gvar"] = ttfExtendGvar(
       new Uint8Array(baseBuf.subarray(bt.gvar.off, bt.gvar.off + bt.gvar.len)), total);
+  }
+
+
+  // ★ 2026-10-21（真机 OTS 报错复现）：基座带 vhea/vmtx（竖排度量）时，
+  //   它们是**按字形索引**的表。追加字形后若不扩展，OTS 会报
+  //   "vmtx: Failed to read side bearing <numGlyphs>" 并拒载整份字体
+  //   （表现就是"字体无法被渲染引擎加载"）。
+  //   这里按"复制最后一条长度量"补齐新字形，并同步 vhea 的 numberOfVMetrics。
+  if (bt.vmtx) {
+    const vmtxLen = bt.vmtx.len;
+    const oldVmtx = new Uint8Array(baseBuf.subarray(bt.vmtx.off, bt.vmtx.off + vmtxLen));
+    const baseNum = TTF.u16(baseBuf, bt.maxp.off + 4);
+    const addedN = Math.max(0, total - baseNum);
+    if (addedN > 0) {
+      let numVM = baseNum;
+      let vheaCopy = null;
+      if (bt.vhea) {
+        vheaCopy = new Uint8Array(baseBuf.subarray(bt.vhea.off, bt.vhea.off + bt.vhea.len));
+        const n = TTF.u16(vheaCopy, 34);
+        if (n > 0 && n <= baseNum) numVM = n;
+      }
+      // 最后一条长度量（4 字节：advanceHeight + topSideBearing）
+      const lastOff = Math.min((numVM - 1) * 4, Math.max(0, oldVmtx.length - 4));
+      const last4 = oldVmtx.subarray(lastOff, lastOff + 4);
+      const grow = new Uint8Array(oldVmtx.length + addedN * 4);
+      grow.set(oldVmtx, 0);
+      for (let i = 0; i < addedN; i++) grow.set(last4, oldVmtx.length + i * 4);
+      tables["vmtx"] = grow;
+      if (vheaCopy) {
+        const newNum = Math.min(0xffff, numVM + addedN);
+        vheaCopy[34] = (newNum >> 8) & 255;
+        vheaCopy[35] = newNum & 255;
+        tables["vhea"] = vheaCopy;
+      }
+    }
+  } else if (bt.vhea && !bt.vmtx) {
+    // 只有 vhea 没有 vmtx：自相矛盾，直接都不留
+    delete tables["vhea"];
   }
 
   const tags = Object.keys(tables).sort();
@@ -3248,6 +3340,28 @@ function mgValidate(bytes) {
   } catch (e) {
     return "自检异常：" + ((e && e.message) || e);
   }
+  // ★ 2026-10-21：竖排度量表必须覆盖所有字形，否则 OTS 拒载
+  //   （真机报错：OTS parsing error: vmtx: Failed to read side bearing N）
+  try {
+    const t2 = ttfTables(bytes);
+    if (t2.vmtx && t2.maxp) {
+      const ng = TTF.u16(bytes, t2.maxp.off + 4);
+      let numVM = ng;
+      let hasVhea = false;
+      if (t2.vhea) {
+        hasVhea = true;
+        const n = TTF.u16(bytes, t2.vhea.off + 34);
+        if (n > 0) numVM = n;
+      }
+      if (numVM > ng) return "vhea.numberOfVMetrics(" + numVM + ") 大于字形数(" + ng + ")";
+      const need = numVM * 4 + (ng - numVM) * 2;
+      if (t2.vmtx.len < need) {
+        return "vmtx 长度不足（有 " + t2.vmtx.len + " 字节，需要 " + need + "，字形数 " + ng + "）";
+      }
+      if (!hasVhea) return "有 vmtx 但缺 vhea（自相矛盾）";
+    }
+  } catch (e) { /* 校验失败不阻塞 */ }
+
 }
 
 
@@ -3729,6 +3843,25 @@ async function mgSheet() {
       const gvIssues = gvarAudit(r.bytes);
       mgLog("gvar-audit", gvIssues.length ? gvIssues.join(" / ") : "OK");
 
+      // ★ 合成字体必须与基座不同族，否则系统会把它们当同一族的不同字重（会串）
+      try {
+        const _bt = ttfTables(baseBuf);
+        const _bFam = _bt.name ? famKeyFromName(new Uint8Array(
+          baseBuf.subarray(_bt.name.off, _bt.name.off + _bt.name.len))) : "";
+        const _mt = ttfTables(r.bytes);
+        const _mFam = _mt.name ? famKeyFromName(new Uint8Array(
+          r.bytes.subarray(_mt.name.off, _mt.name.off + _mt.name.len))) : "";
+        if (_bFam && _mFam && _bFam === _mFam) {
+          mgLog("family", "★ 合成字体与基座同族（改名没生效）—— 有串字风险");
+          MG_VARUSE.push("★ 族名与基座相同：系统可能把它们当同一族，建议改个名再合成");
+        } else {
+          mgLog("family", "OK（与基座不同族）");
+        }
+      } catch (e) { mgLog("family", "check FAIL " + ((e && e.message) || e)); }
+
+      // ★ 合成产物在档案里永久标记 merged=1：它**不能**进字重组、也不能和基座算同族
+      MG_MERGED = true;
+
       const bad = mgValidate(r.bytes);
       mgLog("validate", bad || "OK");
       if (bad) throw new Error("自检未通过（" + bad + "），已放弃写入");
@@ -3856,7 +3989,9 @@ const newId = "f" + nextNo;
         const zf = fonts.find(x => x.id === zid);
         return z.name + ":" + (zf ? zf.name : zid);
       }).filter(Boolean).join(" / ");
-      const mergeKVs = ["merge=1", "base=" + MG.base, "zones=" + (zoneDesc || "none")];
+      // ★ merged=1：永久标记"这是合成产物"，它不能进字重组、也不能和基座算同族
+      const mergeKVs = ["merge=1", "merged=1", "base=" + MG.base,
+                        "zones=" + (zoneDesc || "none")];
       // setmeta 的参数必须是分开的 k=v（一整串带空格会被判成格式错误）
       const finishMeta = () => ksuExec(
         `sh ${shq(MODDIR + "/fontctl.sh")} setmeta ${shq(realId)} `
@@ -7573,8 +7708,41 @@ function render() {
   };
   box.append(none);
 
+  // ★ 字组成员折叠：只认**合法组**（组长存在、不是合成字体、成员≥2），
+  //   否则一律当没组 —— 不然组长那份要是坏了/被删了，成员就永久隐身（真机踩过）。
+  const _mergedOf = (f) => f && f.meta && (String(f.meta.merged || "") === "1"
+    || String(f.meta.merge || "") === "1");
+  const _rawGroups = {};
   fonts.forEach(f => {
+    const g = f.meta && String(f.meta.group || "");
+    if (g) (_rawGroups[g] = _rawGroups[g] || []).push(f);
+  });
+  const _grpCount = {};           // 合法组的组长 → 成员总数
+  const _grpMembers = {};         // 组长 → 成员 id 列表
+  Object.keys(_rawGroups).forEach(gid => {
+    const arr = _rawGroups[gid];
+    const leader = fonts.find(f => f.id === gid);
+    if (!leader || _mergedOf(leader) || arr.length < 2) return;   // 非法组：忽略
+    _grpCount[gid] = arr.length;
+    _grpMembers[gid] = arr.filter(f => f.id !== gid).map(f => f.id);
+  });
+  // showGroupMembers = 临时"展开"的组长 id（点了菜单里的展开才显示成员）
+  const _visible = fonts.filter(f => {
+    const g = f.meta && String(f.meta.group || "");
+    if (!g || !_grpCount[g]) return true;        // 没组 / 非法组 → 正常显示
+    if (g === f.id) return true;                 // 组长 → 显示
+    return showGroupMembers === g;               // 成员 → 只有展开时显示
+  });
+
+  _visible.forEach(f => {
     const card = makeCard(f.id, f.name, fmtSize(f.size), f);
+    // 组长卡片补一个「字重 N 档」标记，点进去还能看到成员（菜单里已有属性面板）
+    if (_grpCount[f.id] > 1) {
+      const tag = document.createElement("div");
+      tag.className = "badge-group";
+      tag.textContent = "字重 " + _grpCount[f.id] + " 档";
+      card.append(tag);
+    }
     if (manageMode) {
       const locked = isLocked(f.id);
       if (locked) card.classList.add("locked");
@@ -7620,6 +7788,38 @@ function updateBatchBtn() {
   btn.style.display = manageMode ? "block" : "none";
   btn.textContent = "删除选中 (" + selected.size + ")";
   btn.disabled = selected.size === 0;
+
+  // 字重组按钮：选中 ≥2 份 → 「组合为字重组」；只选 1 份且它是组长 → 「解散字重组」
+  const gb = document.getElementById("groupBtn");
+  if (gb) {
+    gb.style.display = manageMode ? "block" : "none";
+    let label = "组合为字重组", enabled = false, mode = "create";
+    if (selected.size >= 2) {
+      enabled = true;
+      // 选中份的族名不一致 → 按钮变灰并改名，避免用户白点一次
+      try {
+        const picked = [...selected].map(id => fonts.find(f => f.id === id)).filter(Boolean);
+        const fams = [...new Set(picked.map(f => String((f.meta && f.meta.family) || f.meta && f.meta.fam || "")).filter(Boolean))];
+        const upems = [...new Set(picked.map(f => String((f.meta && f.meta.upem) || "")).filter(Boolean))];
+        const hasMerged = picked.some(f => f.meta
+          && (String(f.meta.merged || "") === "1" || String(f.meta.merge || "") === "1"));
+        const lacksFam = picked.some(f => !(f.meta && (f.meta.family || f.meta.fam)));
+        if (hasMerged) { label = "含合成字体，不能组合"; enabled = false; }
+        else if (lacksFam) { label = "缺族名数据，请重新导入"; enabled = false; }
+        else if (fams.length > 1) { label = "族名不一致，不能组合"; enabled = false; }
+        else if (upems.length > 1) { label = "upem 不一致，不能组合"; enabled = false; }
+      } catch (e) { /* 判断失败就保持可用，交给后端拦 */ }
+    }
+    else if (selected.size === 1) {
+      const one = [...selected][0];
+      const f = fonts.find(x => x.id === one);
+      const grp = f && f.meta && String(f.meta.group || "");
+      if (grp && grp === one) { label = "解散字重组"; enabled = true; mode = "remove"; }
+    }
+    gb.textContent = label;
+    gb.disabled = !enabled;
+    gb.dataset.mode = mode;
+  }
   const mb = document.getElementById("manageBtn");
   mb.textContent = manageMode ? "完成" : "多选";
   mb.classList.toggle("on", manageMode);
@@ -7641,6 +7841,108 @@ function toggleSelect(id, card) {
 
 function batchDelete() {
   if (selected.size) deleteFonts([...selected]);
+}
+
+/* 字重组：把选中的多份字体合成一张卡片（同一套字体的不同字重）
+   · 选中 ≥2 份 → 组合（后端会校验族名/upem/语种/字形数，不合格的跳过并说明）
+   · 选中组长 1 份 → 解散 */
+async function groupAction() {
+  if (busy) return;
+  const gb = document.getElementById("groupBtn");
+  const mode = (gb && gb.dataset.mode) || "create";
+  const ids = [...selected];
+  if (mode === "create" && ids.length < 2) return;
+  if (mode === "remove" && ids.length !== 1) return;
+  // ★ 2026-10-21（作者要求：绝不能把不同字体组到一起）：组合前逐条硬校验
+  if (mode === "create") {
+    const picked = ids.map(id => fonts.find(f => f.id === id)).filter(Boolean);
+    const merged = picked.filter(f => f.meta
+      && (String(f.meta.merged || "") === "1" || String(f.meta.merge || "") === "1"));
+    if (merged.length) {
+      showToast("不能组合合成字体：" + merged.map(f => f.name).join("、"));
+      return;
+    }
+    const M = f => f.meta || {};
+    const num = v => (v === undefined || v === null || v === "" ? NaN : Number(v));
+    const probs = [];
+
+    // ① 族名原文：必须都有，且完全相同
+    picked.forEach(f => { if (!M(f).family) probs.push(f.name + "：档案里没有族名原文（请刷新页面后重新导入）"); });
+    const famTexts = [...new Set(picked.map(f => String(M(f).family || "")))];
+    if (famTexts.filter(Boolean).length > 1) {
+      probs.push("族名不一致：" + famTexts.join(" / "));
+    }
+    // ② upem 相同
+    const upems = [...new Set(picked.map(f => String(M(f).upem || "")))];
+    if (upems.filter(Boolean).length > 1) probs.push("upem 不一致：" + upems.join(" / "));
+    if (picked.some(f => !M(f).upem)) probs.push("有字体缺 upem 数据");
+    // ③ 字形数相差 ≤3%
+    const glyphs = picked.map(f => num(M(f).glyphs)).filter(n => isFinite(n));
+    if (glyphs.length === picked.length && glyphs.length) {
+      const lo = Math.min(...glyphs), hi = Math.max(...glyphs);
+      if (hi > 0 && (hi - lo) / hi > 0.03) probs.push("字形数相差过大：" + lo + " ~ " + hi);
+    } else {
+      probs.push("有字体缺字形数数据");
+    }
+    // ④ 覆盖率逐项相差 ≤2
+    const RATE_KEYS = ["rate_latin", "rate_digits", "rate_cjk", "rate_hant",
+                       "rate_kana", "rate_hangul", "rate_punct", "rate_symbols"];
+    RATE_KEYS.forEach(k => {
+      const vals = picked.map(f => num(M(f)[k])).filter(n => isFinite(n));
+      if (vals.length !== picked.length) return;    // 缺数据就跳过该项（不判失败）
+      const lo = Math.min(...vals), hi = Math.max(...vals);
+      if (hi - lo > 2) probs.push("覆盖率差太多（" + k.replace("rate_", "") + "）：" + lo + "%~" + hi + "%");
+    });
+    // ⑤ 子族名必须各不相同（否则可能是同一个字重的两份拷贝）
+    const subs = picked.map(f => String(M(f).subfamily || "")).filter(Boolean);
+    if (subs.length === picked.length && new Set(subs).size !== subs.length) {
+      probs.push("这些字体的字重标识相同（" + subs.join(" / ") + "），不是不同字重");
+    }
+
+    if (probs.length) {
+      await dialog({
+        title: "不能组成字重组",
+        msg: probs.map(p => "· " + p).join("\n")
+          + "\n\n只有「同一套字体的不同字重」才能组合（族名、upem、字形数、覆盖率都要对得上）。",
+        okText: "知道了"
+      });
+      return;
+    }
+
+    // 通过 → 给一份确认清单，让用户看清依据
+    const rows = picked.map(f => M(f).family + "　" + (M(f).subfamily || "?")
+      + "　字重 " + (M(f).wght || "?") + "　字形 " + (M(f).glyphs || "?"));
+    const okGo = await dialog({
+      title: "确认组合这 " + picked.length + " 份？",
+      msg: rows.join("\n") + "\n\n校验通过：族名一致、upem 一致、字形数相近、覆盖率相当。",
+      okText: "组合"
+    });
+    if (!okGo) return;
+  }
+
+  busy = true;
+  if (gb) gb.disabled = true;
+  try {
+    const out = String(await ksuExec(
+      `sh ${MODDIR}/fontctl.sh group ${mode} ${ids.join(" ")}`) || "").trim();
+    if (/^\s*ERROR/.test(out)) {
+      showToast(String(out).replace(/^\s*ERROR:?/, "").trim());
+      return;
+    }
+    // 可能有"跳过 xx：原因"的行，一并说清楚
+    const lines = out.split("\n").filter(Boolean);
+    const head = lines.find(l => l.indexOf("OK:") === 0) || lines[0] || "完成";
+    const skips = lines.filter(l => l.indexOf("跳过") === 0);
+    showToast(head.replace(/^OK:/, "") + (skips.length ? ("（跳过 " + skips.length + " 份：" + skips[0] + "）") : ""));
+    selected.clear();
+    if (typeof refreshAll === "function") await refreshAll();
+  } catch (e) {
+    showToast("操作失败：" + errText(e));
+  } finally {
+    busy = false;
+    if (gb) gb.disabled = false;
+    updateBatchBtn();
+  }
 }
 
 function setCardBusy(card, on) {
@@ -7843,10 +8145,16 @@ function famKeyFromName(buf) {
   }
   const name = typo || fam;
   if (!name) return "";
-  const ascii = name.replace(/[^A-Za-z0-9_.-]/g, "");
-  if (ascii.length >= 2) return ascii.slice(0, 40).toLowerCase();
-  let h = 0;                                          // 纯中文族名：退化成哈希（同族算出来一样）
+  let h = 0;                                          // 整串名字的哈希
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  const ascii = name.replace(/[^A-Za-z0-9_.-]/g, "");
+  // ★ 2026-10-21 修：原来只取 ASCII 部分，"XXX 合成" 和 "XXX" 会被归一成同一个键
+  //   → 合成字体被判成基座的同族（真机复现：卡片"同族 2 个字重"）。
+  //   现在名字里只要含非 ASCII，就把整串哈希一起带上，二者必然不同。
+  if (ascii.length >= 2) {
+    const hasWide = /[^\x00-\x7F]/.test(name);
+    return (ascii.slice(0, 36) + (hasWide ? ("_" + h.toString(36)) : "")).toLowerCase();
+  }
   return "h" + h.toString(36);
 }
 
@@ -8063,6 +8371,7 @@ async function probeFont(path) {
   meta.t_gvar = tables["gvar"] ? 1 : 0;
   if (tables["COLR"] || tables["CBDT"] || tables["sbix"]) meta.color = 1;
   if (tables["maxp"]) meta.glyphs = u16(await readHex(path, tables["maxp"].off + 4, 2), 0);
+  if (tables["head"]) meta.upem = u16(await readHex(path, tables["head"].off + 18, 2), 0);
   if (tables["OS/2"]) meta.wght = u16(await readHex(path, tables["OS/2"].off + 4, 2), 0);
   if (tables["name"]) {
     // 族键：多字重配对的分组依据（同一族的 Regular/Bold/Light 会算出同一个值）
@@ -8072,8 +8381,12 @@ async function probeFont(path) {
       if (k) meta.fam = k;
       // 族名原文（排查"同族"时最直接的一条：合成字体必须带后缀）
       try {
-        const famText = nameTextOf(nb, 1);
-        if (famText) meta.family = famText.slice(0, 40).replace(/[ \t]+/g, " ");
+        // 族名原文：优先 typographic family(16)，退回 family(1)
+        const famText = (nameTextOf(nb, 16) || nameTextOf(nb, 1) || "").trim();
+        if (famText) meta.family = famText.slice(0, 60).replace(/[ \t]+/g, " ");
+        // 子族名（Regular / Bold / Light …）：字组校验要用它判断"确实是不同字重"
+        const subText = (nameTextOf(nb, 17) || nameTextOf(nb, 2) || "").trim();
+        if (subText) meta.subfamily = subText.slice(0, 40).replace(/[ \t]+/g, " ");
       } catch (e) {}
     } catch (e) { /* 没有族名也不影响导入 */ }
   }
