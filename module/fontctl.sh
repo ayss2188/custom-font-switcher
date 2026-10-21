@@ -63,7 +63,11 @@ meta_get() { sed -n "s/^$2=//p" "$LIB/$1.meta" 2>/dev/null | tail -n1 | tr -d '\
 meta_set() {
   local tmp="$LIB/$1.meta.tmp.$$"
   case "$2" in ""|*[!A-Za-z0-9_]*) return 1 ;; esac
-  case "$3" in *[!A-Za-z0-9_.-]*) return 1 ;; esac
+  # ★ 2026-10-21 修：原来值只允许 [A-Za-z0-9_.-]，于是 family="方正悠黑 Google VF"
+  #   这种带空格/中文的值**静默写不进去** → 字组校验读不到族名原文，等于没校验。
+  #   现在只挡控制字符（换行/制表等）和超长，其余可打印字符都允许。
+  case "$3" in *[![:print:]]*) return 1 ;; esac
+  [ ${#3} -le 120 ] || return 1
   { grep -v "^$2=" "$LIB/$1.meta" 2>/dev/null; echo "$2=$3"; } > "$tmp" && mv -f "$tmp" "$LIB/$1.meta"
 }
 meta_compact() { tr '\n' ',' 2>/dev/null < "$LIB/$1.meta" | sed 's/,$//'; }
@@ -625,19 +629,80 @@ slot_weight() {
 
 # 把某个字体所在族的全部字重读进来（一次 apply 最多两次：组合模式下中英各一次）
 # 结果放 GRP_PAIRS="id:字重 id:字重 …"，没配对时只有它自己
+#
+# ★ 2026-10-21（作者要求：怕混挂不同字体导致缺字 / 开不了机）：
+#   同族配对**默认关闭**（cfg pair_family=0）。每份字体各自独立，不自动组族。
+#   想用的人需要在设置里显式打开；打开后依然逐份校验，只配"确实像同一套字体的不同字重"：
+#     · 轮廓可用（outline=1）
+#     · 同一 upem
+#     · 语种覆盖类别一致（cjk / latin 标记相同）
+#     · 字形数量相差不超过 20%（防止把"只有拉丁的粗体"配进中文族）
+#   任何一条不满足 → 跳过该成员并写日志，绝不硬配。
 grp_load() {
   local leader="$1" fam m id fam2 w
   local pairs="$leader:$(meta_get "$leader" wght)"
   GRP_PAIRS="$pairs"
+  # ★ 显式字重组优先：用户手动组合过（meta 里有 group=）就按它分组，
+  #   不再看 pair_family 开关（手动组合 = 明确表示"这些确实是一套"）。
+  _grp=$(meta_get "$leader" group)
+  if [ -n "$_grp" ]; then
+    for id in $(lib_font_ids); do
+      [ "$id" = "$leader" ] && continue
+      [ -f "$LIB/$id.meta" ] || continue
+      [ "$(meta_get "$id" group)" = "$_grp" ] || continue
+      pairs="$pairs $id:$(meta_get "$id" wght)"
+    done
+    GRP_PAIRS="$pairs"
+    return 0
+  fi
+  # 没有手动组合 → 才看开关（默认 0 关闭）
+  [ "$(cfg_get pair_family 0)" = 1 ] || return 0
+  if [ "$(meta_get "$leader" merged)" = 1 ] || [ "$(meta_get "$leader" merge)" = 1 ]; then
+    return 0                                   # 族长是合成字体：不配对
+  fi
   fam=$(meta_get "$leader" fam)
   case "$fam" in ""|none) return 0 ;; esac
+  # 族长的"基准"属性
+  local l_upem l_cjk l_lat l_gly
+  l_upem=$(meta_get "$leader" upem); [ -n "$l_upem" ] || l_upem="?"
+  l_cjk=$(meta_get "$leader" cjk)
+  l_lat=$(meta_get "$leader" latin)
+  l_gly=$(meta_get "$leader" glyphs)
   # 统一用 lib_font_ids（各项目这个函数各写各的规则：
   #   主项目只认 f*，子项目还认 builtin_*）—— 这样函数体在两边一模一样。
   for id in $(lib_font_ids); do
     [ "$id" = "$leader" ] && continue
     [ -f "$LIB/$id.meta" ] || continue
+    # 合成产物永远不参与"按族名自动配对"（它的族名可能和基座相同，串了就出事）
+    if [ "$(meta_get "$id" merged)" = 1 ] || [ "$(meta_get "$id" merge)" = 1 ]; then
+      continue
+    fi
     fam2=$(meta_get "$id" fam)
     [ "$fam2" = "$fam" ] || continue
+    # ---- 成员校验（任何一条不过就跳过）----
+    if [ "$(meta_get "$id" outline)" != 1 ]; then
+      echo "同族配对跳过 $id：字体没有可用轮廓" >> "$LIB/.pair.log" 2>/dev/null
+      continue
+    fi
+    _up=$(meta_get "$id" upem)
+    if [ -n "$l_upem" ] && [ "$l_upem" != "?" ] && [ -n "$_up" ] && [ "$_up" != "$l_upem" ]; then
+      echo "同族配对跳过 $id：upem $_up ≠ $l_upem" >> "$LIB/.pair.log" 2>/dev/null
+      continue
+    fi
+    if [ "$(meta_get "$id" cjk)" != "$l_cjk" ] || [ "$(meta_get "$id" latin)" != "$l_lat" ]; then
+      echo "同族配对跳过 $id：语种覆盖类别不同（cjk/latin）" >> "$LIB/.pair.log" 2>/dev/null
+      continue
+    fi
+    case "$l_gly" in ''|*[!0-9]*) ;; *)
+      _g2=$(meta_get "$id" glyphs)
+      case "$_g2" in ''|*[!0-9]*) ;; *)
+        _lo=$(( l_gly * 80 / 100 )); _hi=$(( l_gly * 120 / 100 ))
+        if [ "$_g2" -lt "$_lo" ] || [ "$_g2" -gt "$_hi" ]; then
+          echo "同族配对跳过 $id：字形数 $_g2 与族长 $l_gly 相差过大" >> "$LIB/.pair.log" 2>/dev/null
+          continue
+        fi ;;
+      esac ;;
+    esac
     w=$(meta_get "$id" wght)
     pairs="$pairs $id:$w"
   done
@@ -1505,6 +1570,115 @@ case "${1:-}" in
       >> "$LIB/.panic.log" 2>/dev/null
     echo "OK:$_n"
     ;;
+  group)
+    # ---------------------------------------------------------------------
+    # 字重组：用户手动把「同一套字体的多个字重」合成一张卡片
+    #   group create <id1> <id2> ...   → 校验后写 group=<组长id>
+    #   group remove <组长id>          → 解散
+    #   group list                     → 列出
+    # 只有通过校验的成员才会入组；组长 = 第一个参数。
+    # ---------------------------------------------------------------------
+    _gact="${2:-}"
+    case "$_gact" in
+      create)
+        shift 2
+        _first=""
+        for _id in "$@"; do [ -f "$LIB/$_id.meta" ] && { _first="$_id"; break; }; done
+        [ -n "$_first" ] || { echo "ERROR:选中的字体都不存在"; exit 1; }
+        _fam=$(meta_get "$_first" fam)
+        case "$_fam" in ""|none) echo "ERROR:这份字体没有可用的族名，无法组合"; exit 1 ;; esac
+        _famtext=$(meta_get "$_first" family)
+        _sub_first=$(meta_get "$_first" subfamily)
+        _r_latin=$(meta_get "$_first" rate_latin); _r_cjk=$(meta_get "$_first" rate_cjk)
+        _r_punct=$(meta_get "$_first" rate_punct); _r_sym=$(meta_get "$_first" rate_symbols)
+        _upem=$(meta_get "$_first" upem); _cjk=$(meta_get "$_first" cjk)
+        _lat=$(meta_get "$_first" latin); _gly=$(meta_get "$_first" glyphs)
+        _ok=0
+        for _id in "$@"; do
+          [ -f "$LIB/$_id.meta" ] || { printf '跳过 %s：不存在\n' "$_id"; continue; }
+          [ "$(meta_get "$_id" outline)" = 1 ] || { printf '跳过 %s：没有可用轮廓\n' "$_id"; continue; }
+          if [ "$(meta_get "$_id" merged)" = 1 ] || [ "$(meta_get "$_id" merge)" = 1 ]; then
+            printf '跳过 %s：这是合成字体，不能组字重组\n' "$_id"; continue
+          fi
+          _m_fam=$(meta_get "$_id" fam)
+          [ -n "$_m_fam" ] || { printf '跳过 %s：档案里没有族名（请刷新页面后重新导入该字体）\n' "$_id"; continue; }
+          [ "$_m_fam" = "$_fam" ] || { printf '跳过 %s：族名不同（%s ≠ %s）\n' "$_id" "$_m_fam" "$_fam"; continue; }
+          # 族名的**原文**也必须一致（归一化键可能撞车：pico 和 Roboto 被误判同族过）
+          if [ -n "$_famtext" ]; then
+            _f2=$(meta_get "$_id" family)
+            if [ -n "$_f2" ] && [ "$_f2" != "$_famtext" ]; then
+              printf '跳过 %s：族名原文不同（%s ≠ %s）\n' "$_id" "$_f2" "$_famtext"; continue
+            fi
+          fi
+          _u2=$(meta_get "$_id" upem)
+          if [ -n "$_upem" ] && [ -n "$_u2" ] && [ "$_upem" != "$_u2" ]; then
+            printf '跳过 %s：upem %s ≠ %s\n' "$_id" "$_u2" "$_upem"; continue
+          fi
+          if [ "$(meta_get "$_id" cjk)" != "$_cjk" ] || [ "$(meta_get "$_id" latin)" != "$_lat" ]; then
+            printf '跳过 %s：语种覆盖类别不同\n' "$_id"; continue
+          fi
+          # upem 必须相同（同一套字体不会换 upem）
+          _u_l=$(meta_get "$_first" upem); _u_m=$(meta_get "$_id" upem)
+          if [ -n "$_u_l" ] && [ -n "$_u_m" ] && [ "$_u_l" != "$_u_m" ]; then
+            printf '跳过 %s：upem %s ≠ %s\n' "$_id" "$_u_m" "$_u_l"; continue
+          fi
+          # 覆盖率逐项相差 ≤ 2
+          _bad=0
+          for _k in rate_latin rate_cjk rate_punct rate_symbols; do
+            _a=$(meta_get "$_first" "$_k"); _b=$(meta_get "$_id" "$_k")
+            case "$_a" in ''|*[!0-9]*) continue ;; esac
+            case "$_b" in ''|*[!0-9]*) continue ;; esac
+            _d=$(( _a - _b )); [ "$_d" -lt 0 ] && _d=$(( -_d ))
+            [ "$_d" -gt 2 ] && { _bad=1; printf '跳过 %s：覆盖率差异过大（%s %s%% vs %s%%）\n' "$_id" "$_k" "$_b" "$_a"; break; }
+          done
+          [ "$_bad" = 0 ] || continue
+          # 子族名必须不同（同一字重的两份拷贝不该组成一组）
+          _s1=$(meta_get "$_first" subfamily); _s2=$(meta_get "$_id" subfamily)
+          if [ -n "$_s1" ] && [ -n "$_s2" ] && [ "$_s1" = "$_s2" ]; then
+            printf '跳过 %s：字重标识与组长相同（%s）\n' "$_id" "$_s2"; continue
+          fi
+          case "$_gly:$(meta_get "$_id" glyphs)" in
+            *[!0-9]*|*:|"") ;;
+            *)
+              _lo=$(( _gly * 97 / 100 )); _hi=$(( _gly * 103 / 100 ))
+              _g2=$(meta_get "$_id" glyphs)
+              if [ "$_g2" -lt "$_lo" ] || [ "$_g2" -gt "$_hi" ]; then
+                printf '跳过 %s：字形数 %s 与组长 %s 相差过大\n' "$_id" "$_g2" "$_gly"; continue
+              fi ;;
+          esac
+          setmeta_pair "$_id" group "$_first" 2>/dev/null || \
+            { sed -i "/^group=/d" "$LIB/$_id.meta" 2>/dev/null; printf 'group=%s\n' "$_first" >> "$LIB/$_id.meta"; }
+          _ok=$(( _ok + 1 ))
+        done
+        [ "$_ok" -ge 2 ] || { echo "ERROR:至少需要 2 份可组合的字体（现在 $_ok 份）"; exit 1; }
+        echo "OK:已组合 $_ok 份字体为一个字重组（组长 $_first）"
+        ;;
+      remove)
+        _g="${3:-}"
+        [ -n "$_g" ] || { echo "ERROR:缺少组长 id"; exit 1; }
+        _n=0
+        for _f in "$LIB"/f*.meta "$LIB"/builtin_*.meta; do
+          [ -e "$_f" ] || continue
+          if [ "$(sed -n 's/^group=//p' "$_f" 2>/dev/null | tail -n1 | tr -d '\r')" = "$_g" ]; then
+            sed -i '/^group=/d' "$_f" 2>/dev/null
+            _n=$(( _n + 1 ))
+          fi
+        done
+        echo "OK:已解散字重组（$_n 份）"
+        ;;
+      list)
+        for _f in "$LIB"/f*.meta; do
+          [ -e "$_f" ] || continue
+          _g=$(sed -n 's/^group=//p' "$_f" 2>/dev/null | tail -n1 | tr -d '\r')
+          [ -n "$_g" ] || continue
+          _i=${_f##*/}; _i=${_i%.meta}
+          printf '%s %s\n' "$_g" "$_i"
+        done
+        ;;
+      *) echo "用法: group create|remove|list"; exit 2 ;;
+    esac
+    ;;
+
   verify)
     payload_verify "$MODDIR"
     ;;
