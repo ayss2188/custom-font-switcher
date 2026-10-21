@@ -417,7 +417,21 @@ if mk_need font; then
     sh "$MODPATH/fdata.sh" 2>/dev/null | sed 's/^/  /' >/dev/null 2>&1
     ui_print "- 已为已有字体补充结构档案"
   fi
-  if [ -f "$MODPATH/metaprobe.sh" ]; then
+  
+# ---------------------------------------------------------------------------
+# 清理旧版"GMS 缓存桥接"的残留（1.4.6 及更早已移除该功能）
+#   老用户可能还挂着 44MB 的克隆、留着启用标志 → 升级时顺手清干净
+# ---------------------------------------------------------------------------
+if [ -f "$LIB/gms_cache.sh" ]; then
+  LIB="$LIB" sh "$LIB/gms_cache.sh" off >/dev/null 2>&1 || true
+fi
+rm -f "$LIB"/.clone.*.ttf "$LIB/.gms_cache_on" 2>/dev/null
+for _p in com.google.android.gms com.google.android.gsf com.android.vending; do
+  umount -l "/data/data/$_p/files/fonts/opentype" 2>/dev/null || true
+done
+rm -f "$LIB"/.gms_bridge.list "$LIB"/.gms_bridge.log 2>/dev/null
+
+if [ -f "$MODPATH/metaprobe.sh" ]; then
     LIB="$LIB" sh "$MODPATH/metaprobe.sh" 2>/dev/null | sed 's/^/  /' >/dev/null 2>&1
     ui_print "- 已写入字体合成所需信息（轮廓类型 / 可变轴）"
   fi
