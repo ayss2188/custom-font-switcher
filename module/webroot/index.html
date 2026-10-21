@@ -1087,7 +1087,7 @@ try {
   <div class="divider"></div>
 
 
-  <div class="section-title fade"><span>谷歌字体兼容</span></div>
+  <div class="section-title fade"><span>Google 应用改用系统字体</span></div>
   <div class="status-box fade">
     <div class="status-row">
       <span class="label">当前状态</span>
@@ -1099,29 +1099,11 @@ try {
     <button class="g-btn" id="enableBtn" onclick="googleAction('enable')">开启兼容</button>
     <button class="g-btn" id="restoreBtn" onclick="googleAction('restore')">关闭兼容</button>
   </div>
-  <div class="g-hint fade"><b>这条路 = 停用 GMS 的字体提供器</b>：Chrome / Gemini 这类会用上你的字体。
-    <b>副作用</b>：凡是要向 GMS 要字体的 Google 应用可能排版异常。<br>
-    <b>Play 商店两种方式都改不了</b>（它自带 ProductSans），别为它纠结。</div>
+  <div class="g-hint fade"><b>作用</b>：停用 GMS 的字体提供器，让 Chrome 这类应用改用系统字体（= 你的字体）。<br>
+    <b>副作用</b>：个别 Google 应用（如 Gemini）可能拿不到字体而<b>闪退或排版异常</b> ——
+    遇到就把这里关掉、重启。<br>
+    <b>Play 商店改不了</b>：它的字体打包在自己的 APK 里（ProductSans），这是机制限制。</div>
 
-  <div class="status-box fade" style="margin-top:10px">
-    <div class="status-row">
-      <span class="label">Google 应用（桥接）</span>
-      <span class="value off" id="gmsBridgeLabel">正在读取…</span>
-    </div>
-  </div>
-  <div class="btn-row fade">
-    <button class="g-btn" onclick="refreshGoogleBridge()">重新检测</button>
-    <button class="g-btn" onclick="gmsBridgeAction(true)">开启桥接</button>
-    <button class="g-btn" onclick="gmsBridgeAction(false)">关闭桥接</button>
-  </div>
-  <div class="g-hint fade"><b>这条路 = 不停用字体提供器</b>：把 GMS 缓存里的字体文件换成
-    「字形是你的、身份自称 Google Sans」的克隆，专门给<b>真的会去 GMS 要字体</b>的应用用
-    （Chrome / Gemini / 部分 Google 应用）。<br>
-    <b>管不到 Play 商店</b>：商店的拉丁字形来自它 APK 自带的 ProductSans，替换系统文件改不了它
-    （中文那部分走系统字体，本来就跟着你换了）。<br>
-    <b>两个别同时开</b>：上面那个停用提供器后，桥接就没了意义。换路之前先把另一条关掉再重启。</div>
-
-  <div class="divider"></div>
 
   <div class="section-title fade"><span>模块更新（GitHub）</span></div>
   <!-- ★ 2026-10-16 作者要求：把"要挂梯子"提前说清楚，别等用户点了失败才猜 -->
@@ -3106,6 +3088,133 @@ const MG = { base: null, picks: {}, busy: false };
 
 
 // 结构自检：不通过就别写盘（这几条正好覆盖我之前踩过的两个致命 bug）
+
+/* ===========================================================================
+   ★ 2026-10-21：gvar 自检 —— 让"引擎拒绝加载"变成可读的理由
+   ---------------------------------------------------------------------------
+   为什么需要：搬运素材的变化数据后，OTS（Chromium 的字体校验器）可能拒载，
+   但我们只能看到"加载失败"，看不到"哪条不合规"。用户截图也只能给一句话。
+   这里把 gvar 里最容易被 OTS 挑出来的几项挨个查一遍，输出人能看懂的理由。
+   =========================================================================== */
+function gvarAudit(buf) {
+  const out = [];
+  const push = (m) => { if (out.length < 8) out.push(m); };
+  try {
+    const t = ttfTables(buf);
+    if (!t.gvar) return out;                     // 静态字体没有 gvar，正常
+    if (!t.maxp) { push("缺 maxp 表"); return out; }
+    const numGlyphs = TTF.u16(buf, t.maxp.off + 4);
+    const o = t.gvar.off;
+    const axisCount = TTF.u16(buf, o + 4);
+    const sharedCount = TTF.u16(buf, o + 6);
+    const sharedOff = TTF.u32(buf, o + 8);
+    const glyphCount = TTF.u16(buf, o + 12);
+    const flags = TTF.u16(buf, o + 14);
+    const dataOff = TTF.u32(buf, o + 16);
+    const longOff = (flags & 1) === 1;
+
+    if (glyphCount !== numGlyphs) {
+      push("gvar 字形数 " + glyphCount + " ≠ maxp 的 " + numGlyphs);
+    }
+    const offsN = glyphCount + 1;
+    const offBytes = offsN * (longOff ? 4 : 2);
+    if (20 + offBytes > t.gvar.len) {
+      push("gvar 偏移数组超出表长");
+      return out;
+    }
+    const dataStart = o + dataOff;
+    const dataLen = t.gvar.len - dataOff;
+    if (dataLen < 0) { push("gvar 数据偏移超出表长"); return out; }
+
+    // 偏移单调 + 末项等于数据长度
+    let prev = -1, badMono = -1, last = 0;
+    for (let g = 0; g <= glyphCount; g++) {
+      const v = longOff ? TTF.u32(buf, o + 20 + g * 4) : TTF.u16(buf, o + 20 + g * 2) * 2;
+      if (v < prev && badMono < 0) badMono = g;
+      prev = v; last = v;
+    }
+    if (badMono >= 0) push("第 " + badMono + " 个字形的偏移比前一个小（不单调）");
+    if (last !== dataLen) push("偏移末项 " + last + " ≠ 数据长度 " + dataLen);
+
+    // 共享 tuple 表范围
+    if (sharedCount > 0) {
+      const need = sharedCount * axisCount * 2;
+      if (sharedOff + need > t.gvar.len) push("共享 tuple 表越界");
+    }
+
+    // 逐字形检查 tuple 头
+    let checked = 0, badPeak = -1, badInter = -1, badShared = -1, badSize = -1;
+    for (let g = 0; g < glyphCount && checked < 4000; g++) {
+      const s0 = longOff ? TTF.u32(buf, o + 20 + g * 4) : TTF.u16(buf, o + 20 + g * 2) * 2;
+      const s1 = longOff ? TTF.u32(buf, o + 20 + (g + 1) * 4) : TTF.u16(buf, o + 20 + (g + 1) * 2) * 2;
+      if (s1 <= s0) continue;                       // 没有变化数据
+      checked++;
+      const base = dataStart + s0;
+      const endPos = dataStart + s1;
+      if (endPos > buf.length) { push("第 " + g + " 个字形的数据超出文件末尾（截断）"); continue; }
+      const tvCount = TTF.u16(buf, base);
+      const cnt = tvCount & 0x0fff;
+      const hasSharedPts = (tvCount & 0x8000) !== 0;
+      const hdrDataOff = TTF.u16(buf, base + 2);
+      let pos = base + 4;
+      let sizes = 0;
+      for (let i = 0; i < cnt; i++) {
+        if (pos + 4 > endPos) { push("第 " + g + " 个字形 tuple 头被截断"); break; }
+        const size = TTF.u16(buf, pos);
+        const idx = TTF.u16(buf, pos + 2);
+        pos += 4;
+        sizes += size;
+        const embedded = (idx & 0x8000) !== 0;
+        const hasInter = (idx & 0x4000) !== 0;
+        if (!embedded) {
+          const si = idx & 0x0fff;
+          if (si >= sharedCount && badShared < 0) badShared = g;
+        }
+        let peak = null, st = null, en = null;
+        if (embedded) {
+          if (pos + axisCount * 2 > endPos) { push("第 " + g + " 个字形峰值被截断"); break; }
+          peak = [];
+          for (let a = 0; a < axisCount; a++) peak.push(TTF.i16(buf, pos + a * 2) / 16384);
+          pos += axisCount * 2;
+        }
+        if (hasInter) {
+          if (pos + axisCount * 4 > endPos) { push("第 " + g + " 个字形中间区间被截断"); break; }
+          st = []; en = [];
+          for (let a = 0; a < axisCount; a++) st.push(TTF.i16(buf, pos + a * 2) / 16384);
+          pos += axisCount * 2;
+          for (let a = 0; a < axisCount; a++) en.push(TTF.i16(buf, pos + a * 2) / 16384);
+          pos += axisCount * 2;
+        }
+        // 峰值不能全 0
+        if (peak && badPeak < 0) {
+          let allZero = true;
+          for (const v of peak) if (Math.abs(v) > 1e-4) { allZero = false; break; }
+          if (allZero) badPeak = g;
+        }
+        // 区间必须 start ≤ peak ≤ end（逐轴，按符号）
+        if (peak && st && en && badInter < 0) {
+          for (let a = 0; a < axisCount; a++) {
+            const p = peak[a] || 0;
+            if (st[a] > p + 1e-4 || p > en[a] + 1e-4) { badInter = g; break; }
+          }
+        }
+      }
+      // 数据块累计不能超过该字形的数据长度
+      const avail = (endPos - base) - hdrDataOff;
+      if (sizes > avail && badSize < 0) badSize = g;
+      if (hasSharedPts) { /* 共享点号在第 i 个 tuple 之前，长度由 dataOffset 表达，跳过细查 */ }
+    }
+    if (badPeak >= 0) push("第 " + badPeak + " 个字形有峰值全为 0 的 tuple（规范里非法，引擎会拒）");
+    if (badInter >= 0) push("第 " + badInter + " 个字形的中间区间不满足 start ≤ peak ≤ end");
+    if (badShared >= 0) push("第 " + badShared + " 个字形引用了不存在的共享 tuple");
+    if (badSize >= 0) push("第 " + badSize + " 个字形的增量数据长度与声明不符");
+    if (!out.length && checked) out.push("");
+  } catch (e) {
+    push("自检异常：" + ((e && e.message) || e));
+  }
+  return out.filter(Boolean);
+}
+
 function mgValidate(bytes) {
   try {
     if (!bytes || bytes.length < 1024) return "文件太小";
@@ -3580,6 +3689,9 @@ async function mgSheet() {
       setProg(50, "结构自检中…");
       // ★ 搬素材的可变数据：让新增的拉丁/数字也随字重变化
       MG_VARUSE = [];
+      // 留一份"搬运前"的快照：万一把变化数据搬进去之后引擎不认，
+      // 还能退回这个版本继续合成（字形照样合并，只是新字形不随字重变）
+      const preVar = r.bytes;
       try {
         const bt2 = ttfTables(baseBuf);
         if (bt2.gvar && bt2.fvar) {
@@ -3613,6 +3725,10 @@ async function mgSheet() {
         mgLog("gvar", "FAIL " + ((e && e.message) || e));
       }
 
+      // ★ gvar 自检：把"引擎为什么拒"变成可读理由（用户截图就能看到）
+      const gvIssues = gvarAudit(r.bytes);
+      mgLog("gvar-audit", gvIssues.length ? gvIssues.join(" / ") : "OK");
+
       const bad = mgValidate(r.bytes);
       mgLog("validate", bad || "OK");
       if (bad) throw new Error("自检未通过（" + bad + "），已放弃写入");
@@ -3625,7 +3741,30 @@ async function mgSheet() {
         mgLog("fontface", "OK");
       } catch (e) {
         mgLog("fontface", "FAIL " + ((e && e.message) || e));
-        throw new Error("字体无法被渲染引擎加载，已放弃写入（避免卡开机）");
+        // ★ 2026-10-21：搬运变化数据后引擎不认 → 退回"不搬"的版本再试一次。
+        //   真机反馈过：「搬运 159 个字形」之后报"字体无法被渲染引擎加载"，用户什么都拿不到。
+        //   退回版通常能正常加载，代价只是新增字形不随字重变化。
+        let rescued = false;
+        if (preVar && preVar !== r.bytes) {
+          try {
+            const f2 = new FontFace("mgprobe2-" + Date.now(), preVar.buffer.slice(
+              preVar.byteOffset, preVar.byteOffset + preVar.byteLength));
+            await f2.load();
+            r.bytes = preVar;
+            MG_VARUSE.push("已退回：变化数据未被引擎接受，新字形不随字重变化");
+            mgLog("fontface", "退回不搬变化数据的版本 → OK");
+            rescued = true;
+          } catch (e2) {
+            mgLog("fontface", "退回版也失败：" + ((e2 && e2.message) || e2));
+          }
+        }
+        if (!rescued) {
+          const _why = (typeof gvIssues !== "undefined" && gvIssues.length)
+            ? ("自检发现：" + gvIssues.slice(0, 3).join("；"))
+            : "自检没发现问题（可能是引擎对某些结构更严格）";
+          throw new Error("字体无法被渲染引擎加载，已放弃写入（避免卡开机）"
+            + "。" + _why + "。把这份字体和素材名发我，我针对性排查");
+        }
       }
       setProg(52, "合并完成：追加 " + r.added + " 个字形，正在写回设备…");
       // 字体库只认 $LIB/f<数字>.ttf，所以合成结果必须用这个命名，否则列表里看不到
