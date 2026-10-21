@@ -329,7 +329,9 @@ payload_mount() {
       /data/customizecenter/*|/data/format_unclear/*|/data/oplus/uxres/*|\
       /data/bbkcore/*|/data/skin/fonts/*|/data/theme/fonts/*|/data/themes/*)
         if datafont_swap "$src" "$dst"; then
-          ok=$((ok+1)); continue
+          ok=$((ok+1))
+      # ★ 记下挂载目标：热重启看门狗要靠这份清单卸掉自己的挂载
+      printf '%s\n' "$dst" >> "$LIB/.mounted" 2>/dev/null; continue
         fi
         ;;
     esac
