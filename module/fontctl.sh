@@ -252,9 +252,12 @@ has_outline() {
       return 1
     fi
     if [ -n "$mv" ]; then
-      # 只有 outline_sz 没有 outline 的老格式，才补一次大小校验兜底
-      sz=$(stat -c '%s' "$f" 2>/dev/null)
-      if [ -n "$sz" ] && [ "$sz" = "$mv" ]; then return 1; fi
+      # ★ 2026-10-21 修：这里原来在"大小相同"时直接 return 1（判成没有轮廓），
+      #   一旦 meta 里的 outline 被别的写入方改成了非 0/1 的值（例如 "glyf"），
+      #   就会把**好字体**判成空壳，应用时报「没有任何字形轮廓」。
+      #   现在大小一致就让它落下去真读一遍表目录（权威结论），
+      #   读到的结果会重新写回 outline=0/1。
+      :
     fi
   fi
   # ---- 下面才是"真去读一遍"：新字体第一次、或文件被换过时才会走到 ----
@@ -1412,6 +1415,25 @@ case "${1:-}" in
         echo "keep_lang=$(cfg_get keep_lang 0) keep_special=$(cfg_get keep_special 0) mount_mode=$(mount_mode) ttc_replace=$(ttc_effective) theme_fonts=$(cfg_get theme_fonts 0) keep_lockscreen=$(cfg_get keep_lockscreen 0) "
         ;;
     esac
+    ;;
+  panic)
+    # ---------------------------------------------------------------------
+    # 紧急回滚（由 service.sh 的热重启看门狗调用）
+    #   只做三件事：卸掉本模块挂载 / 置回「无字体」/ 记账。不做切换那套重活。
+    # ---------------------------------------------------------------------
+    _n=0
+    if [ -s "$LIB/.mounted" ]; then
+      while IFS= read -r _d; do
+        [ -n "$_d" ] || continue
+        umount -l "$_d" 2>/dev/null || umount "$_d" 2>/dev/null
+        _n=$(( _n + 1 ))
+      done < "$LIB/.mounted"
+    fi
+    : > "$LIB/.mounted" 2>/dev/null
+    printf 'none\n' > "$LIB/active_font" 2>/dev/null
+    printf 'time=%s umount=%s via=panic\n' "$(date '+%m-%d %H:%M:%S' 2>/dev/null)" "$_n" \
+      >> "$LIB/.panic.log" 2>/dev/null
+    echo "OK:$_n"
     ;;
   verify)
     payload_verify "$MODDIR"
