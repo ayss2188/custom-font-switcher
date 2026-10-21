@@ -17,6 +17,24 @@ _LIB="${LIB:-/data/adb/custom_font_lib}"
 if [ ! -s "$_LIB/scanned/slots.meta" ]; then
   sh "$MODDIR/fontctl.sh" rescan >/dev/null 2>&1
 fi
+
+# 自愈：字体结构字段（轮廓类型 / 是否可变 / 轴范围）缺失 → 开机补一次。
+#   这些字段是"能不能合成"的判断依据，刷入时本该写好；
+#   万一没写成（老版本装的字体、档案被清过），在这里补，比等界面探测早得多，
+#   界面打开时就是现成的。只检查、只补缺的，正常开机零开销。
+if [ -f "$MODDIR/metaprobe.sh" ]; then
+  _miss=0
+  for _f in "$_LIB"/f*.ttf; do
+    [ -e "$_f" ] || continue
+    _i=${_f##*/}; _i=${_i%.ttf}
+    if [ -f "$_LIB/$_i.meta" ]; then
+      grep -q '^outline_type=' "$_LIB/$_i.meta" 2>/dev/null || { _miss=1; break; }
+    else
+      _miss=1; break
+    fi
+  done
+  [ "$_miss" = 1 ] && LIB="$_LIB" sh "$MODDIR/metaprobe.sh" >/dev/null 2>&1
+fi
 [ -f "$MODDIR/common.sh" ] && . "$MODDIR/common.sh"
 
 # 等开机完成，最多等 10 分钟（避免极端情况下这个循环永远挂着，心跳也就永远不写）
@@ -107,11 +125,24 @@ if [ -f "$LIB/.gms_journal.conf" ] && [ -f "$MODDIR/google_font.sh" ]; then
   command -v renice >/dev/null 2>&1 && renice 10 $$ >/dev/null 2>&1
   [ -x /system/bin/ionice ] && /system/bin/ionice -c2 -n7 $$ >/dev/null 2>&1
   if command -v timeout >/dev/null 2>&1; then
-    timeout 90 sh "$MODDIR/google_font.sh" reconcile
-    [ -f "$MODDIR/gms_cache.sh" ] && timeout 90 sh "$MODDIR/gms_cache.sh" on >/dev/null 2>&1
-     >/dev/null 2>&1
+    timeout 90 sh "$MODDIR/google_font.sh" reconcile >/dev/null 2>&1
   else
     sh "$MODDIR/google_font.sh" reconcile >/dev/null 2>&1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 商店缓存桥接（与"停用提供器"是两条独立的路）
+#   ★ 2026-10-21 修：这段原来被裹在 [ -f "$LIB/.gms_journal.conf" ] 里，
+#     而那个账本只有"停用提供器"才写 → 只开桥接的用户开机永远不挂（真机实测）。
+#     现在只看自己的启用标志 $LIB/.gms_cache_on。
+# ---------------------------------------------------------------------------
+if [ -f "$LIB/.gms_cache_on" ] && [ -f "$MODDIR/gms_cache.sh" ]; then
+  beat service "商店字体桥接：按账本重挂"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 120 sh "$MODDIR/gms_cache.sh" on >/dev/null 2>&1
+  else
+    sh "$MODDIR/gms_cache.sh" on >/dev/null 2>&1
   fi
 fi
 
@@ -198,3 +229,78 @@ sh "$MODDIR/fontctl.sh" relink >/dev/null 2>&1
 MISSED=0
 [ -f "$MODDIR/mount_missed" ] && MISSED=1
 beat service "finish active=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/active_font") missed=$MISSED"
+
+# ---------------------------------------------------------------------------
+# 热重启看门狗（2026-10-21，安全版）
+#
+#   为什么要它：换了字体但 framework 加载不了 → system_server 崩 → 热重启 → 再来一遍。
+#              热重启**不会重跑开机脚本**，所以"等 boot_completed 超时"的救援等不到机会。
+#
+#   安全设计（防止自己变成新的死循环）：
+#     · 最多 90 轮（约 15 分钟）→ 自己退出，不常驻
+#     · 锁文件保证单实例；$LIB/.no_watchdog 存在则完全不跑
+#     · 系统稳定 12 轮（约 3 分钟）→ 清零计数并退出
+#     · killall system_server 全程**只执行一次**（标记文件守护）
+#     · 循环里每条命令都 `|| true`，出错就安静退出，不自我重启
+# ---------------------------------------------------------------------------
+_wd_start() {
+  [ -f "$_LIB/.no_watchdog" ] && return 0
+  [ -s "$_LIB/active_font" ] || return 0
+  [ "$(cat "$_LIB/active_font" 2>/dev/null)" = "none" ] && return 0
+  [ -f "$MODDIR/fontctl.sh" ] || return 0
+  # 单实例
+  mkdir "$_LIB/.wd.lock" 2>/dev/null || return 0
+  (
+    _HB="$_LIB/.hotboot"
+    _cnt=$(cat "$_HB" 2>/dev/null || echo 0)
+    case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
+    # 已经反复失败过：这次开机不再尝试，让开机救援接手
+    [ "$_cnt" -ge 6 ] && { rmdir "$_LIB/.wd.lock" 2>/dev/null; exit 0; }
+
+    _last=$(pidof system_server 2>/dev/null || true)
+    _stable=0
+    _round=0
+    while [ "$_round" -lt 90 ]; do
+      _round=$(( _round + 1 ))
+      sleep 10 2>/dev/null || break
+      [ -f "$_LIB/.no_watchdog" ] && break
+      _now=$(pidof system_server 2>/dev/null || true)
+      if [ -n "$_now" ] && [ -n "$_last" ] && [ "$_now" != "$_last" ]; then
+        _cnt=$(( _cnt + 1 ))
+        echo "$_cnt" > "$_HB" 2>/dev/null || true
+        printf 'time=%s hotboot=%s pid=%s\n' \
+          "$(date '+%m-%d %H:%M:%S' 2>/dev/null)" "$_cnt" "$_now" \
+          >> "$_LIB/.panic.log" 2>/dev/null || true
+        if [ "$_cnt" -ge 2 ]; then
+          if [ -f "$_LIB/.wd_dry" ]; then
+            # 干跑：只记日志，什么都不做（上真机先这样验一轮）
+            printf 'dry would-panic hotboot=%s\n' "$_cnt" >> "$_LIB/.panic.log" 2>/dev/null || true
+          else
+            sh "$MODDIR/fontctl.sh" panic >/dev/null 2>&1 && _pan=1 || _pan=0
+            # 只有真的卸掉了挂载，才允许让 system_server 重启一次
+            if [ "$_pan" = 1 ] && [ "$_cnt" -lt 4 ] && [ ! -f "$_LIB/.reboot_fired" ]; then
+              : > "$_LIB/.reboot_fired" 2>/dev/null || true
+              killall system_server 2>/dev/null || true
+            fi
+          fi
+        fi
+        _last=$_now
+        _stable=0
+        # 已经回滚过就别再折腾：直接退出
+        [ "$_cnt" -ge 2 ] && break
+      fi
+      if [ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ]; then
+        _stable=$(( _stable + 1 ))
+        if [ "$_stable" -ge 12 ]; then
+          echo 0 > "$_HB" 2>/dev/null || true
+          break
+        fi
+      fi
+    done
+    rmdir "$_LIB/.wd.lock" 2>/dev/null || true
+  ) >/dev/null 2>&1 &          # ★ 必须重定向：否则子 shell 持有父进程的 stdout，
+                                #   脚本"看起来"不结束（真机上会让开机阶段像卡住）
+}
+
+_wd_start
+
