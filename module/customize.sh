@@ -198,7 +198,7 @@ fi
 [ -n "$LAST" ] || LAST=none
 
 for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh gms_cache.sh nameclone.sh action.sh \
-         diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
+         metaprobe.sh fdata.sh diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
   chmod 755 "$MODPATH/$f" 2>/dev/null
 done
 rm -f "$MODPATH/customize.sh.bak" 2>/dev/null
@@ -326,21 +326,80 @@ ui_print "- 完成"
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# 扫描缓存：1.4.5 强制重扫一次（之后不再随版本重扫）
+# 扫描印记：只在"需要重扫"时才扫（作者 2026-10-21 定的规则）
 #
-#   为什么：老版本扫出来的 device.list 缺了后来新增的目录和规则。
-#   为什么只做一次：扫描是安装/开机链路上最慢的一步，永久目录就是为了省它。
-#   以后只有"改了扫描逻辑"的版本才需要重扫 —— 那时把下面的 ID 改一下即可。
+#   模块自带 scanmarks.conf（要求版本表）：
+#       slot=1406     ← 槽位扫描逻辑最后在 1.4.6 变过
+#       font=1406     ← 字体结构扫描逻辑最后在 1.4.6 变过
+#   设备上存 $LIB/.scanmarks（已扫到什么版本）：
+#       slot=1406
+#       font=1406
+#
+#   安装时逐个比：
+#       设备记录 <  要求版本 → 扫（他是从更早的版本升上来的，没扫过新内容）
+#       设备记录 == 要求版本 → 也扫（同版本覆盖安装也重扫，方便开发者自测）
+#       设备记录 >  要求版本 → 不扫（之前已经扫过了）
+#   扫完之后设备记录写成**当前模块版本**，于是后续版本自然"比要求高"，不再重扫。
+#
+#   槽位和字体分开记：只改字体相关逻辑时，槽位不用重扫，省时间。
 # ---------------------------------------------------------------------------
-# 兜底：确保 LIB 有值（没定义时绝不能对空路径做 rm）
 LIB="${LIB:-/data/adb/custom_font_lib}"
-FORCE_SCAN_ID="2026-10-21-first-refresh"
-if [ -d "$LIB/scanned" ] && [ ! -f "$LIB/scanned/.force_$FORCE_SCAN_ID" ]; then
+MARKS="$LIB/.scanmarks"
+MCUR=$(sed -n 's/^versionCode=//p' "$MODPATH/module.prop" 2>/dev/null | head -1 | tr -d '\r')
+case "$MCUR" in ''|*[!0-9]*) MCUR=0 ;; esac
+
+mk_req() {   # mk_req <key> → 要求版本（没配置就输出空）
+  [ -f "$MODPATH/scanmarks.conf" ] || return 1
+  sed -n "s/^$1=//p" "$MODPATH/scanmarks.conf" 2>/dev/null | head -1 | tr -d '\r'
+}
+
+mk_cur() {   # mk_cur <key> → 设备已扫到的版本
+  [ -f "$MARKS" ] || return 1
+  sed -n "s/^$1=//p" "$MARKS" 2>/dev/null | head -1 | tr -d '\r'
+}
+
+mk_need() {  # mk_need <key> → 返回 0 表示需要扫
+  _req=$(mk_req "$1")
+  case "$_req" in ''|*[!0-9]*) return 1 ;; esac     # 没要求 → 不扫
+  _cur=$(mk_cur "$1")
+  case "$_cur" in '') return 0 ;; esac              # 没记录 → 扫
+  case "$_cur" in *[!0-9]*) return 0 ;; esac        # 记录坏了 → 扫
+  [ "$_cur" -le "$_req" ] && return 0                # 低于或等于要求 → 扫
+  return 1
+}
+
+mk_set() {   # mk_set <key> <value>
+  mkdir -p "$LIB" 2>/dev/null
+  [ -f "$MARKS" ] || : > "$MARKS" 2>/dev/null
+  grep -v "^$1=" "$MARKS" > "$MARKS.tmp" 2>/dev/null
+  echo "$1=$2" >> "$MARKS.tmp"
+  mv -f "$MARKS.tmp" "$MARKS" 2>/dev/null
+}
+
+# 手动强制重扫：碰一下这个文件，下次安装全部重扫
+if [ -f "$LIB/.force_rescan" ]; then
+  rm -f "$MARKS" 2>/dev/null
+  rm -f "$LIB/.force_rescan" 2>/dev/null
+  ui_print "- 检测到强制重扫标记，本次全部重扫"
+fi
+
+
+# ---------------------------------------------------------------------------
+# 槽位扫描（贵，只在槽位逻辑变过时扫）
+# ---------------------------------------------------------------------------
+if mk_need slot; then
+  # 清掉可能过期的原始清单，让 rescan 真正重扫
   rm -f "$LIB/scanned/device.list" "$LIB/scanned/slots.list" "$LIB/scanned/slots.meta" \
         "$LIB/scanned/skip.list" "$LIB/scanned/ttc.list" "$LIB/scanned/env.list" \
         "$LIB/scanned/.schema" 2>/dev/null
-  : > "$LIB/scanned/.force_$FORCE_SCAN_ID" 2>/dev/null
-  ui_print "- 已清空旧的字体扫描缓存（本版强制重扫一次）"
+  if [ -f "$MODPATH/fontctl.sh" ]; then
+    sh "$MODPATH/fontctl.sh" rescan >/dev/null 2>&1 && {
+      mk_set slot "$MCUR"
+      ui_print "- 已重建字体槽位清单（版本印记 slot=$MCUR）"
+    }
+  fi
+else
+  ui_print "- 槽位清单已是最新（无需重扫）"
 fi
 
 
@@ -348,14 +407,23 @@ fi
 # 清空缓存后立刻重建（否则界面「槽位总数 / 机型清单 / 本机扫描」会显示为空）
 #   这一次扫描就发生在安装时，开机和应用路径上仍然是读缓存，速度不受影响。
 # ---------------------------------------------------------------------------
-if [ -f "$MODPATH/fontctl.sh" ]; then
-  sh "$MODPATH/fontctl.sh" rescan >/dev/null 2>&1 && \
-    ui_print "- 已重建字体槽位清单"
-fi
-
-if [ -f "$MODPATH/fdata.sh" ]; then
-  sh "$MODPATH/fdata.sh" 2>/dev/null | sed 's/^/  /' >/dev/null 2>&1
-  ui_print "- 已为已有字体补充结构档案"
+# ---------------------------------------------------------------------------
+# 字体结构扫描（只扫字体库，比槽位快；同样只在"需要"时扫）
+#   fdata.sh    → 每份字体的结构清单 .fdata
+#   metaprobe.sh→ 写进 .meta：轮廓类型 / 是否可变 / 字重轴范围 / 轴标签
+# ---------------------------------------------------------------------------
+if mk_need font; then
+  if [ -f "$MODPATH/fdata.sh" ]; then
+    sh "$MODPATH/fdata.sh" 2>/dev/null | sed 's/^/  /' >/dev/null 2>&1
+    ui_print "- 已为已有字体补充结构档案"
+  fi
+  if [ -f "$MODPATH/metaprobe.sh" ]; then
+    LIB="$LIB" sh "$MODPATH/metaprobe.sh" 2>/dev/null | sed 's/^/  /' >/dev/null 2>&1
+    ui_print "- 已写入字体合成所需信息（轮廓类型 / 可变轴）"
+  fi
+  mk_set font "$MCUR"
+else
+  ui_print "- 字体档案已是最新（无需重扫）"
 fi
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
