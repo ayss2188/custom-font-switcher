@@ -544,9 +544,19 @@ make_plan() {
   # 极端保护：字体完全没有中文字形 → 中文槽位一个都不动
   # （否则整个界面会变方块，用户连 WebUI 都看不清、没法换回来）。正常字体不会命中。
   CJK_GUARD=0
-  if [ -f "$LIB/$sel.meta" ] && \
-     [ "$(sed -n 's/^cjk=//p' "$LIB/$sel.meta" 2>/dev/null | tail -n1 | tr -d '\r\n')" = 0 ]; then
-    CJK_GUARD=1
+  if [ -f "$LIB/$sel.meta" ]; then
+    _cjk_flag=$(sed -n 's/^cjk=//p' "$LIB/$sel.meta" 2>/dev/null | tail -n1 | tr -d '\r\n')
+    _cjk_rate=$(sed -n 's/^rate_cjk=//p' "$LIB/$sel.meta" 2>/dev/null | tail -n1 | tr -d '\r\n')
+    case "$_cjk_rate" in ''|*[!0-9]*) _cjk_rate="" ;; esac
+    if [ "$_cjk_flag" = 0 ]; then
+      CJK_GUARD=1
+    elif [ -n "$_cjk_rate" ] && [ "$_cjk_rate" -lt 98 ]; then
+      # ★ 2026-10-21：中文字形覆盖率不足 98% 时**不动中文槽位**。
+      #   原来只要求 cjk=1（≥90%），剩下那几个百分点到了某些 App 里就是「口口口」方块
+      #   （真机反馈：Play 商店中文出现方块）。宁可少换几个槽位，也不能让系统里出现方块。
+      CJK_GUARD=1
+      SCOPE_NOTE="中文字形覆盖率 ${_cjk_rate}% < 98%，中文槽位保持原厂（避免方块）"
+    fi
   fi
   export CJK_GUARD
   if [ "$scope" = combo ]; then
@@ -780,6 +790,56 @@ prune_wrapped_ttc() {
   return 0
 }
 
+
+# ---------------------------------------------------------------------------
+# ★ 2026-10-21：TTC 产物结构校验
+#   为什么：合集的每个 face 都要能被应用按 index 取到。生成器出过"文件大小够、
+#   但某个 face 的偏移/表目录不合法"的情况 —— 应用一读就崩（真机表现为
+#   Google 系应用打开即闪退，普通应用却正常）。
+#   这里做最低限度的硬校验：ttcf 魔数、face 数、每个 face 的偏移与 sfntVersion。
+#   **校验不过就跳过该槽位**（保留原厂合集），宁可少换也不让应用崩。
+# ---------------------------------------------------------------------------
+_ttc_u32() {   # _ttc_u32 <file> <offset> → 十进制
+  od -An -tu1 -j "$2" -N 4 "$1" 2>/dev/null | tr -s ' \n' ' ' | sed 's/^ //;s/ $//' |
+  awk '{ if (NF >= 4) printf "%.0f", (($1*256+$2)*256+$3)*256+$4; else print "" }'
+}
+
+_ttc_hex() {   # _ttc_hex <file> <offset> → 8 位十六进制（比十进制魔数不容易算错）
+  od -An -tu1 -j "$2" -N 4 "$1" 2>/dev/null | tr -s ' \n' ' ' | sed 's/^ //;s/ $//' |
+  awk '{ if (NF >= 4) printf "%02x%02x%02x%02x", $1, $2, $3, $4; else print "" }'
+}
+
+ttc_verify() {   # ttc_verify <file> <expected_faces>
+  local f="$1" want="$2" magic cnt sz i off ver bad=0
+  [ -s "$f" ] || return 1
+  sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  [ -n "$sz" ] || return 1
+  magic=$(_ttc_hex "$f" 0)
+  # "ttcf" = 0x74746366
+  [ "$magic" = "74746366" ] || return 1
+  cnt=$(_ttc_u32 "$f" 8)
+  case "$cnt" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$cnt" -ge 1 ] || return 1
+  # face 数量必须与原厂一致（少一个都说明生成不完整）
+  if [ -n "$want" ] && [ "$want" -gt 0 ] 2>/dev/null && [ "$cnt" -ne "$want" ]; then
+    echo "faces=$cnt≠原厂$want"
+    return 1
+  fi
+  i=0
+  while [ "$i" -lt "$cnt" ]; do
+    off=$(_ttc_u32 "$f" $(( 12 + i * 4 )))
+    case "$off" in ''|*[!0-9]*) bad=1; break ;; esac
+    # 偏移必须落在文件内、且留够 12 字节表头
+    if [ "$off" -lt 12 ] || [ $(( off + 12 )) -gt "$sz" ]; then bad=1; break; fi
+    ver=$(_ttc_hex "$f" "$off")
+    # 00010000（TrueType）/ 4f54544f（OTTO）/ 74727565（true）
+    case "$ver" in 00010000|4f54544f|74727565) ;; *) bad=1; break ;; esac
+    i=$(( i + 1 ))
+  done
+  [ "$bad" = 1 ] && { echo "face$i 偏移或版本非法"; return 1; }
+  return 0
+}
+
 do_apply() {
   local sel scope plan role rel id src dest stage mode COUNT=0 fail=0 wid
   GRP_LAST=""; GRP_PAIRS=""     # 多字重配对的缓存（见 grp_load）
@@ -984,6 +1044,16 @@ do_apply() {
             #   用户看到的是"刷了不生效、切回无字体、一直转圈"。
             #   这里加一条与实现无关的硬底线：产物至少要有 1KB（真正的合集都是 MB 级），
             #   不够就是坏的 —— **删掉它**，让下次重新合成，而不是一直带着这个坏文件跑。
+            # ★ 结构校验：不合格就删产物并跳过（避免应用按坏 face 渲染而崩溃）
+            if [ -n "$cand" ] && [ -s "$cand" ]; then
+              if ! _tv=$(ttc_verify "$cand" "$nf"); then
+                printf '%s %s faces=%s replace=%s via=ttcbad detail=产物结构不合格（%s），已删除并跳过\n' \
+                  "$id" "$rel" "$nf" "$(printf '%s' "$cn" | tr ' ' ',')" "${_tv:-unknown}" \
+                  >> "$LIB/ttc.log" 2>/dev/null
+                rm -f "$cand" 2>/dev/null
+                cand=""
+              fi
+            fi
             if [ -n "$cand" ]; then
               _csz=$(wc -c < "$cand" 2>/dev/null | tr -d ' ')
               if ! isnum "$_csz" || [ "$_csz" -lt 1024 ] 2>/dev/null; then
