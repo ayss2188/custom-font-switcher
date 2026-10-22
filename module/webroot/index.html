@@ -26,6 +26,20 @@
     --danger: #ef4444;
     color-scheme: dark;
   }
+
+  /* ===== 动效设计令牌（统一缓动/时长，避免各处手感不一致）===== */
+  :root {
+    --ease-out: cubic-bezier(.22, 1, .28, 1);        /* 收尾慢、最自然 */
+    --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+    --ease-emphasis: cubic-bezier(.2, .9, .22, 1.02);/* 略带回弹，用于面板 */
+    --ease-out-back: cubic-bezier(.24, 1.12, .28, 1);/* 更强的回弹，用于小元素 */
+    --dur-fast: .14s;
+    --dur: .22s;
+    --dur-slow: .34s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root { --dur-fast: 1ms; --dur: 1ms; --dur-slow: 1ms; }
+  }
   :root[data-theme="light"] {
     --pending-blue: #2f6fe0;
     --ok: #16a34a;
@@ -927,6 +941,160 @@ body { min-height: 100%; }
   .lib-box{transition:grid-template-rows .26s cubic-bezier(.3,.9,.3,1)}
 }
 
+
+  /* ===== 手感动效（2026-10-22）===== */
+  /* 卡片：进入错峰 + 按压回弹。只动 transform/opacity，不触发重排 */
+  .option, .card, .font-card, .sw-card, .rep-card {
+    transition: transform var(--dur-fast) var(--ease-out),
+                box-shadow var(--dur) var(--ease-out),
+                border-color var(--dur) var(--ease-out),
+                background-color var(--dur-fast) var(--ease-out);
+    will-change: transform;
+    backface-visibility: hidden;
+  }
+  .option:active, .card:active, .font-card:active, .sw-card:active { transform: scale(.972); }
+  /* 入场错峰：前 12 张依次延迟 18ms，再多就不加了（避免久等） */
+  .option.enter, .card.enter, .font-card.enter { animation: cardEnter var(--dur-slow) var(--ease-out) both; }
+  .option.enter:nth-child(2), .card.enter:nth-child(2), .font-card.enter:nth-child(2) { animation-delay: .018s; }
+  .option.enter:nth-child(3), .card.enter:nth-child(3), .font-card.enter:nth-child(3) { animation-delay: .036s; }
+  .option.enter:nth-child(4), .card.enter:nth-child(4), .font-card.enter:nth-child(4) { animation-delay: .054s; }
+  .option.enter:nth-child(5), .card.enter:nth-child(5), .font-card.enter:nth-child(5) { animation-delay: .072s; }
+  .option.enter:nth-child(6), .card.enter:nth-child(6), .font-card.enter:nth-child(6) { animation-delay: .09s; }
+  .option.enter:nth-child(7), .card.enter:nth-child(7), .font-card.enter:nth-child(7) { animation-delay: .108s; }
+  .option.enter:nth-child(n+8), .card.enter:nth-child(n+8) { animation-delay: .12s; }
+  @keyframes cardEnter {
+    from { opacity: 0; transform: translateY(10px) scale(.99); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* 按钮：按下轻微内缩 + 松开回弹（比"瞬间变色"柔和得多） */
+  .g-btn, button.g-btn, .btn {
+    transition: transform var(--dur-fast) var(--ease-out),
+                filter var(--dur-fast) var(--ease-out),
+                background-color var(--dur-fast) var(--ease-out);
+  }
+  .g-btn:active, button.g-btn:active { transform: scale(.972); filter: brightness(.96); }
+
+  /* 面板/浮层：用 transition（可被打断），不再用一次性 keyframes */
+  .fontact { transition: transform var(--dur-slow) var(--ease-emphasis); }
+  .fontact-mask, .modal-mask { transition: opacity var(--dur) var(--ease-out); }
+  .mg-mask, .mg-sheet { transition: opacity var(--dur) var(--ease-out), transform var(--dur-slow) var(--ease-emphasis); }
+
+  /* 长区块：屏幕外的先不渲染，滚动/长报告更跟手 */
+  .rep-body, .log-content, #fontList, .sec-body {
+    content-visibility: auto;
+    contain-intrinsic-size: 600px;
+  }
+
+  /* 减少动态：动画与过渡全部降级 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+    }
+  }
+
+
+  /* ===== Toast：平滑上滑淡入（用 transition，不用 keyframes，
+     避免把 translate(-50%) 的居中覆盖掉 —— 之前正是这里出过偏移 bug）===== */
+  .toast { transition: opacity .2s var(--ease-out), transform .26s var(--ease-out); }
+  .toast.show { transform: translate(-50%, 0); }
+
+  /* ===== 首屏骨架屏：数据回来前显示呼吸占位 ===== */
+  .skel-row {
+    height: 64px; margin: 10px 0; border-radius: 16px;
+    background: linear-gradient(100deg,
+      rgba(128,128,128,.10) 30%, rgba(128,128,128,.20) 50%, rgba(128,128,128,.10) 70%);
+    background-size: 240% 100%;
+    animation: skelShine 1.1s linear infinite;
+  }
+  @keyframes skelShine { from { background-position: 120% 0 } to { background-position: -60% 0 } }
+  @media (prefers-reduced-motion: reduce) { .skel-row { animation: none } }
+
+  /* ===== 列表容器：内容变化时高度平滑（减少"跳一下"的感觉）===== */
+  #fontList { transition: height var(--dur) var(--ease-out); }
+
+/* === UI 过渡（2026-10-23）=== */
+/* 统一节奏：进场用 ease-out，出场更快；只动 transform/opacity，不触发布局 */
+:root {
+  --mt-fast: .16s;
+  --mt-base: .24s;
+  --mt-slow: .34s;
+}
+
+/* ① 面板 / 弹窗：淡入 + 轻微上浮 */
+.modal-mask, .pv-mask, .fontact-mask, .po-mask, .ab-mask, .mg-mask, .mg-pick-mask, .imp-menu-mask {
+  opacity: 0;
+  transition: opacity var(--mt-base) var(--ease-out, ease-out);
+}
+.modal-mask.show, .pv-mask.show, .fontact-mask.show, .po-mask.show,
+.ab-mask.show, .mg-mask.show, .mg-pick-mask.show, .imp-menu-mask.show {
+  opacity: 1;
+}
+.modal-mask.cfs-closing, .pv-mask.cfs-closing, .fontact-mask.cfs-closing {
+  opacity: 0;
+  transition-duration: var(--mt-fast);
+}
+
+.pv-sheet, .fontact, .modal-mask > .modal, .po-sheet, .ab-sheet {
+  transform: translateY(10px) scale(.994);
+  transition: transform var(--mt-base) var(--ease-emphasis, cubic-bezier(.2,.9,.2,1));
+}
+.modal-mask.show > .modal,
+.pv-mask.show .pv-sheet,
+.fontact-mask.show .fontact,
+.po-mask.show .po-sheet,
+.ab-mask.show .ab-sheet {
+  transform: none;
+}
+
+/* ② 卡片：按压回弹 + 选中微光 */
+#fontList .option {
+  transition: transform var(--mt-fast) var(--ease-out, ease-out),
+              box-shadow var(--mt-base) var(--ease-out, ease-out),
+              border-color var(--mt-fast) linear;
+  will-change: transform;
+}
+#fontList .option:active { transform: scale(.985); }
+#fontList .option.is-active {
+  box-shadow: 0 0 0 1px var(--accent, #5b5bd6) inset,
+              0 6px 18px -12px var(--accent, #5b5bd6);
+}
+#fontList .option.is-pending {
+  box-shadow: 0 0 0 1px var(--pending-blue, #2f6bff) inset,
+              0 6px 18px -12px var(--pending-blue, #2f6bff);
+}
+
+/* ③ 报告视图切换：交叉淡入 */
+#reportMask .rep-view, #reportMask textarea.report {
+  transition: opacity var(--mt-base) var(--ease-out, ease-out);
+}
+
+/* ④ 骨架 → 内容 */
+#fontList .skel { transition: opacity var(--mt-base) linear; }
+#fontList .option { animation: cfsCardIn var(--mt-slow) var(--ease-out, ease-out) both; }
+@keyframes cfsCardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ⑤ 按钮按下统一微缩（原来只有部分按钮有） */
+.g-btn:active, .pv-close:active { transform: scale(.972); }
+.g-btn, .pv-close { transition: transform var(--mt-fast) var(--ease-out, ease-out), background-color var(--mt-fast) linear; }
+
+/* ⑥ 偏好减少动效：一律关掉 */
+@media (prefers-reduced-motion: reduce) {
+  .modal-mask, .pv-mask, .fontact-mask, .po-mask, .ab-mask, .mg-mask, .mg-pick-mask, .imp-menu-mask,
+  .pv-sheet, .fontact, .modal-mask > .modal, .po-sheet, .ab-sheet,
+  #fontList .option, .g-btn, .pv-close, #reportMask .rep-view, #reportMask textarea.report {
+    transition: none !important;
+    animation: none !important;
+    transform: none !important;
+  }
+}
+/* 上传中的视觉态（可点击，点击会提示"正在上传"） */
+#reportServerBtn.cfs-busy { opacity: .75; }
+/* ★ 2026-10-23：弹窗必须盖在报告面板之上（原来同为 95，容易点不到/看不见） */
+#modalMask { z-index: 1200; }
+#modalMask textarea, #modalMask input { font-size: 15px; }
 </style>
 <script>
 try {
@@ -1036,7 +1204,8 @@ try {
     </span>
   </div>
   <div class="lib-box" id="libBox">
-    <div class="lib-wrap"><div class="lib-inner"><div id="fontList"></div></div></div>
+    <div class="lib-wrap"><div class="lib-inner"><div id="fontList">
+      </div></div></div>
   </div>
   <button class="batch-btn" id="batchBtn" style="display:none" onclick="batchDelete()">删除选中 (0)</button>
       <button class="g-btn" id="groupBtn" onclick="groupAction()" style="display:none">组合为字重组</button>
@@ -1068,15 +1237,6 @@ try {
   <div class="switch-row fade" onclick="toggleSetting('keep_lockscreen')">
     <div><div class="t">保留锁屏时钟字体</div><div class="d">小米/红米/POCO 的锁屏时钟有<b>自己专用的一份字体</b>，默认会一起换成你的字体。<br><b>开</b>：那几份保留原样，你还能在系统里换锁屏时钟样式。<br><b>关</b>：连锁屏时钟也换成你的字体。<br>（其他品牌没有这种专用字体，开关无影响）</div></div>
     <div class="sw" id="sw_keep_lockscreen"></div>
-  </div>
-  <div class="switch-row fade" onclick="toggleSetting('pair_family')">
-    <div><div class="t">同族字重自动配对</div>
-      <div class="d"><b>关（默认）</b>：每份字体各自独立，互不影响。<br>
-      <b>开</b>：同一族的 Regular/Bold/Light 会按槽位需要的字重各就各位。<br>
-      ⚠ 开启前请确认「同族」的几份文件确实是<b>同一套字体的不同字重</b>；
-      混挂了不同字体可能出现缺字（方块）甚至开不了机。模块会做校验（轮廓 / upem / 语种 / 字形数），
-      不过还是会跳过可疑成员。</div></div>
-    <div class="sw" id="sw_pair_family"></div>
   </div>
 
   <div class="switch-row fade" onclick="toggleSetting('mount_mode')">
@@ -1258,7 +1418,7 @@ try {
     <!-- ★ 2026-10-16 作者要求：上传前先提醒要梯子（服务器在国外） -->
     <div class="g-hint vpn-tip" style="margin-bottom:10px">
       <b>上传前请先连 VPN</b> —— 报告是传到我自己的服务器（在国外），
-      不连 VPN 一般传不上去。连不上就点右边的「连接自检」，它会告诉你卡在哪一步。
+      不连 VPN 一般传不上去。连不上会直接提示你，也可以到最下面的「网络诊断」里看卡在哪一步。
     </div>
       <div class="g-hint" style="margin-bottom:12px">
         <b>先试「一键上报」</b> —— 两秒生成、点一下就发到我邮箱，不用你找文件。
@@ -1268,7 +1428,6 @@ try {
 
       <div class="btn-row">
         <button class="g-btn primary-blue" id="fbkQuickBtn" onclick="fbkQuickSend()">一键上报</button>
-      <button class="g-btn" id="fbkTestBtn" onclick="fbkSelfTest()">连接自检</button>
       </div>
       <div class="btn-row">
         <button class="g-btn" id="fbkExportBtn" onclick="fbkExportFile()">导出小报告</button>
@@ -1297,6 +1456,23 @@ try {
       <div class="btn-row">
         <button class="g-btn" onclick="closeFbk(); showReport()">查看 / 生成完整报告</button>
       </div>
+      <div class="divider"></div>
+
+      <!-- =================================================================
+           ④ 网络诊断（作者要求：单独放一块，不要和快速通道挤在一起）
+              · 连接自检：告诉你"传不上去"卡在【网络 / 口令 / 服务器】哪一步
+              · 上传前已经会自动检测；这里是"想手动确认"时用
+           ================================================================= -->
+      <div class="fbk-sec">④ 网络诊断</div>
+      <div class="g-hint" style="margin-bottom:10px">
+        上传前会自动检测能不能连上服务器；这里可以手动再测一次，
+        结果会写清是<b>网络不通</b>、<b>口令不对</b>还是<b>服务器异常</b>。
+      </div>
+      <div class="btn-row">
+        <button class="g-btn" id="fbkTestBtn" onclick="fbkSelfTest()">连接自检</button>
+      </div>
+      <div class="g-hint" id="fbkStatusNet" style="display:none"></div>
+
       <div class="g-hint" style="opacity:.75">
         生成完那个窗口底部会多出一个「上传给作者」————
         点它就能把报告当附件传上去。
@@ -1352,6 +1528,7 @@ try {
            为什么需要：上传走设备上的 curl，而服务器在境外 ——
            梯子没覆盖到那个域名时，现象就是"点了没反应 / 上传失败"，
            用户会以为是模块坏了（作者真机反馈过好几次）。 -->
+      
       <div class="btn-row">
         <button class="g-btn urgent" id="reportCancelBtn" onclick="cancelReport()" style="display:none">中止生成</button>
         <button class="g-btn" id="reportMoreBtn" onclick="reportMore()" style="display:none">更多</button>
@@ -1490,65 +1667,93 @@ async function fbkTestWorker() {
      ② GET /health        —— 纯连通性（不需要口令）
      ③ POST /report       —— 口令对不对 + R2 桶通不通（传一小段测试文本）
 */
+// ★ 2026-10-22 重写：连接自检不再用 shell 跑 curl。
+//   原来 `ksuExec("curl -m 25 …")` 是**同步**调用 —— KernelSU 的桥接会占住
+//   WebView 的 JS 线程，没梯子时界面整整冻住 25 秒，用户点什么都点不动。
+//   现在连通性用 fetch（异步 + 8 秒 abort），试传优先走 fbkSendViaFetch。
+let __selfTestCtl = null;
+
 async function fbkSelfTest() {
-  const say = document.getElementById("fbkStatus");
+  const say = document.getElementById("fbkStatusNet") || document.getElementById("fbkStatus");
   const put = (h) => { if (say) { say.style.display = ""; say.innerHTML = h; } };
   const esc2 = (s) => repEsc(String(s == null ? "" : s));
+  const btn = document.getElementById("fbkTestBtn");
   const out = [];
 
-  put("正在自检…");
-  out.push("① 配置：" + (WORKER_URL ? "地址有" : "★ 地址空") +
-           " / " + (WORKER_KEY ? "口令有（" + WORKER_KEY.length + " 字符）" : "★ 口令空"));
-  if (!WORKER_URL || !WORKER_KEY) {
-    put("自检结果：<br>" + out.map(esc2).join("<br>"));
+  // 再点一次 = 取消
+  if (__selfTestCtl) {
+    try { __selfTestCtl.abort(); } catch (e) {}
+    __selfTestCtl = null;
+    if (btn) btn.textContent = "连接自检";
+    put("自检已取消。");
     return;
   }
+  __selfTestCtl = new AbortController();
+  if (btn) btn.textContent = "取消自检";
 
-  // ② 有没有能用的 HTTP 命令（这一步决定后面走哪条路）
-  let tool = "";
   try {
-    const t = String(await ksuExec(
-      "if command -v curl >/dev/null 2>&1; then echo curl; " +
-      "elif toybox wget >/dev/null 2>&1; then echo toybox; else echo none; fi") || "").trim();
-    tool = t;
-    out.push("② HTTP 工具：" + (t === "curl" ? "curl ✓" : t === "toybox" ? "toybox wget ✓"
-             : "★ 都没有（没法上传，需要装 curl）"));
-  } catch (e) {
-    out.push("② HTTP 工具：★ 读不到：" + errText(e));
-  }
-
-  // ③ 连通性（走 shell，因为它过梯子）
-  try {
-    const r = String(await ksuExec(
-      "if command -v curl >/dev/null 2>&1; then " +
-      "curl -sS -m 25 " + WORKER_URL + "/health; " +
-      "else toybox wget -q -O - " + WORKER_URL + "/health; fi") || "");
-    if (/ok/i.test(r)) {
-      out.push("③ 连通性：✓ 通（服务器回 ok）");
-    } else {
-      out.push("③ 连通性：★ 回的不是 ok：" + r.slice(0, 60));
+    put("正在自检…（随时可以点「取消自检」）");
+    out.push("① 配置：" + (WORKER_URL ? "地址有" : "★ 地址空") +
+             " / " + (WORKER_KEY ? "口令有（" + WORKER_KEY.length + " 字符）" : "★ 口令空"));
+    if (!WORKER_URL || !WORKER_KEY) {
+      put("自检结果：<br>" + out.map(esc2).join("<br>"));
+      return;
     }
-  } catch (e) {
-    out.push("③ 连通性：★ 失败：" + errText(e));
-    put("自检结果：<br>" + out.map(esc2).join("<br>") +
-        "<br><br><b>走 shell 也连不上</b> —— 这次是真网络问题：" +
-        "确认梯子是【全局模式】，或者换成给「所有应用」代理。");
-    return;
-  }
 
-  // ④ 真传一小段
-  try {
-    const r = await fbkSendViaShell(
-      "连接自检 " + new Date().toISOString() + "\n（这份可以删）\n",
-      { "x-cfs-key": WORKER_KEY, "x-cfs-device": fbkHdr("自检", 20),
-        "x-cfs-ver": fbkHdr("v-selfcheck", 20), "x-cfs-note": fbkHdr("连接自检报文，可删", 60) });
-    out.push("④ 试传：✓ 成功（" + String(r.raw || "").trim().slice(0, 40) + "）");
-    put("自检结果：<br>" + out.map(esc2).join("<br>") +
-        "<br><br>✅ 全通 —— 可以点「一键上报」了。");
-  } catch (e) {
-    out.push("④ 试传：★ " + errText(e));
-    put("自检结果：<br>" + out.map(esc2).join("<br>") +
-        "<br><br>连通性没问题但传不进去 —— 把第 ④ 行发我。");
+    // ② 连通性：fetch + 8 秒超时（异步，界面不冻）
+    let reach = false;
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 8000);
+      __selfTestCtl.signal.addEventListener("abort", () => { try { ctl.abort(); } catch (e) {} });
+      let r = "";
+      try {
+        const resp = await fetch(WORKER_URL + "/health", { signal: ctl.signal, cache: "no-store" });
+        r = String(await resp.text() || "");
+        reach = resp.ok && /ok/i.test(r);
+        out.push("② 连通性：" + (reach ? "✓ 通（服务器回 ok）"
+          : "★ 不通（HTTP " + resp.status + "：" + r.slice(0, 40) + "）"));
+      } finally {
+        clearTimeout(t);
+      }
+    } catch (e) {
+      out.push("② 连通性：★ 失败（" + errText(e) + "）");
+    }
+
+    if (!reach) {
+      // 失败才去看 shell：这时只是"读一下有没有 curl"，很快，而且有意义
+      try {
+        const tool = String(await ksuExec(
+          "if command -v curl >/dev/null 2>&1; then echo curl; " +
+          "elif toybox wget >/dev/null 2>&1; then echo toybox; else echo none; fi") || "").trim();
+        out.push("③ 备用通道：" + (tool === "curl" ? "curl ✓（可退回 shell 上传）"
+          : tool === "toybox" ? "toybox wget ✓" : "★ 没有 curl/busybox"));
+      } catch (e) { out.push("③ 备用通道：读不到（" + errText(e) + "）"); }
+
+      put("自检结果：<br>" + out.map(esc2).join("<br>") +
+          "<br><br><b>连不上服务器</b> —— 服务器在境外，需要梯子。" +
+          "<br>· 确认梯子是<b>全局模式</b>，或给「所有应用」代理" +
+          "<br>· 也可以在浏览器里打开这个地址自测：" +
+          "<br><code>" + esc2(WORKER_URL) + "/health</code>");
+      return;
+    }
+
+    // ④ 真传一小段（走 fetch，异步）
+    try {
+      const r = await fbkSendViaFetch(
+        "连接自检 " + new Date().toISOString() + "\n（这份可以删）\n",
+        { "x-cfs-key": WORKER_KEY, "x-cfs-device": fbkHdr("自检", 20),
+          "x-cfs-ver": fbkHdr("v-selfcheck", 20), "x-cfs-note": fbkHdr("连接自检报文，可删", 60) });
+      out.push("④ 试传：✓ 成功（" + String(r.raw || "").trim().slice(0, 40) + "）");
+      put("自检结果：<br>" + out.map(esc2).join("<br>") + "<br><br>✅ 全通 —— 可以点「一键上报」了。");
+    } catch (e) {
+      out.push("④ 试传：★ " + errText(e));
+      put("自检结果：<br>" + out.map(esc2).join("<br>") +
+          "<br><br>连通性没问题但传不进去 —— 把第 ④ 行发我。");
+    }
+  } finally {
+    __selfTestCtl = null;
+    if (btn) btn.textContent = "连接自检";
   }
 }
 
@@ -1562,6 +1767,11 @@ let cbCounter = 0, busy = false, themePref = "auto", toastTimer = null, rebootin
 let fonts = [];            // [{id,name,size}]
 let activeId = "none", pendingId = "none";
 let manageMode = false;
+let __cardsAnimated = false;
+let __listSig = "";
+let __paintedFromCache = false;   // 本轮是否已经用缓存画过首屏        // 字体列表指纹：没变就不重建
+let __listManage = null;     // 上次渲染时的多选模式
+let __listGroup = "";        // 上次渲染时的字组展开状态     // 上次渲染时的多选模式   // 卡片入场动画只播一次（首屏 / 列表变化时）
 let showGroupMembers = "";     // 非空时：把该组长名下的字组成员也显示出来（临时展开）
 const selected = new Set();   // 字体库多选
 
@@ -1713,8 +1923,73 @@ function labelOf(id) {
      ② 补族键 / 渲染：各自保护，出错不影响状态显示（少个配对信息而已）
      ③ 重入保护：同一时间只跑一次，避免互相覆盖 */
 let refreshBusy = false;
+// 后台补齐 status 里较重的部分（槽位来源 SP/SP4、合集数 TT 等）
+// 单独跑的原因：这些要跑外部进程，放首屏会把界面拖住
+async function refreshFullStatus() {
+  try {
+    const full = String(await ksuExec(`sh ${MODDIR}/fontctl.sh status`) || "");
+    if (!/^A=/m.test(full)) return;       // 输出异常就别覆盖首屏那份
+    applyStatus(full);
+    renderStatusOnly();          // 只刷状态行，不重建列表（避免"又加载一次"）
+  } catch (e) { /* 失败保持首屏状态，不影响使用 */ }
+}
+
+// ===== 字体列表缓存（只为"重进 UI 秒出画面"，不是数据源）=====
+// 说明：缓存只用于首屏占位，真实数据随后覆盖；若指纹一致则完全不重建 DOM。
+const LIST_CACHE_KEY = "cf_list_cache_v2";
+const LIST_CACHE_TTL = 10 * 60 * 1000;     // 只是首屏加速，10 分钟后不再当真
+
+// ★ 2026-10-22 重要：缓存只在"模块版本一致"时可用。
+//   缓存存在管理器 App 的 localStorage 里，**卸载模块不会清它** ——
+//   以前重装后界面会先画出已经不存在的字体，点切换卡住、删除报 0 个。
+let __cacheUnverified = false;
+let __repUpResult = null;
+let __repUpShown = false;
+let __upWatchdog = null;    // 上传整体超时看门狗   // 结果弹窗是否已弹过（防止重复弹窗互相顶掉）     // 最近一次上传结果（用于弹窗反馈）
+let moduleVersion = "";      // 当前模块版本（用于让 localStorage 缓存失效）   // 当前列表是否来自缓存（还没被真实数据校准）
+
+function cacheSaveList(list) {
+  try {
+    localStorage.setItem(LIST_CACHE_KEY, JSON.stringify({
+      t: Date.now(),
+      ver: String(moduleVersion || ""),      // 模块版本变了 → 缓存作废
+      list: list
+    }));
+  } catch (e) { /* 隐私模式/配额满：忽略 */ }
+}
+
+function cacheLoadList() {
+  try {
+    const raw = localStorage.getItem(LIST_CACHE_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!o || !Array.isArray(o.list)) return null;
+    if (Date.now() - (o.t || 0) > LIST_CACHE_TTL) return null;
+    // 版本不一致（升级/降级/重装）→ 直接丢掉，绝不显示旧列表
+    if (String(o.ver || "") !== String(moduleVersion || "")) return null;
+    return o.list;
+  } catch (e) { return null; }
+}
+
+// 清掉缓存（卸载残留 / 数据对不上时用）
+function cacheClearList() {
+  try { localStorage.removeItem(LIST_CACHE_KEY); } catch (e) {}
+}
+
 async function refreshAll() {
   if (refreshBusy) return;          // ③ 已经在跑就别再发一遍
+  // ★ 2026-10-22：先用缓存秒画一次（只在第一次进入时用，之后 follow 真实数据）
+  if (!__paintedFromCache) {
+    __paintedFromCache = true;
+    try {
+      const cached = cacheLoadList();
+      if (cached && cached.length && !fonts.length) {
+        fonts = cached;
+        __cacheUnverified = true;     // 标为"未校验"：卡片操作先拦住
+        render();
+      }
+    } catch (e) { /* 缓存坏了就当没有 */ }
+  }
   refreshBusy = true;
   try {
     // ① 这一步是"能不能跟模块说上话"，失败才是真的读不到
@@ -1723,49 +1998,51 @@ async function refreshAll() {
     //   status 一旦慢/卡，字体库就永远空白、状态行也全是占位文字。
     //   现在两条**各自独立**：list 回来先把字体库画出来（用户能看见、能点），
     //   status 回来再填状态行。任一条失败只影响它自己那一块。
+    // ★ 2026-10-22（性能优化）：首屏只发一次 exec。
+    //   原来 list → 渲染 → status 三次往返（KernelSU 的 exec 是同步的，等于串行），
+    //   而且字体列表被解析了两遍。现在：
+    //     ① quick 一次拿「状态 + @@L@@ + 列表」
+    //     ② 解析一次 → 立刻渲染（用户马上看到字体库和状态行）
+    //     ③ 槽位来源统计（SP/SP4）这类要跑外部进程的，交给后台 refreshFullStatus()
     let listOut = "", st = "";
     try {
-      listOut = await ksuExec(`sh ${MODDIR}/fontctl.sh list`);
+      const _q = String(await ksuExec(`sh ${MODDIR}/fontctl.sh quick`) || "");
+      const _k = _q.indexOf("@@L@@");
+      if (_k >= 0) { st = _q.slice(0, _k); listOut = _q.slice(_k + 5); }
+      else { listOut = _q; st = ""; }        // 老版本没有 quick? 至少把列表用上
     } catch (e) {
-      listOut = "";
+      listOut = ""; st = "";
     }
+    const parseList = (raw) => String(raw || "").split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+      const p = l.split("|");
+      const id = p.shift();
+      const metaStr = p.pop();
+      const size = parseInt(p.pop(), 10) || 0;
+      const meta = {};
+      (metaStr || "").split(",").forEach(kv => { const q = kv.indexOf("="); if (q > 0) meta[kv.slice(0, q)] = kv.slice(q + 1); });
+      return {id, name: p.join("|") || id, size, meta};
+    });
     if (listOut) {
-      fonts = listOut.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-        const p = l.split("|");
-        const id = p.shift();
-        const metaStr = p.pop();
-        const size = parseInt(p.pop(), 10) || 0;
-        const meta = {};
-        (metaStr || "").split(",").forEach(kv => { const i = kv.indexOf("="); if (i > 0) meta[kv.slice(0, i)] = kv.slice(i + 1); });
-        return {id, name: p.join("|") || id, size, meta};
-      });
-      try { renderFonts(); } catch (e) { /* 渲染失败不影响后面 */ }
-    }
-    try {
-      st = await ksuExec(`sh ${MODDIR}/fontctl.sh status`);
-    } catch (e) {
-      st = "";
+      fonts = parseList(listOut);
+      __cacheUnverified = false;          // 真实数据到了，放开操作
+      try { cacheSaveList(fonts); } catch (e) {}
+      __cardsAnimated = false;            // 重新拉列表 → 允许播一次入场动画
+      try { renderFonts(); } catch (e) { /* 渲染失败不影响状态行 */ }
     }
     if (!st && !listOut) {
       setValue("activeLabel", "无法读取（请在支持WebUI的模块管理器中打开）");
       setValue("romLabel", "无法读取");
       return;
     }
-    fonts = listOut.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-      const p = l.split("|");
-      const id = p.shift();
-      const metaStr = p.pop();
-      const size = parseInt(p.pop(), 10) || 0;
-      const meta = {};
-      (metaStr || "").split(",").forEach(kv => { const i = kv.indexOf("="); if (i > 0) meta[kv.slice(0, i)] = kv.slice(i + 1); });
-      return {id, name: p.join("|") || id, size, meta};
-    });
-    applyStatus(st);
+    if (st) applyStatus(st);
 
     // ② 后面的都是"锦上添花"，出错不要动状态那几行
     // ★ 2026-10-17 提速：**不再 await** —— 补族键只是为了多字重配对，
     //   不影响界面显示。原来要等它跑完 refreshAll 才返回，字体多的时候
     //   用户就看到"点开卡几秒才出画面"。现在放后台跑，跑完再 render 一次。
+    // 首屏已经画完了 → 再去补"槽位来源"这类重活
+    try { refreshFullStatus(); } catch (e) {}
+
     try {
       backfillFam()
         .then(changed => { if (changed) render(); })
@@ -1843,6 +2120,11 @@ function applyStatus(st) {
       renderSelfCheck();
     }
     const g = k => (st.match(new RegExp("^" + k + "=(.*)$", "m")) || [])[1] || "";
+    // 记下模块版本：缓存要按版本作废（卸载重装/升级后不能拿旧列表当真的）
+    try {
+      const _v = g("V").trim();
+      if (_v) moduleVersion = _v;
+    } catch (e) {}
     activeId = g("A").trim() || "none";
     pendingId = g("P").trim() || activeId;
     const rom = g("R").trim();
@@ -1984,6 +2266,12 @@ function makeCard(id, name, metaText, f) {
   const card = document.createElement("div");
   card.className = "option";
   card.dataset.id = id;
+  // 入场错峰：只在需要时加类（否则每次重绘都重放动画）
+  if (!__cardsAnimated) {
+    card.classList.add("enter");
+    card.style.setProperty("--i", String(document.getElementById("fontList")
+      ? document.getElementById("fontList").children.length : 0));
+  }
 
   const info = document.createElement("div");
   info.className = "info";
@@ -2038,6 +2326,12 @@ function toggleLib(force) {
    现在点卡片只弹菜单，**真正的应用要再点一次** —— 误触不会再换字体。
    菜单从底部滑上来（手机上最自然），点遮罩 / 返回键 / 取消都能关。 */
 function showFontSheet(id, name, isNone) {
+  // ★ 2026-10-22：列表还没被真实数据校准（来自缓存）→ 不允许操作
+  if (typeof __cacheUnverified !== "undefined" && __cacheUnverified) {
+    showToast("正在校验字体列表，稍等一下…");
+    try { refreshAll(); } catch (e) {}
+    return;
+  }
   const old = document.getElementById("fontSheetMask");
   if (old) old.remove();
   const mask = document.createElement("div");
@@ -2156,6 +2450,44 @@ const pvFaces = new Map();
 
 // 把字体库里的文件临时搬进 webroot，fetch 成 ArrayBuffer 后立刻删掉。
 // FontFace 直接吃 ArrayBuffer，不用 base64（省内存也省时间）。
+// ---------------------------------------------------------------------------
+// ★ 2026-10-23：预览内存上限（作者字库里有 40MB 级字体，点几个就能把 WebView 挤爆）
+//   · pvBytes 记录当前被持有的字体字节总量
+//   · 超过 60MB 就按"最久未用"释放，先把 FontFace 从 document.fonts 里删掉
+//   · 关闭详情时主动释放当前这一份
+// ---------------------------------------------------------------------------
+const PV_MAX_BYTES = 60 * 1024 * 1024;
+
+function pvBytesNow() {
+  let n = 0;
+  pvFaces.forEach(v => { n += (v && v.buf && v.buf.byteLength) || 0; });
+  return n;
+}
+
+function pvRelease(id) {
+  const rec = pvFaces.get(id);
+  if (!rec) return;
+  try { if (rec.face && document.fonts) document.fonts.delete(rec.face); } catch (e) {}
+  rec.face = null;
+  rec.buf = null;
+  pvFaces.delete(id);
+}
+
+// 释放最久未用的，直到总量回到上限内（keepId 绝不释放）
+function pvEvictToFit(keepId) {
+  let guard = 0;
+  while (pvBytesNow() > PV_MAX_BYTES && pvFaces.size > 1 && guard++ < 20) {
+    let oldestId = null, oldestT = Infinity;
+    pvFaces.forEach((v, k) => {
+      if (k === keepId) return;
+      const t = (v && v.at) || 0;
+      if (t < oldestT) { oldestT = t; oldestId = k; }
+    });
+    if (!oldestId) break;
+    pvRelease(oldestId);
+  }
+}
+
 async function pvLoadFace(id) {
   if (pvFaces.has(id)) return pvFaces.get(id).face;
   // 先扫掉上次异常退出留下的临时字体（最多几十 MB，别攒着）
@@ -2182,7 +2514,8 @@ async function pvLoadFace(id) {
   }
   await face.load();
   document.fonts.add(face);
-  pvFaces.set(id, { face, buf });     // 字节一起留着：属性面板要拿它算覆盖率
+  pvFaces.set(id, { face, buf, at: Date.now() });   // 字节一起留着：属性面板要拿它算覆盖率
+  pvEvictToFit(id);                                  // 超过总量上限就释放最久未用的
   return face;
 }
 
@@ -7584,7 +7917,10 @@ async function showFontInfo(id, name) {
   closeBtn.className = "pv-close";
   closeBtn.textContent = "✕";
   closeBtn.setAttribute("aria-label", "关闭");
-  closeBtn.onclick = () => { mask.classList.remove("show"); setTimeout(() => mask.remove(), 200); };
+  closeBtn.onclick = () => {
+    try { pvRelease(id); } catch (e) {}          // 释放这份字体占的内存（40MB 级字体很占）
+    mask.classList.remove("show"); setTimeout(() => mask.remove(), 200);
+  };
   head.append(title, posterBtn, closeBtn);
 
   const sub = document.createElement("div");
@@ -7690,6 +8026,54 @@ async function showFontInfo(id, name) {
   }
 }
 
+// 只更新顶部状态（不动字体列表）—— 后台补 status 时用它，避免列表重建闪烁
+// 只同步卡片上的「当前 / 待生效」标记（不重建 DOM）——
+// 切换字体时列表内容没变，但这两个标记必须跟着变，否则卡片会显示旧状态。
+function syncCardStates() {
+  try {
+    const box = document.getElementById("fontList");
+    if (!box) return;
+    const hasPending = pendingId !== activeId;
+    const cards = box.querySelectorAll(".option");
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i];
+      const id = c.dataset.id;
+      c.classList.toggle("is-active", id === activeId);
+      c.classList.toggle("is-pending", hasPending && id === pendingId);
+      // 多选模式下：当前/待生效的那张不能删（locked），选中的要显示勾
+      if (manageMode) {
+        c.classList.toggle("locked", id === activeId || (hasPending && id === pendingId));
+        c.classList.toggle("selected", selected.has(id));
+      } else {
+        c.classList.remove("locked");
+        c.classList.remove("selected");
+      }
+    }
+  } catch (e) { /* 状态同步失败不影响其他 */ }
+}
+
+function renderStatusOnly() {
+  try {
+    setValue("activeLabel", labelOf(activeId));
+    const hasPending = pendingId !== activeId;
+    const pr = document.getElementById("pendingRow");
+    if (pr) pr.style.display = hasPending ? "flex" : "none";
+    if (hasPending) setValue("pendingLabel", labelOf(pendingId));
+    const ht = document.getElementById("libHeadText");
+    if (ht) ht.textContent = manageMode ? "字体库（点卡片勾选）" : "字体库（点卡片打开菜单）";
+    // 卡片标记也跟着同步（后台补 status 之后同样要更新）
+    if (typeof syncCardStates === "function") syncCardStates();
+    // 底部提示条：原来只在完整 render 末尾设置，跳过重建时就不更新了
+    const hintEl = document.getElementById("rebootHint");
+    if (hintEl) {
+      const _hp = pendingId !== activeId;
+      hintEl.textContent = _hp
+        ? "已选择「" + labelOf(pendingId) + "」，点上面按钮立即重启生效"
+        : "当前没有待生效的更改，重启按钮仍可随时使用";
+    }
+  } catch (e) { /* 状态更新失败不影响列表 */ }
+}
+
 function render() {
   setValue("activeLabel", labelOf(activeId));
   const hasPending = pendingId !== activeId;
@@ -7704,7 +8088,37 @@ function render() {
   [...selected].forEach(id => { if (!fonts.some(f => f.id === id) || isLocked(id)) selected.delete(id); });
 
   const box = document.getElementById("fontList");
+
+  // ★ 2026-10-22（去闪烁）：列表内容没变就别重建。
+  //   原来首屏画完后，后台 status 回来又调一次 render()，整列被清空重建 →
+  //   用户看到"加载出来了，然后又刷了一次"。现在用指纹判断，没变就只更新状态行。
+  const _sig = fonts.map(f => [f.id, f.name, f.size,
+    (f.meta && (f.meta.vf || "")) , (f.meta && (f.meta.wght || "")),
+    (f.meta && (f.meta.merge || f.meta.merged || "")),
+    (f.meta && (f.meta.group || ""))].join("~")).join(",");
+  if (_sig === __listSig && manageMode === __listManage
+      && showGroupMembers === __listGroup) {
+    // 兜底：把任何残留的"修改中"遮罩清掉（列表没重建时，没人会替它清）
+    try {
+      box.querySelectorAll(".option.busy").forEach(function (el) {
+        el.classList.remove("busy");
+        var ov = el.querySelector(".overlay");
+        if (ov) ov.remove();
+      });
+    } catch (e) {}
+    syncCardStates();          // ★ 卡片上的「当前/待生效」标记必须跟着刷新
+    renderStatusOnly();
+    updateBatchBtn();
+    return;
+  }
+  __listSig = _sig;
+  __listManage = manageMode;
+  __listGroup = showGroupMembers;
+
   box.textContent = "";
+  // ★ 2026-10-22（性能）：离屏构建，全部塞进 fragment 后一次性插入 ——
+  //   原来每张卡都 append 到**已在文档里**的容器上，卡片多时会反复触发布局。
+  const _frag = document.createDocumentFragment();
 
   const none = makeCard("none", NONE_LABEL, "不替换任何系统字体（默认）");
   if (manageMode) none.classList.add("locked");
@@ -7712,7 +8126,7 @@ function render() {
     if (manageMode) { showToast("这一项不能删除"); return; }
     showFontSheet("none", NONE_LABEL, true);   // 点一下先弹菜单，不再直接切
   };
-  box.append(none);
+  _frag.append(none);
 
   // ★ 字组成员折叠：只认**合法组**（组长存在、不是合成字体、成员≥2），
   //   否则一律当没组 —— 不然组长那份要是坏了/被删了，成员就永久隐身（真机踩过）。
@@ -7770,17 +8184,26 @@ function render() {
       icons.append(more);
       card.append(icons);
     }
-    box.append(card);
+    _frag.append(card);
   });
 
   if (!fonts.length) {
     const e = document.createElement("div");
     e.className = "empty";
     e.textContent = "字体库还是空的，先在下方导入一个字体吧";
-    box.append(e);
+    _frag.append(e);
   }
 
+    // 一次性插入（只触发一次布局）
+  box.append(_frag);
+
   updateBatchBtn();
+
+  // 首帧动画播完后置位；列表结构变化（数量不同）时允许再播一次
+  if (!__cardsAnimated) {
+    __cardsAnimated = true;
+    setTimeout(() => { __cardsAnimated = true; }, 400);
+  }
 
   const hint = document.getElementById("rebootHint");
   hint.textContent = hasPending
@@ -7967,6 +8390,12 @@ function setCardBusy(card, on) {
 
 /* ---------- 切换 / 重命名 / 删除 ---------- */
 async function selectFont(id) {
+  // ★ 2026-10-22：列表还没被真实数据校准（来自缓存）→ 不允许操作
+  if (typeof __cacheUnverified !== "undefined" && __cacheUnverified) {
+    showToast("正在校验字体列表，稍等一下…");
+    try { refreshAll(); } catch (e) {}
+    return;
+  }
   if (busy) return;
   const big = selIds(id).map(x => fonts.find(f => f.id === x)).filter(f => f && f.size >= HUGE_FONT);
   if (big.length) {
@@ -7997,6 +8426,9 @@ async function selectFont(id) {
   } catch (e) {
     showToast("切换失败：" + errText(e));
   } finally {
+    // ★ 2026-10-22：必须显式清掉自己加的"修改中"遮罩。
+    //   以前靠"整表重建"顺手清掉；现在列表指纹没变就不重建，遮罩会永久留着。
+    try { setCardBusy(card, false); } catch (e) {}
     busy = false;
     await refreshAll();
   }
@@ -8018,6 +8450,12 @@ async function editFont(id) {
 }
 
 async function deleteFonts(ids) {
+  // ★ 2026-10-22：列表还没被真实数据校准（来自缓存）→ 不允许操作
+  if (typeof __cacheUnverified !== "undefined" && __cacheUnverified) {
+    showToast("正在校验字体列表，稍等一下…");
+    try { refreshAll(); } catch (e) {}
+    return;
+  }
   if (busy || !ids.length) return;
   const msg = ids.length === 1
     ? "确定从字体库删除「" + labelOf(ids[0]) + "」？"
@@ -8063,12 +8501,40 @@ const PROBES = {
   symbols: "★☆♪♫→←↑↓✓✗○●◆■□▲△※§¶©®™°±×÷"
 };
 
+// ★ 2026-10-22（内存/性能）：分块读取字体数据。
+//   原来一次读完，od 会把 1 字节变成 3 个字符 —— 4MB 二进制 ≈ 12MB 文本串，
+//   一次性通过同步桥接回传 WebView。解析 40MB 级大字体时很容易把管理器
+//   WebView 的内存撑爆（用户侧表现就是"点开 WebUI 直接闪退"）。
+//   现在每次最多 256KB 二进制（≈768KB 文本），循环拼接，并给 8MB 硬上限。
+const READ_CHUNK = 256 * 1024;
+const READ_MAX = 8 * 1024 * 1024;
+
 async function readHex(path, offset, length) {
-  const out = await ksuExec(`tail -c +${offset + 1} ${shq(path)} | head -c ${length} | od -An -v -tx1 | tr -d ' \\n'`);
-  const hex = out.trim();
-  const u8 = new Uint8Array(hex.length >> 1);
-  for (let i = 0; i < u8.length; i++) u8[i] = parseInt(hex.substr(i * 2, 2), 16);
-  return u8;
+  let len = Math.floor(length);
+  if (!isFinite(len) || len < 0) len = 0;
+  if (len > READ_MAX) len = READ_MAX;
+  const parts = [];
+  let total = 0;
+  for (let done = 0; done < len; done += READ_CHUNK) {
+    const n = Math.min(READ_CHUNK, len - done);
+    let hex = "";
+    try {
+      hex = String(await ksuExec(
+        "tail -c +" + (offset + done + 1) + " " + shq(path)
+        + " | head -c " + n + " | od -An -v -tx1 | tr -d ' \n'") || "").trim();
+    } catch (e) {
+      break;                     // 单块失败：返回已读部分，不打断整次探测
+    }
+    const u8 = new Uint8Array(hex.length >> 1);
+    for (let i = 0; i < u8.length; i++) u8[i] = parseInt(hex.substr(i * 2, 2), 16);
+    parts.push(u8);
+    total += u8.length;
+    if (u8.length < n) break;    // 文件提前结束
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
 }
 const u16 = (b, o) => (b[o] << 8) | b[o + 1];
 const u32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
@@ -8382,7 +8848,7 @@ async function probeFont(path) {
   if (tables["name"]) {
     // 族键：多字重配对的分组依据（同一族的 Regular/Bold/Light 会算出同一个值）
     try {
-      const nb = await readHex(path, tables["name"].off, Math.min(tables["name"].len, 64 * 1024));
+      const nb = await readHex(path, tables["name"].off, Math.min(tables["name"].len, 32 * 1024));
       const k = famKeyFromName(nb);
       if (k) meta.fam = k;
       // 族名原文（排查"同族"时最直接的一条：合成字体必须带后缀）
@@ -8397,7 +8863,7 @@ async function probeFont(path) {
     } catch (e) { /* 没有族名也不影响导入 */ }
   }
   if (tables["cmap"]) {
-    const buf = await readHex(path, tables["cmap"].off, Math.min(tables["cmap"].len, 4 * 1024 * 1024));
+    const buf = await readHex(path, tables["cmap"].off, Math.min(tables["cmap"].len, 1024 * 1024));
     const has = cmapLookup(buf);
     if (has) {
       const ratio = s => { const cps = Array.from(s); return cps.filter(c => has(c.codePointAt(0))).length / cps.length; };
@@ -8432,7 +8898,7 @@ async function probeFont(path) {
     const nmNames = {};
     if (tables["name"]) {
       try {
-        const nb2 = await readHex(path, tables["name"].off, Math.min(tables["name"].len, 64 * 1024));
+        const nb2 = await readHex(path, tables["name"].off, Math.min(tables["name"].len, 32 * 1024));
         [1, 2, 4, 6, 16].forEach(k => { const v = nameTextOf(nb2, k); if (v) nmNames[k] = v.slice(0, 40); });
       } catch (e) {}
     }
@@ -9423,6 +9889,13 @@ const repTxt = () => repEl("reportText");
   // 两种视图切换（默认结构化；想看逐字原文就切过去）
   function repShowView(which) {
     const v = repView(), t = repTxt();
+    try {
+      [v, t].forEach(function (el) {
+        if (!el) return;
+        el.style.opacity = "0";
+        setTimeout(function () { el.style.opacity = ""; }, 16);
+      });
+    } catch (e) {}
     repViewMode = (which === "raw") ? "raw" : "pretty";
     if (repViewMode === "raw") {
       if (v) { v.classList.remove("show"); v.style.display = "none"; }
@@ -9513,7 +9986,14 @@ async function readHeadText() {
   catch (e) { return ""; }
 }
 async function readReportMeta() {
-  const t = await fetchWeb("meta.txt");
+  // ★ fetch 本地 meta.txt 也可能卡住（真机出现过），最多等 4 秒
+  let t = null;
+  try {
+    t = await Promise.race([
+      fetchWeb("meta.txt"),
+      new Promise((res) => setTimeout(() => res(null), 4000)),
+    ]);
+  } catch (e) { t = null; }
   if (t !== null) return diagKV(t);
   try { return diagKV(await ksuExec(`cat ${DIAGWEB}/meta.txt 2>/dev/null`)); }
   catch (e) { return {}; }
@@ -9667,7 +10147,15 @@ async function repPaintDone(kv) {
   repEl("reportChoice").style.display = "none";
   repEl("reportChoiceHint").style.display = "none";
   // ★ 2026-10-16：生成完成了 → 才把"上传给作者"露出来（没生成就没有文件可传）
-  try { repEl("reportServerBtn").style.display = ""; } catch (e) {}
+  // ★ 2026-10-23 修：**必须复位 disabled**。上一次上传卡死会留下 disabled=true，
+  //   重新生成后按钮虽然显示出来，却是灰的、点不动（真机就是这么卡住的）。
+  try {
+    const ub = repEl("reportServerBtn");
+    ub.style.display = "";
+    ub.disabled = false;
+    ub.textContent = "上传";
+    ub.classList.remove("cfs-busy");
+  } catch (e) {}
   const meta = await readReportMeta();
   const size = +kv.size || +meta.size || 0;
   const head = await readHeadText();
@@ -9806,6 +10294,11 @@ async function repPaintRunningLive(kv) {
 // ---------- 主流程 ----------
 // 查看诊断报告：先把界面打开，再决定"接着看 / 直接显示 / 问你要哪种"
 async function showReport(mode) {
+  // ★ 2026-10-23：每次打开面板都复位一次上传按钮（防止上次卡死留下的灰色状态）
+  try {
+    const ub = document.getElementById("reportServerBtn");
+    if (ub) { ub.disabled = false; ub.textContent = "上传"; ub.classList.remove("cfs-busy"); }
+  } catch (e) {}
   if (repOpen()) return;
   openReportModal("正在读取状态…");
   await nextPaint();
@@ -10323,7 +10816,7 @@ async function shWriteB64(text, path) {
    =========================================================================== */
 async function fbkSendViaFetch(txt, hdr) {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 25000);      // 25 秒还连不上就换路
+  const timer = setTimeout(() => ctl.abort(), 15000);      // 15 秒还连不上就换路（原来 25 秒，用户等不住）
   try {
     const resp = await fetch(WORKER_URL + "/report", {
       method: "POST",
@@ -10360,7 +10853,7 @@ async function fbkSendViaShell(txt, hdr) {
   const cmd =
     'T=' + UP_TMP + '; U=' + WORKER_URL + '/report; ' +
     'if command -v curl >/dev/null 2>&1; then ' +
-      'curl -sS -m 90 -X POST' + hs + ' --data-binary @$T $U; ' +
+      'curl -sS --connect-timeout 8 -m 30 -X POST' + hs + ' --data-binary @$T $U; ' +
     'elif command -v busybox >/dev/null 2>&1 && busybox wget --help >/dev/null 2>&1; then ' +
       'busybox wget -q -O - --header "x-cfs-key: ' + WORKER_KEY + '" ' +
       '--post-file $T $U 2>&1; ' +
@@ -10402,23 +10895,117 @@ async function fbkSendWorker(txt) {
     "x-cfs-note": fbkHdr("快捷报告", 60),
     "x-cfs-desc": fbkHdr(typeof fbkDesc === "string" ? fbkDesc : "", 700),   // ★ 用户填的描述
   };
-  // ① 先试界面直连（不需要 curl / busybox，绝大多数机器走这条）
+  // ★ 2026-10-22（真机实测）：管理器 App 的 fetch 连不出去（自检报"超时"），
+  //   而 shell 的 curl 是通的 —— 所以先 shell，别再白等 15 秒。
+  // ① 先 shell（curl / wget）
   let err1 = null;
   try {
-    return await fbkSendViaFetch(txt, hdr);
+    return await fbkSendViaShell(txt, hdr);
   } catch (e) {
     err1 = e;
   }
-  // ② 退回 shell（挂了梯子、或者 fetch 被拦时才有用）
+  // ② 再试界面直连（没有 curl 的机器上这是唯一办法）
   try {
-    return await fbkSendViaShell(txt, hdr);
+    return await fbkSendViaFetch(txt, hdr);
   } catch (e2) {
     const e1 = errText(err1);
-    throw new Error("直连失败（" + e1 + "）；shell 也不行（" + errText(e2) + "）");
+    throw new Error("shell 失败（" + e1 + "）；直连也不行（" + errText(e2) + "）");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ★ 2026-10-22（作者要求）：上传前先测网络
+//   · 通了才上传；不通就把报告留在 Download，并给一个「重新检测并上传」按钮
+//   · 完整报告 / 一键上报 走同一套逻辑
+// ---------------------------------------------------------------------------
+// 用 shell(curl) 探测连通性 —— 真机实测：管理器 App 的 fetch 连不出去，
+// 但 shell 的 curl 可以（同一台机器，自检报告就是走 curl 传上来的）。
+async function shProbe(timeoutMs) {
+  const sec = Math.max(3, Math.round((timeoutMs || 6000) / 1000));
+  try {
+    const out = String(await ksuExec(
+      "if command -v curl >/dev/null 2>&1; then " +
+      "  curl -sS -m " + sec + " -o /dev/null -w '%{http_code}' " + WORKER_URL + "/health 2>/dev/null; " +
+      "else echo NOCURL; fi") || "").trim();
+    if (/^(200|204)$/.test(out)) return { ok: true, via: "curl", raw: out };
+    // ★ 2026-10-23：Cloudflare 对 curl 的 UA 可能回 403（我这边被回过 error 1010）。
+    //   这说明**网络是通的、服务器也回应了**，只是 /health 这个路径被拦 ——
+    //   不能因此挡住上传（/report 用 curl 一直是成功的）。
+    if (/^(403|404|405|429)$/.test(out)) {
+      return { ok: true, via: "curl", raw: out, warn: "健康检查被拦（HTTP " + out + "），仍尝试上传" };
+    }
+    if (/NOCURL/.test(out)) return { ok: false, via: "none", err: "设备上没有 curl" };
+    if (/^0*$/.test(out) || /^(000|28|7|6)$/.test(out)) {
+      return { ok: false, via: "curl", err: "连接超时或无法解析（curl 返回 " + out + "）" };
+    }
+    return { ok: false, via: "curl", err: "服务器返回 " + out };
+  } catch (e) {
+    return { ok: false, via: "curl", err: errText(e).slice(0, 100) };
+  }
+}
+
+async function netProbe(timeoutMs) {
+  const ms = timeoutMs || 6000;
+  if (!WORKER_URL) return { ok: false, err: "没配置服务器地址" };
+  // ★ 先问 shell（真机上这条才是通的）
+  const sh = await shProbe(ms);
+  if (sh.ok) return sh;
+  if (sh.via === "curl" && /超时|无法解析|返回/.test(sh.err || "")) {
+    // curl 也算过了但连不上 —— 再给 fetch 一次机会（万一是 curl 被限而浏览器能出去）
+    const fb = await fetchProbe(ms);
+    return fb.ok ? fb : { ok: false, err: sh.err + "；直连也失败" + (fb.err ? "（" + fb.err + "）" : "") };
+  }
+  return await fetchProbe(ms);
+}
+
+async function fetchProbe(ms0) {
+  const ms = ms0 || 6000;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms);
+    try {
+      const r = await fetch(WORKER_URL + "/health", { signal: ctl.signal, cache: "no-store" });
+      const txt = String(await r.text() || "").slice(0, 60);
+      if (r.ok && /ok/i.test(txt)) return { ok: true, msg: txt };
+      return { ok: false, err: "服务器回 HTTP " + r.status + " " + txt };
+    } finally {
+      clearTimeout(t);
+    }
+  } catch (e) {
+    const m = errText(e);
+    if (/abort/i.test(m)) return { ok: false, err: "连接超时（" + Math.round(ms / 1000) + " 秒）" };
+    return { ok: false, err: /fetch/i.test(m) ? "浏览器拒绝发起请求（多半是没连 VPN 或被拦）" : m };
+  }
+}
+
+// 上传闸门：返回 true 表示"网络通了，可以继续上传"
+async function uploadGate(localPath) {
+  let tries = 0;
+  while (true) {
+    tries++;
+    const p = await netProbe(6000);
+    if (p.ok) {
+      if (tries > 1) showToast("网络已恢复，开始上传…");
+      return true;
+    }
+    const where = localPath
+      ? ("\n\n报告已经保存好了，不用再做别的：\n  " + localPath +
+         "\n\n把这份文件直接发给作者就行（内容和上传的一模一样）。")
+      : "";
+    const ans = await dialog({
+      title: "连不上服务器",
+      msg: "检测结果：" + p.err +
+           where +
+           "\n\n如果想自己传：确认梯子是【全局模式】，或给管理器 App 开代理，再点下面的按钮。",
+      okText: "重新检测并上传",
+      altText: "先不发，我自己发文件"
+    });
+    if (ans !== "alt" && ans !== true && ans !== "") return false;   // 用户放弃
   }
 }
 
 async function fbkQuickSend() {
+  upLog("开始上传流程（一键上报）");
   const btn = document.getElementById("fbkQuickBtn");
   if (btn && btn.disabled) return;              // 防连点
   // ---- 发送前确认 ----
@@ -10434,6 +11021,12 @@ async function fbkQuickSend() {
     // 顺手留一份在本地，万一发送失败用户还能自己发
     try { await ksuExec("cp -f /data/local/tmp/cfs-quick.txt /sdcard/Download/快捷报告.txt"); } catch (e) {}
 
+    // ★ 2026-10-23：文件已经落盘，现在才测网络 —— 这样"报告已保存"才是真的
+    if (!(await uploadGate("/sdcard/Download/快捷报告.txt"))) {
+      fbkSay("已取消上传。报告已保存在 Download/快捷报告.txt，可以直接发给作者。", "");
+      return;
+    }
+
     // ---------------- 唯一的通道：作者自己的服务器 ----------------
     fbkSay("正在上传…");
     const r = await fbkSendWorker(txt);
@@ -10441,6 +11034,8 @@ async function fbkQuickSend() {
     fbkSay("✅ 已上传，谢谢！" + (rid ? "（编号 <b>" + repEsc(rid) + "</b>）" : "") +
           "<br><span style='opacity:.75'>这份是完整的，没有被截断 —— " +
           "作者能看到全部内容。</span>", "ok");
+    __repUpResult = { ok: true, via: "quick", raw: rid || "ok" };
+    try { await repShowUploadResult(); } catch (e) {}
     repBusyOff();
     showToast("已上传，谢谢！");
     // ★ 2026-10-17（作者要求）：上传成功后**自动关掉报告弹窗**。
@@ -10515,21 +11110,104 @@ function fbkVerTag(txt) {
      · 小于 1.5MB：用 fetch 直接发（简单，走 WebView 的网络栈）
      · 更大：用设备上的 curl 发（避免把几十万字符塞过 shell 桥）
    两者都带上 x-cfs-* 头，作者后台列表里能直接看出是谁的问题。 */
+// 上传结果弹窗：成功给编号、失败给原因 + 兜底方案。作者要求"必须看得见"。
+// 上传步骤日志：写到 /data/adb/custom_font_lib/.upload.log（真机排查用）
+// 为什么不打 console：KernelSU 的 WebUI 没有控制台，用户拿不到 console。
+function upLog(msg) {
+  try {
+    const line = "[ui] " + new Date().toISOString().slice(11, 19) + " " + String(msg).replace(/['"\n]/g, " ");
+    // 日志不超过 64KB：超了就只留最后 200 行（长期开着 UI 也不会把存储写满）
+    const f = "/data/adb/custom_font_lib/.upload.log";
+    const cmd = "L='" + line + "'; F=" + f + "; " +
+      "echo \"$L\" >> \"$F\" 2>/dev/null; " +
+      "SZ=$(wc -c < \"$F\" 2>/dev/null | tr -d ' '); " +
+      "if [ \"${SZ:-0}\" -gt 65536 ] 2>/dev/null; then tail -n 200 \"$F\" > \"$F.tmp\" 2>/dev/null && mv -f \"$F.tmp\" \"$F\"; fi";
+    ksuExec(cmd).catch(() => {});
+  } catch (e) {}
+}
+
+async function repShowUploadResult() {
+  if (__repUpShown) return;            // ★ 只弹一次（否则第二次会把第一次顶掉，用户什么都看不到）
+  __repUpShown = true;
+  upLog("准备显示结果弹窗");
+  try {
+    const r = __repUpResult;
+    if (!r) return;
+    // ★ 2026-10-23（作者反馈"要关两次"）：不再往面板里也写一份结果。
+    //   面板里写一份 + 再弹一个窗，看起来就像两层；现在只保留弹窗这一层。
+    try {
+      const tip = document.getElementById("reportTip");
+      if (tip) tip.style.display = "none";
+      const fbk = document.getElementById("fbkStatus");
+      if (fbk) fbk.style.display = "none";
+    } catch (e0) {}
+    // 弹之前确保没有残留遮罩（叠层会导致要关两次）
+    try { document.getElementById("modalMask").classList.remove("show"); } catch (e) {}
+    if (r.ok) {
+      const num = (String(r.raw || "").match(/[A-Z0-9]{6}/) || [])[0] || "";
+      await dialog({
+        title: "上传成功",
+        msg: "报告已收到，谢谢！" + (num ? "\n\n报告编号：" + num : "")
+          + "\n\n我这边能看到完整内容，不用再做什么了。",
+        okText: "知道了"
+      });
+    } else {
+      // 真正能兜底的：把命令写出来，用户自己贴到 Termux/终端里跑
+      const cmd = "curl -sS --connect-timeout 8 -m 60 -X POST " +
+        "-H 'x-cfs-key: " + WORKER_KEY + "' " +
+        "-H 'Content-Type: text/plain; charset=utf-8' " +
+        "--data-binary @\"" + (r.file || "/sdcard/Download/完整体检报告.txt") + "\" " +
+        WORKER_URL + "/report";
+      await dialog({
+        title: "上传失败",
+        msg: "原因：" + String(r.err || "未知") +
+          "\n\n报告已经保存在 Download/ 里，可以直接把文件发我（效果一样）。" +
+          "\n\n想自己传的话，把下面这条命令贴到 Termux 里跑（梯子开着）：\n" + cmd,
+        okText: "知道了"
+      });
+    }
+  } catch (e) { /* 弹窗失败不影响主流程 */ }
+}
+
 async function repSendServer() {
   const btn = repEl("reportServerBtn");
-  if (btn && btn.disabled) return;
+  if (btn && btn.classList.contains("cfs-busy")) { showToast("正在上传，稍等一下…"); return; }
 
   // ★ 2026-10-16（作者要求）：上传前弹一次窗，同时做两件事 ——
   //   ① 让用户填「遇到什么问题」（可选，但填了排查快很多）
   //   ② 说清 VPN + 隐私（原来这段是只读话术）
   //   合成一个窗，避免连弹两次；用户取消就中止上传。
-  const repDesc = await askDesc("这份报告");   // ★ 描述 + 隐私/VPN 一次问清
+  upLog("开始上传流程（完整报告）");
+  // ★ 2026-10-23（作者要求）：点上传先弹窗 —— 写备注 + 确认「要连 VPN」。
+  //   弹窗带确定键，语义更清楚；层级已提高到所有面板之上（见 #modalMask 样式）。
+  const _d = await askDesc("这份报告");
+  if (_d === null) { upLog("用户在上传确认窗点了取消"); return; }
+  let repDesc = String(_d || "");
+  upLog("备注长度：" + repDesc.length);
   if (repDesc === null) return;                // 用户取消
   if (!WORKER_URL || !WORKER_KEY) {
     showToast("上报服务器没配置");
     return;
   }
-  if (btn) btn.disabled = true;
+  // ★ 不用 disabled：disabled 会让点击彻底没反馈（用户以为按钮坏了）。
+  //   改成忙标记 + 文案，重复点击时给一句提示。
+  if (btn) { btn.classList.add("cfs-busy"); btn.textContent = "上传中…"; }
+  upLog("按钮已进入上传中状态");
+  // ★ 2026-10-23：整体看门狗。真机出现过"卡在上传中"之后一行日志都没有 ——
+  //   同步 exec 把线程占住时，任何 await 都不会返回。75 秒后强制收尾，避免无限转圈。
+  clearTimeout(__upWatchdog);
+  __upWatchdog = setTimeout(function () {
+    try {
+      upLog("看门狗触发：75 秒没有完成，判定超时");
+      if (!__repUpResult) {
+        __repUpResult = { ok: false, err: "上传卡住了（超过 75 秒没有结果）" };
+      }
+      __repUpShown = false;
+      repShowUploadResult();
+      if (btn) { btn.classList.remove("cfs-busy"); btn.disabled = false; btn.textContent = "上传"; }
+      try { repBusyOff(); } catch (e) {}
+    } catch (e) {}
+  }, 75000);
 
   // ★ 2026-10-17（作者真机反馈"点上传时下半屏白，上传完才恢复"）：
   //   我第一版推断是"软键盘收起后 WebView 没重排"，加了下面这三步 ——
@@ -10542,7 +11220,27 @@ async function repSendServer() {
     window.scrollTo(0, 0);
   } catch (e) { /* 刷不动也不影响上传 */ }
 
+  // ★ 先测网络（作者要求）：不通就停在本地，给"重新检测并上传"
+  {
+    const _nm = repSavedName(await readReportMeta().catch(() => ({})));
+    if (!(await uploadGate("/sdcard/Download/" + _nm + "  （另有一份：/data/adb/custom_font_lib/font_diag.txt）"))) {
+      return;
+    }
+  }
+  // ★ 2026-10-22（作者实测"点确定后没反应"）：立刻给一个看得见的提示并强制重绘。
+  //   上传走的是**同步** exec，期间界面是冻住的 —— 不先画出来，用户就以为卡死了。
+  try {
+    showToast("正在上传…（最多约 45 秒）", true);
+    const _prog = document.getElementById("reportTip");
+    if (_prog) { _prog.textContent = "正在上传，请稍候…（最多约 45 秒）"; _prog.style.display = ""; }
+    await nextPaint(); await nextPaint();
+  } catch (e) {}
+
   showToast("正在读取报告…");
+  // ★ 2026-10-22：上传结果要"弹窗可见"，不能只靠 2.8 秒的 toast
+  //   （真机反馈：点上传后什么都看不到，不知道成功还是失败）
+  __repUpResult = null;
+  __repUpShown = false;
   try {
     const kv = await readReportMeta();
     const name = repSavedName(kv);
@@ -10564,21 +11262,38 @@ async function repSendServer() {
       });
     } catch (e) { /* 读不到就维持原样 */ }
 
-    const szs = (await ksuExec(`wc -c < ${path} 2>/dev/null`)).trim();
-    const sz = parseInt(szs, 10) || 0;
-    if (!sz) { repBusyOff(); showToast("找不到报告文件，请先生成"); return; }
+    // ★ 2026-10-23：上传前先确认文件真在（真机上出现过"界面说存了、实际没有"）
+    let szs = (await ksuExec(`wc -c < ${shq(path)} 2>/dev/null`)).trim();
+    let sz = parseInt(szs, 10) || 0;
+    let _usePath = path;
+    if (!sz) {
+      // 退到模块库里的那份（write_kit 失败时会写这里）
+      const alt = LIB + "/font_diag.txt";
+      const sz2 = (await ksuExec(`wc -c < ${shq(alt)} 2>/dev/null`)).trim();
+      const s2 = parseInt(sz2, 10) || 0;
+      upLog("Download 里没有报告（" + path + "），模块库里=" + s2 + " 字节");
+      if (s2) { _usePath = alt; sz = s2; }
+    }
+    if (!sz) {
+      repBusyOff();
+      upLog("两个位置都没有报告文件，放弃上传");
+      if (btn) { btn.classList.remove("cfs-busy"); btn.disabled = false; btn.textContent = "上传"; }
+      await dialog({
+        title: "报告文件不在了",
+        msg: "界面上说生成成功，但两个位置都没找到文件：\n\n" +
+             "  " + path + "\n  " + LIB + "/font_diag.txt\n\n" +
+             "请点「重生成」再试一次；如果反复这样，把 .upload.log 发作者。",
+        okText: "知道了"
+      });
+      return;
+    }
 
+    upLog("报告大小 " + sz + " 字节，开始发送");
     showToast("正在上传 " + Math.round(sz / 1024) + " KB…（别退出）");
     showToast("正在检查网络…");
 
-    // ★ 2026-10-17（作者反馈"卡住不知道传没传"）：先花最多 6 秒探一下服务器通不通。
-    //   网络对国内大多不通 —— 不通就**立刻**告诉他，不用等 3 分钟。
-    try {
-      await ksuExec("command -v curl >/dev/null 2>&1 && curl -sS -m 6 -o /dev/null -w '%{http_code}' " +
-                    WORKER_URL + "/health || echo NOCURL");
-    } catch (e) {
-      // 探测本身失败也继续（可能只是 health 被挡，报告接口能用）
-    }
+    // ★ 2026-10-22：这里原来还会跑一次 `curl -m 6 /health`（同步，白卡 6 秒）。
+    //   上面的 uploadGate 已经用 fetch 探过了，删掉这个重复探测。
 
     // 悬浮窗去掉后，靠 toast 告知进度（长传时它会自己消失，所以下面每次都补一句）
 
@@ -10600,7 +11315,7 @@ async function repSendServer() {
     const _mkCmd = () =>
       'F="' + path + '"; U=' + WORKER_URL + '/report; ' +
       'if command -v curl >/dev/null 2>&1; then ' +
-        'curl -sS --connect-timeout 8 -m 35 --retry 1 --retry-connrefused ' +
+        'curl -sS --connect-timeout 6 -m 25 ' +
         '-X POST' + hdr + ' --data-binary @$F $U; ' +
       'elif command -v busybox >/dev/null 2>&1 && busybox wget --help >/dev/null 2>&1; then ' +
         'busybox wget -q -O - --header "x-cfs-key: ' + WORKER_KEY + '" --post-file $F $U 2>&1; ' +
@@ -10612,7 +11327,11 @@ async function repSendServer() {
 
     // ★ 2026-10-21：先试界面直连（不需要 curl / busybox）。
     //   完整报告可能几 MB，超过 3MB 就不往内存里读了，直接走 shell。
-    if (sz <= 3 * 1024 * 1024) {
+    // ★ 2026-10-22（真机实测卡死）：**不再把大报告读进内存**。
+    //   1.7MB 的文件用 `cat` 经 exec 同步取回，桥会堵住 → 界面永远停在"上传中"。
+    //   文件本来就在手机上，直接让 curl 从磁盘读（--data-binary @文件）。
+    //   只有很小的文本（≤128KB）才值得走直连。
+    if (sz <= 128 * 1024) {
       try {
         showToast("正在上传（直连）…");
         const txt = String(await ksuExec(`cat ${shq(path)} 2>/dev/null`) || "");
@@ -10626,26 +11345,28 @@ async function repSendServer() {
             "x-cfs-desc": fbkHdr(repDesc, 700),
           });
           out = String(okResp.raw || "ok");
+          upLog("直连(fetch)成功：" + String(out).slice(0, 80));
+          __repUpResult = { ok: true, via: "直连", raw: out };
           showToast("已上传，谢谢！");
           if (btn) btn.disabled = false;
+          await repShowUploadResult();
           return;
         }
       } catch (eF) {
+        upLog("直连(fetch)失败：" + errText(eF).slice(0, 100));
         _lastErr = "直连失败：" + errText(eF).slice(0, 80);
       }
     }
 
-    for (let _try = 1; _try <= 3; _try++) {
-      if (_try > 1) showToast("网络不稳，重试第 " + _try + "/3 次…");
-      try {
-        out = String(await ksuExec(_mkCmd()) || "");
-        if (out.indexOf("NOHTTPTOOL") >= 0) break;
-        if (/ok|"id"/i.test(out)) break;                 // 成功
-        _lastErr = out.trim().slice(0, 120);
-      } catch (e) {
-        _lastErr = errText(e).slice(0, 120);
-        out = "";
-      }
+    // ★ 2026-10-22：原来重试 3 次 × 35 秒（最坏 105 秒，界面全冻）。
+    //   现在只试 1 次、超时 25 秒 —— 失败就把原因给用户，让他重来，比冻着强。
+    try {
+      out = String(await ksuExec(_mkCmd()) || "");
+      if (/ok|"id"/i.test(out)) { /* 成功 */ }
+      else _lastErr = (out || "").trim().slice(0, 120);
+    } catch (e) {
+      _lastErr = errText(e).slice(0, 120);
+      out = "";
     }
     if (out.indexOf("NOHTTPTOOL") >= 0) throw new Error("设备上没有 curl，没法上传");
     if (/bad key/i.test(out)) throw new Error("服务器说口令不对");
@@ -10656,17 +11377,30 @@ async function repSendServer() {
                       "，直接把这个文件发给作者即可）");
     }
 
+    upLog("shell 上传返回：" + String(out).slice(0, 120));
+    __repUpResult = { ok: true, via: "shell", raw: out };
     showToast("已上传，谢谢！");
+    await repShowUploadResult();
   } catch (e) {
     repBusyOff();   // ★ 失败也要撤遮罩，否则界面被盖住
     // ★ 2026-10-16：以前直接抛 errText（curl 的原文，用户看不懂）。
     //   上传失败九成是网络 —— 服务器在境外，设备上的 curl 得靠梯子覆盖到那个域名。
     const _e = errText(e);
     const _net = /could not resolve|timed? ?out|Connection|refused|network|unreachable|SSL|TLS|handshake|NOHTTPTOOL/i.test(_e);
+    upLog("上传失败：" + _e.slice(0, 160));
+    __repUpResult = { ok: false, file: (typeof path === "string" ? path : ""), err: _net
+      ? "网络不通（服务器在境外，需要梯子覆盖管理器/终端的网络）"
+      : _e };
     showToast(_net ? "上传失败 —— 多半是网络。请连上 VPN 再点一次（服务器在境外）"
                    : "上传失败：" + _e);
+    try { await repShowUploadResult(); } catch (e2) {}
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) { btn.classList.remove("cfs-busy"); btn.disabled = false; btn.textContent = "上传"; }
+    // ★ 兜底：无论走到哪个分支，都要给一次可见的结果反馈
+    if (!__repUpResult) {
+      __repUpResult = { ok: false, err: "上传没有完成（可能是网络中断或中途出错）" };
+    }
+    try { await repShowUploadResult(); } catch (e) {}
   }
 }
 
