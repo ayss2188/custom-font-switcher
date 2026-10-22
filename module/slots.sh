@@ -742,8 +742,23 @@ slot_device_scan() {   # $1=moddir → 生成 device.list
        END { for (nm in L) print L[nm] }' "$tmp.raw" > "$tmp.names" 2>/dev/null
   rm -f "$tmp.raw" 2>/dev/null
   : > "$tmp"
-  local dirs d role l name
+  local dirs d role l name _rom
   dirs=$(slot_dirs 2>/dev/null)
+  # ★ 2026-10-23（魅族闪退）：Flyme 上**不使用厂商分区的扫描结果**。
+  #   证据：1.4.3 只有"机型清单"70 个槽位时魅族正常；后来加了"本机扫描"82 个
+  #   （主要来自 /product、/vendor、/my_product）之后，App 开始闪退/跳转失败。
+  #   Flyme 的 UI 字体就在这些分区里，被替换后它的字体服务会出异常。
+  #   所以 Flyme 只保留 /system 下的槽位，行为回到 1.4.3 的范围。
+  _rom=$(tr -d '[:space:]' 2>/dev/null < "$moddir/current_rom")
+  if [ "$_rom" = "flyme" ] && [ -n "$dirs" ]; then
+    _only_sys=""
+    for d in $dirs; do
+      case "$d" in
+        /system/*) _only_sys="$_only_sys $d" ;;
+      esac
+    done
+    [ -n "$_only_sys" ] && dirs="$_only_sys"
+  fi
   while read -r name; do
     [ -n "$name" ] || continue
     l=$(_lc "$name")
@@ -1008,7 +1023,7 @@ slot_oem_names_raw() {
   case "$rom" in
     coloros)  pat='sysfont*|syssans*|oplussans*|oplusosui*|opposans*|opsans*|din*|oppodin*|sourcesanspro*' ;;
     originos) pat='*vivosans*|*vivo-sans*|*originsans*|*origin-sans*|*iqoosans*|*iqoo-sans*' ;;
-    flyme)    pat='*flymefont*|*flymesans*|*flyme-sans*|*meizusans*|*meizu-sans*|*mflyme*' ;;
+    flyme)    pat='*flymefont*|*flymesans*|*flyme-sans*|*meizusans*|*meizu-sans*|*mflyme*|sfpro*|sfdin*|sf-*|*dinpro*|*myriadpro*|*sfrounded*' ;;
     *) return 0 ;;
   esac
   t="${TMPDIR:-/data/local/tmp}/.oem.$$"
