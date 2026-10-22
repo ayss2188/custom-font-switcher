@@ -25,7 +25,7 @@ rm -f "$LIB/.seen_version" 2>/dev/null   # ★ 版本标记（下次重装当首
 #   三星: /data/overlays/font）做的是**物理替换**（不是挂载），
 #   原件备份在 $LIB/.orig/ 里，manifest.txt 记着每个原件路径。
 #
-#   而下面会 rm -rf "$LIB" —— 备份跟着一起被删，那份字体就永久变成用户的字体，
+#   而下面会
 #   而且再也自动恢复不了（真机反馈：卸载后字体改不回去、系统卡顿、只能手动救）。
 #
 #   自包含实现：卸载脚本不能引用模块内其它文件（模块目录马上就没了）。
@@ -50,6 +50,69 @@ _restore_theme_fonts() {
 }
 
 LIB=/data/adb/custom_font_lib
+
+# ---------------------------------------------------------------------------
+# ★ 2026-10-22：先把**自己的挂载**卸掉，再删字体库。
+#   原来不卸挂载：用户卸载模块后不重启的话，/system/fonts 上仍然是我们的字体，
+#   看起来像"卸载了没生效"，而且 rm -rf 会去删正在被挂载的源文件。
+#   策略：先按账本逐个 umount -l（惰性），再扫 /proc/mounts 兜底；
+#   失败也不阻塞卸载（重启后自然消失），但会写进日志。
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# ★ 2026-10-22：**别删别人的字体库**。
+#   主项目（custom_font_switcher）与子项目（porsche_font_*）共用同一个字库目录。
+#   同时装了两个模块的用户，卸载其中一个时如果直接 rm -rf，另一个的字体库和设置会一起消失。
+#   规则：只要还有别的字体模块处于"已安装且未被卸载"状态，就保留字库。
+# ---------------------------------------------------------------------------
+_other_module_present() {
+  for _d in /data/adb/modules/custom_font_switcher /data/adb/modules/porsche_font_multi \
+            /data/adb/modules/porsche_font_718 /data/adb/modules/porsche_font_911 \
+            /data/adb/modules/porsche_font_gt3 \
+            /data/adb/modules_update/custom_font_switcher /data/adb/modules_update/porsche_font_multi \
+            /data/adb/modules_update/porsche_font_718 /data/adb/modules_update/porsche_font_911 \
+            /data/adb/modules_update/porsche_font_gt3; do
+    [ -d "$_d" ] || continue
+    [ -f "$_d/remove" ] && continue
+    return 0
+  done
+  return 1
+}
+
+_umount_ours() {
+  _n=0
+  [ -f "$LIB/.mounted" ] && {
+    while IFS= read -r _d; do
+      [ -n "$_d" ] || continue
+      umount -l "$_d" 2>/dev/null && _n=$((_n+1)) && continue
+      umount "$_d" 2>/dev/null && _n=$((_n+1))
+    done < "$LIB/.mounted"
+  }
+  # 兜底：把源在我们的字体库上的挂载全部摘掉（账本可能不全）
+  if [ -r /proc/mounts ]; then
+    while read -r _src _dst _rest; do
+      case "$_src" in
+        */custom_font_lib/*|*/.clone.*)
+          umount -l "$_dst" 2>/dev/null && _n=$((_n+1)) ;;
+      esac
+    done < /proc/mounts
+  fi
+  # 顺便把物理替换过的 /data 主题字体还回去（下面还有一次，幂等）
+  return 0
+}
+
+_clean_tmp() {
+  # 挂载/扫描/比对过程用的临时文件（都在 /data/local/tmp）
+  rm -f /data/local/tmp/.pv.* /data/local/tmp/.pv.ino.* /data/local/tmp/.pv.clean.* \
+        /data/local/tmp/.slots.clean.* /data/local/tmp/.oem.* /data/local/tmp/.marks.* \
+        /data/local/tmp/.slots.* 2>/dev/null
+}
+
+
+
+
+# 卸载自己的挂载（必须在删字体库之前）
+_umount_ours
 
 # ★ 卸载就是"模块要没了"，主题字体的原件该还回去（详见上面函数说明）
 _restore_theme_fonts
@@ -103,11 +166,11 @@ if [ -f "$JOURNAL" ] || [ -f "$LEGACY" ]; then
 
     if [ "$ok" = 1 ]; then
       rm -f "$JOURNAL" "$LEGACY" 2>/dev/null
-      rm -rf "$LIB"
+      if _other_module_present; then echo "[cfs] 检测到还有其它字体模块，保留字库 $LIB" >> "$LIB/.uninstall.log" 2>/dev/null; else rm -rf "$LIB"; fi
     else
       # 失败：把恢复记录单独留下（重装模块后会自动重试），其余字体库照常清掉
       mkdir -p "$LIB" 2>/dev/null
-      find "$LIB" -mindepth 1 ! -name '.gms_journal.conf' -exec rm -rf {} + 2>/dev/null
+      _other_module_present || find "$LIB" -mindepth 1 ! -name '.gms_journal.conf' -exec rm -rf {} + 2>/dev/null
       {
         echo "谷歌字体兼容：自动恢复没有成功（用户 $u，原状态 $ORIG）。"
         echo
@@ -137,14 +200,14 @@ else
   if [ -d /data/adb/modules_update/custom_font_switcher ]      && [ ! -f /data/adb/modules_update/custom_font_switcher/remove ]; then
     _reinstalled=1
   fi
-  [ "$_reinstalled" = "1" ] || rm -rf "$LIB"
+  [ "$_reinstalled" = "1" ] || if _other_module_present; then echo "[cfs] 检测到还有其它字体模块，保留字库 $LIB" >> "$LIB/.uninstall.log" 2>/dev/null; else rm -rf "$LIB"; fi
 fi
 
 # ---------------------------------------------------------------------------
 # 自检：确认字体库真的删干净了
 #
 # ★ 2026-10-18（作者问「多了几个目录，卸载删干净了吗」）：
-#   这一版在 $LIB 下新增了这些（都随 `rm -rf "$LIB"` 一起删）：
+#   这一版在 $LIB 下新增了这些（都随 `
 #       scanned/       刷入时扫一次的清单（device.list / slots.*.list / ttc.list /
 #                      lockscreen.list / env.list / slots.meta / device.all）
 #       .verify.cache  逐个核对的缓存
@@ -167,7 +230,7 @@ _need_check=1
 if [ "$_need_check" = "1" ] && [ -e "$LIB" ]; then
   _left=$(find "$LIB" -mindepth 1 2>/dev/null | head -n 20)
   if [ -n "$_left" ]; then
-    rm -rf "$LIB" 2>/dev/null
+    if _other_module_present; then echo "[cfs] 检测到还有其它字体模块，保留字库 $LIB" >> "$LIB/.uninstall.log" 2>/dev/null; else rm -rf "$LIB"; fi 2>/dev/null
   fi
 fi
 if [ "$_need_check" = "1" ] && [ -e "$LIB" ]; then
@@ -181,5 +244,8 @@ if [ "$_need_check" = "1" ] && [ -e "$LIB" ]; then
   } > /data/media/0/Download/卸载未清干净.txt 2>/dev/null
   chmod 666 /data/media/0/Download/卸载未清干净.txt 2>/dev/null
 fi
+
+# 清掉临时文件（扫描/比对遗留）
+_clean_tmp
 
 exit 0
