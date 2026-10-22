@@ -744,20 +744,16 @@ slot_device_scan() {   # $1=moddir → 生成 device.list
   : > "$tmp"
   local dirs d role l name _rom
   dirs=$(slot_dirs 2>/dev/null)
-  # ★ 2026-10-23（魅族闪退）：Flyme 上**不使用厂商分区的扫描结果**。
-  #   证据：1.4.3 只有"机型清单"70 个槽位时魅族正常；后来加了"本机扫描"82 个
-  #   （主要来自 /product、/vendor、/my_product）之后，App 开始闪退/跳转失败。
-  #   Flyme 的 UI 字体就在这些分区里，被替换后它的字体服务会出异常。
-  #   所以 Flyme 只保留 /system 下的槽位，行为回到 1.4.3 的范围。
+  # ★ 2026-10-23（魅族闪退，定稿）：**Flyme 上不做本机扫描**。
+  #   1.4.3 只有"机型清单"（约 70 个槽位）时魅族完全正常；
+  #   后来加了"本机扫描补槽位"（多出 80 多个，多在 /product、/vendor），
+  #   魅族 App 开始闪退 / 酷安跳不了外链 / B站视频退回桌面；
+  #   而且只有把「卸载模块」关掉（App 能看到挂载）才触发 → 说明是"替换范围太宽"。
+  #   所以 Flyme 上直接跳过本机扫描，槽位只来自机型清单 —— **与 1.4.3 行为一致**。
+  #   厂商字体名单（slot_oem_names_raw 的 flyme 分支）作为第二层保险保留。
   _rom=$(tr -d '[:space:]' 2>/dev/null < "$moddir/current_rom")
-  if [ "$_rom" = "flyme" ] && [ -n "$dirs" ]; then
-    _only_sys=""
-    for d in $dirs; do
-      case "$d" in
-        /system/*) _only_sys="$_only_sys $d" ;;
-      esac
-    done
-    [ -n "$_only_sys" ] && dirs="$_only_sys"
+  if [ "$_rom" = "flyme" ]; then
+    return 1
   fi
   while read -r name; do
     [ -n "$name" ] || continue
