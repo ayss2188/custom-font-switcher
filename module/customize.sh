@@ -264,67 +264,6 @@ LIB_COUNT=$(ls "$LIB"/f*.ttf 2>/dev/null | wc -l)
 ui_print "- 正在检查有没有其它字体模块…"
 CONFLICTS=$(sh "$MODPATH/fontctl.sh" conflicts 2>/dev/null | cut -d'|' -f2 | tr '\n' ' ')
 
-ui_print " "
-ui_print "===================================="
-ui_print "字体库已有：$LIB_COUNT 个字体（$LIB）"
-ui_print "更新模块不会丢失字体库"
-ui_print "卸载模块会一并删除"
-ui_print "===================================="
-ui_print "使用方法：在模块管理器打开 WebUI"
-ui_print "  1. 导入自己的 TTF/OTF 字体（可多选）"
-ui_print "  2. 点选字体卡片切换"
-ui_print "  3. 重启生效；选「无字体」即恢复默认"
-if [ "$RM" = magisk ]; then
-  ui_print " "
-  ui_print "Magisk 没有 WebUI 入口"
-  ui_print "请先安装 KsuWebUI，"
-  ui_print "后点模块卡片上的「操作」按钮打开。"
-fi
-if [ -n "$CONFLICTS" ]; then
-  ui_print " "
-  ui_print "⚠ 检测到其他字体模块：$CONFLICTS"
-  ui_print "  建议先停用它们，避免互相覆盖。"
-fi
-ui_print " "
-ui_print "若选字体后没能开机，下次开机会自动"
-ui_print "恢复为「无字体」。"
-
-# ---------------------------------------------------------------------------
-# 安装阶段不做任何耗时收集（避免刷入卡住）
-#   这里只做几个文件判断 + getprop，毫秒级完成；完整诊断报告由用户手动触发：
-#     · WebUI 里点「查看诊断报告」或「保存到 Download」（后台生成，界面不卡）
-#     · 或点模块卡片的「操作」按钮
-# ---------------------------------------------------------------------------
-GD="无"; [ -f "$OLD/disable" ] && GD="有"
-GU="无"; [ -f "$OLD/update" ] && GU="有（上一次安装没被激活）"
-GS="无"; case "$(getprop persist.sys.safemode)$(getprop ro.sys.safemode)" in *1*) GS="有" ;; esac
-GM="无"; { command -v magisk >/dev/null 2>&1 || [ -e /data/adb/magisk ]; } && GM="有"
-ui_print " "
-ui_print "- 设备：$(getprop ro.product.brand) $(getprop ro.product.model)"
-ui_print "  Android $(getprop ro.build.version.release)"
-ui_print "- 门禁速查："
-ui_print "  已禁用=$GD   待激活=$GU"
-ui_print "  安全模式=$GS   Magisk共存=$GM"
-ui_print "- 需要诊断报告时："
-ui_print "  在 WebUI 里点「查看诊断报告」，"
-ui_print "  或点模块卡片上的「操作」按钮"
-ui_print "  （不用手动保存）"
-ui_print "  （生成完会自动存到 Download）"
-ui_print "  报告只产出一个文件："
-ui_print "  Download/完整体检报告.txt"
-if [ -f "$MODPATH/diag.sh" ]; then
-  cp -f "$MODPATH/diag.sh" /data/local/tmp/font_diag.sh 2>/dev/null
-  chmod 755 /data/local/tmp/font_diag.sh 2>/dev/null
-fi
-ui_print "===================================="
-ui_print "- 完成"
-
-
-# ---------------------------------------------------------------------------
-# 字体档案：给已有字体补 .fdata（结构清单），诊断报告要用
-#   放在安装结束前跑，用户打开界面时档案已经在了
-# ---------------------------------------------------------------------------
-
 # ---------------------------------------------------------------------------
 # 扫描印记：只在"需要重扫"时才扫（作者 2026-10-21 定的规则）
 #
@@ -440,8 +379,104 @@ else
   ui_print "- 字体档案已是最新（无需重扫）"
 fi
 
-set_perm_recursive "$MODPATH" 0 0 0755 0644
-for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh gms_cache.sh nameclone.sh action.sh \
-         diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
-  set_perm "$MODPATH/$f" 0 0 0755
-done
+ui_print "- 扫描与档案更新结束，正在写入文件权限…"
+
+# ===========================================================================
+# 刷入日志（作者要求：分区 + 分割线 + 内容尽量全）
+#   顺序：检测 → 扫描 → 汇总，扫描在汇总之前完成，不会出现"完成之后还在扫"
+# ===========================================================================
+ui_print "========================================================"
+ui_print " 自定义字体切换模块  $(sed -n 's/^version=//p' "$MODPATH/module.prop" 2>/dev/null | head -n1 | tr -d '\r')"
+ui_print "========================================================"
+ui_print " "
+ui_print "[1/4] 设备与门禁"
+ui_print "- 设备：$(getprop ro.product.brand 2>/dev/null) $(getprop ro.product.model 2>/dev/null)"
+ui_print "- 系统：Android $(getprop ro.build.version.release 2>/dev/null)   内核 $(uname -r 2>/dev/null)"
+ui_print "- 系统识别：$(tr -d '[:space:]' < "$MODPATH/current_rom" 2>/dev/null | head -c 40)"
+_RM="KernelSU 系"
+command -v magisk >/dev/null 2>&1 && _RM="Magisk"
+[ -d /data/adb/ksu ] && _RM="KernelSU 系"
+ui_print "- Root 管理器：$_RM"
+ui_print "- 挂载方式：模块自带挂载（无需元模块）"
+GD="无"; [ -f "$OLD/disable" ] && GD="有"
+GU="无"; [ -f "$OLD/update" ] && GU="有（上次安装未被激活）"
+GS="无"; case "$(getprop persist.sys.safemode)$(getprop ro.sys.safemode)" in *1*) GS="有" ;; esac
+GM="无"; { command -v magisk >/dev/null 2>&1 || [ -e /data/adb/magisk ]; } && GM="有"
+ui_print "- 门禁：已禁用=$GD  待激活=$GU  安全模式=$GS  Magisk共存=$GM"
+ui_print "--------------------------------------------------------"
+ui_print " "
+ui_print "[2/4] 字体库与上次选择"
+_LIBN=$(ls -1 "$LIB"/*.ttf 2>/dev/null | wc -l | tr -d ' ')
+_LIBKB=$(du -sk "$LIB" 2>/dev/null | awk '{print $1}')
+ui_print "- 字体库：${_LIBN:-0} 个字体，占用 ${_LIBKB:-0} KB"
+ui_print "  路径：$LIB"
+_ACT=$(sed -n 's/^active=//p' "$LIB/.index" 2>/dev/null | head -n1 | tr -d '\r')
+_PEND=$(sed -n 's/^pending=//p' "$LIB/.index" 2>/dev/null | head -n1 | tr -d '\r')
+if [ -n "$_ACT" ] && [ "$_ACT" != "none" ]; then
+  _AN=$(head -n1 "$LIB/$_ACT.name" 2>/dev/null)
+  ui_print "- 上次选择：${_AN:-$_ACT}"
+else
+  ui_print "- 上次选择：无字体（系统默认）"
+fi
+_GRP=$(grep -l '^group=' "$LIB"/*.meta 2>/dev/null | wc -l | tr -d ' ')
+[ "${_GRP:-0}" -gt 0 ] 2>/dev/null && ui_print "- 字重组：${_GRP} 份字体参与分组（按字重自动配对）"
+if [ -d "$LIB/.orig" ]; then
+  _OKB=$(du -sk "$LIB/.orig" 2>/dev/null | awk '{print $1}')
+  ui_print "- 主题字体原件备份：${_OKB:-0} KB（卸载时自动还原）"
+fi
+ui_print "--------------------------------------------------------"
+ui_print " "
+ui_print "[3/4] 扫描与档案"
+ui_print "- 槽位总数 ${_an:-?} 个（机型清单 ${_tn:-0} 个 + 本机扫描补 ${_en:-0} 个）"
+_TCN=$(awk '$2 ~ /\.ttc$/ {c++} END {print c+0}' "$MODPATH/slots.map" 2>/dev/null)
+_SLOTN=$(grep -c . "$MODPATH/slots.map" 2>/dev/null | tr -d ' ')
+ui_print "- 槽位计划：${_SLOTN:-0} 个，其中中文合集槽位 ${_TCN:-0} 个"
+_SF=$(ls -1 /system/fonts 2>/dev/null | grep -c . )
+_PF=$(ls -1 /product/fonts 2>/dev/null | grep -c . )
+ui_print "- 系统字体：/system/fonts ${_SF:-0} 个，/product/fonts ${_PF:-0} 个"
+_CFG=$(ls -1 /system/etc/fonts.xml /system/etc/fonts_fallback.xml 2>/dev/null | head -n1)
+if [ -n "$_CFG" ]; then
+  _CFGKB=$(du -k "$_CFG" 2>/dev/null | awk '{print $1}')
+  ui_print "- 字体配置：$_CFG（${_CFGKB:-?} KB）"
+fi
+if [ -d /data/system/theme/fonts ]; then
+  _THN=$(ls -1 /data/system/theme/fonts 2>/dev/null | wc -l | tr -d ' ')
+  ui_print "- 主题字体（个性化）：${_THN:-0} 个文件（默认不替换）"
+fi
+ui_print "- 扫描印记：slot=$(mk_cur slot 2>/dev/null)   font=$(mk_cur font 2>/dev/null)"
+ui_print "--------------------------------------------------------"
+ui_print " "
+ui_print "[4/4] 完成"
+ui_print "- 模块版本：$(sed -n 's/^version=//p' "$MODPATH/module.prop" 2>/dev/null | head -n1 | tr -d '\r')   安装位置：$MODPATH"
+if [ -n "${CONFLICTS:-}" ]; then
+  ui_print "- ⚠ 冲突字体模块：$CONFLICTS   （建议先停用，避免互相覆盖）"
+else
+  ui_print "- 冲突字体模块：无"
+fi
+_UM="不适用"
+if [ -d /data/adb/ksu ]; then
+  if [ -e /data/adb/ksu/umount_enabled ] || [ "$(cat /data/adb/ksu/.umount 2>/dev/null)" = "1" ]; then
+    _UM="开启（部分 App 可能看不到挂载）"
+  else
+    _UM="关闭（App 里也能看到字体）"
+  fi
+fi
+ui_print "- 管理器卸载机制：$_UM"
+if [ -n "$_ACT" ] && [ "$_ACT" != "none" ]; then
+  ui_print "- ⏳ 重启后生效（现在还是系统原字体）"
+fi
+ui_print " "
+ui_print "- 使用方法："
+ui_print "  1. 管理器里点本模块 → 打开（WebUI）"
+ui_print "  2. 导入自己的 TTF/OTF（可多选），点卡片切换"
+ui_print "  3. 重启生效；选「无字体」即恢复系统默认"
+if [ "${_RM:-}" = "Magisk" ]; then
+  ui_print "  · Magisk 没有 WebUI 入口：先装 KsuWebUI，再点模块卡片的「操作」"
+fi
+ui_print " "
+ui_print "- 出问题时：界面「诊断报告」→ 生成（约 5~6 分钟）"
+ui_print "  生成完点「上传」可直接发我；报告也会存到 Download/完整体检报告.txt"
+ui_print " "
+ui_print "- 注意：更新模块不会丢字体库；卸载模块会一并删除字体库"
+ui_print "- 保险：若选字体后没能开机，下次开机会自动恢复为「无字体」"
+ui_print "========================================================"
