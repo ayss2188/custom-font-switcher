@@ -3338,6 +3338,77 @@ sec15() {
   echo
 }
 
+
+sec16() {
+  echo
+  echo "【16】字重组应用情况（哪个槽位用了组里哪一档）"
+  hr
+  local sel grp members id w src tgt wtg
+  sel=$(tr -d '[:space:]' < "$LIB/last_selection" 2>/dev/null)
+  [ -n "$sel" ] || sel=$(tr -d '[:space:]' < "$LIB/active_font" 2>/dev/null)
+  echo "  当前选择：${sel:-none}"
+
+  grp=""
+  if [ -n "$sel" ] && [ -f "$LIB/$sel.meta" ]; then
+    grp=$(sed -n 's/^group=//p' "$LIB/$sel.meta" 2>/dev/null | tail -n1 | tr -d '\r')
+  fi
+
+  if [ -z "$grp" ]; then
+    echo "  这个字体没有加入字重组（单独一份字体，字重只由它自己决定）。"
+  else
+    echo "  所属字重组：组长 $grp"
+    echo "  ---- 组内成员 ----"
+    members=0
+    for id in $(lib_font_ids 2>/dev/null); do
+      [ -n "$id" ] || continue
+      [ -f "$LIB/$id.meta" ] || continue
+      [ "$(sed -n 's/^group=//p' "$LIB/$id.meta" 2>/dev/null | tail -n1 | tr -d '\r')" = "$grp" ] || continue
+      members=$((members + 1))
+      w=$(sed -n 's/^wght=//p' "$LIB/$id.meta" 2>/dev/null | tail -n1 | tr -d '\r')
+      printf '    %-16s 字重 %-5s %s\n' "$id" "${w:-?}" \
+        "$([ "$id" = "$grp" ] && echo '← 组长' || echo '')"
+    done
+    [ "$members" -gt 0 ] || echo "    （没找到组内成员档案）"
+  fi
+
+  echo "  ---- 槽位 → 实际使用的文件 ----"
+  if [ -s "$LIB/slots.map" ]; then
+    # slots.map 每行： <选择的id> <目标槽位> <源文件>
+    awk '{
+      src = $3; sub(/^.*\//, "", src); sub(/\.ttf$/, "", src);
+      print $2 "\t" src;
+    }' "$LIB/slots.map" 2>/dev/null | sort | \
+    awk -F'\t' '
+      { cnt[$2]++; if (!(($1) in seen)) { seen[$1] = 1; sample[$2] = sample[$2] "\n      " $1 } }
+      END {
+        for (k in cnt) printf "    %-18s → %d 个槽位%s\n", k, cnt[k], sample[k];
+      }' 2>/dev/null
+    echo "    （按来源统计；每个来源下面缩进的是它覆盖的槽位示例）"
+    echo "  ---- 中文字重相关槽位明细（前 12 条）----"
+    grep -iE 'cjk|han|sc|tc|jp|kr|Sans' "$LIB/slots.map" 2>/dev/null | \
+      awk '{ k = $2 "\t" $3; if (!(k in seen)) { seen[k] = 1; print } }' | head -n 12 | \
+      while IFS= read -r _l; do
+        _t=$(printf '%s' "$_l" | awk '{print $2}')
+        _s=$(printf '%s' "$_l" | awk '{print $3}' | sed 's#.*/##;s#\.ttf$##')
+        _w=$(sed -n 's/^wght=//p' "$LIB/$_s.meta" 2>/dev/null | tail -n1 | tr -d '\r')
+        printf '    %-52s → %-16s 字重 %s\n' "${_t##*/}" "$_s" "${_w:-?}"
+      done
+  else
+    echo "    （没有 slots.map：本机可能还没应用过字体，或挂载记录被清掉了）"
+  fi
+
+  echo "  ---- 被跳过的槽位（合集/结构校验）----"
+  if [ -s "$LIB/ttc.log" ]; then
+    grep -E 'ttcbad|跳过' "$LIB/ttc.log" 2>/dev/null | tail -n 8 | sed 's/^/    /'
+  else
+    echo "    （没有跳过记录）"
+  fi
+  hr
+  echo "  说明：如果某个槽位本该吃 Bold 却显示用了常规字重，或整段没有中文槽位，"
+  echo "        就是这里的映射问题；把这份报告发给作者即可定位。"
+  echo
+}
+
 report_full() {
   echo "== 自定义字体切换模块 · 一键体检报告 =="
   collect_once
@@ -3358,6 +3429,7 @@ report_full() {
   sec13
   sec14
   sec15
+  sec16
   echo
   echo "== 报告结束 =="
 }
