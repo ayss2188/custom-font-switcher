@@ -2456,7 +2456,10 @@ const pvFaces = new Map();
 //   · 超过 60MB 就按"最久未用"释放，先把 FontFace 从 document.fonts 里删掉
 //   · 关闭详情时主动释放当前这一份
 // ---------------------------------------------------------------------------
-const PV_MAX_BYTES = 60 * 1024 * 1024;
+const PV_MAX_BYTES = 300 * 1024 * 1024;   // ★ 只当保险丝（原来 60MB 会把 A/B 的另一半挤掉）
+// ★ 2026-10-23：A/B 对比要同时装两份（各 40+MB），淘汰会把先加载的那份挤掉，
+//   表现成"左边完全不像该字体"（退回 serif）。打开 A/B 期间把两边钉住。
+const pvPinned = new Set();
 
 function pvBytesNow() {
   let n = 0;
@@ -2479,7 +2482,9 @@ function pvEvictToFit(keepId) {
   while (pvBytesNow() > PV_MAX_BYTES && pvFaces.size > 1 && guard++ < 20) {
     let oldestId = null, oldestT = Infinity;
     pvFaces.forEach((v, k) => {
-      if (k === keepId) return;
+      // ★ 2026-10-23：A/B 要同时装两份（各 40+MB），钉住的两边不能被淘汰，
+      //   否则先加载的左边会被挤掉 → 退回 serif → 看着"完全不像该字体"
+      if (k === keepId || pvPinned.has(k)) return;
       const t = (v && v.at) || 0;
       if (t < oldestT) { oldestT = t; oldestId = k; }
     });
@@ -2515,7 +2520,7 @@ async function pvLoadFace(id) {
   await face.load();
   document.fonts.add(face);
   pvFaces.set(id, { face, buf, at: Date.now() });   // 字节一起留着：属性面板要拿它算覆盖率
-  pvEvictToFit(id);                                  // 超过总量上限就释放最久未用的
+  // ★ 2026-10-23：不再在加载后淘汰 —— 原来的 60MB 上限会把 A/B 的另一半挤掉
   return face;
 }
 
@@ -7821,7 +7826,7 @@ async function abCompare(targetId) {
   const wRow = document.createElement("div");
   wRow.className = "pv-wrow";
   const wLab = document.createElement("div");
-  wLab.className = "pv-wlabel"; wLab.textContent = "粗细（两边同步）";
+  wLab.className = "pv-wlabel"; wLab.textContent = "粗细（两边同步；静态字体只能模拟）";
   const wLine = document.createElement("div");
   wLine.className = "pv-wline";
   const wIn = document.createElement("input");
@@ -7834,8 +7839,12 @@ async function abCompare(targetId) {
   wRow.append(wLab, wLine);
   wIn.oninput = () => {
     wVal.textContent = wIn.value;
+    // ★ 2026-10-23：除了可变轴，**同时**设 font-weight。
+    //   静态字体没有 wght 轴，只设 variation 的话左边（当前字体）会一动不动，
+    //   看起来像"只有右边粗细会变"。设数值后浏览器会合成粗细，两边都有反馈。
     [left.bx, right.bx].forEach(b => {
-      b.style.fontVariationSettings = '"wght" ' + wIn.value;
+      try { b.style.fontVariationSettings = '"wght" ' + wIn.value; } catch (e) {}
+      b.style.fontWeight = wIn.value;
     });
   };
 
@@ -7853,13 +7862,19 @@ async function abCompare(targetId) {
   document.body.append(mask);
   requestAnimationFrame(() => mask.classList.add("show"));
 
-  const close = () => { mask.classList.remove("show"); setTimeout(() => mask.remove(), 180); };
+  const __unpin = () => {
+    try { pvPinned.delete(curId); pvPinned.delete(targetId); } catch (e) {}
+  };
+  const close = () => { __unpin(); mask.classList.remove("show"); setTimeout(() => mask.remove(), 180); };
   cls.onclick = close;
   cancel.onclick = close;
   go.onclick = async () => {
     close();
     await selectFont(targetId);
   };
+
+  // ★ 2026-10-23：先钉住两边，避免第二份加载后把第一份挤掉（各 40+MB，超 60MB 上限）
+  try { pvPinned.add(curId); pvPinned.add(targetId); } catch (e) {}
 
   // 加载两边的字体（失败就退回系统字体，不挡流程）
   try {
@@ -8412,6 +8427,15 @@ async function selectFont(id) {
   const card = document.querySelector('.option[data-id="' + id + '"]');
   setCardBusy(card, true);
   showToast("修改中…", true);
+  // ★ 2026-10-23：apply 是同步 exec，卡住时界面会永远"修改中" → 加超时收尾
+  let __applyDone = false;
+  const __applyWd = setTimeout(() => {
+    if (__applyDone) return;
+    try { busy = false; } catch (e) {}
+    try { setCardBusy(card, false); } catch (e) {}
+    showToast("处理时间过长，已停止等待。可以再看一眼状态，或打开诊断报告", true);
+    try { refreshStatusOnly(); } catch (e) {}
+  }, 180000);
   await nextPaint();
   try {
     const out = await ksuExec(`sh ${MODDIR}/fontctl.sh apply ${shq(id)}`);
@@ -8426,11 +8450,19 @@ async function selectFont(id) {
   } catch (e) {
     showToast("切换失败：" + errText(e));
   } finally {
+    __applyDone = true; try { clearTimeout(__applyWd); } catch (e) {}
     // ★ 2026-10-22：必须显式清掉自己加的"修改中"遮罩。
     //   以前靠"整表重建"顺手清掉；现在列表指纹没变就不重建，遮罩会永久留着。
     try { setCardBusy(card, false); } catch (e) {}
     busy = false;
-    await refreshAll();
+    // ★ 2026-10-23：切完字必须立刻刷新界面。
+    //   refreshAll() 开头有 `if (refreshBusy) return;` —— 撞上别的刷新在跑会直接返回
+    //   （还不抛错），界面就停在旧状态。所以先乐观更新 + 直刷顶部，再全量。
+    // 只改 pending（待重启生效）；active 保持『本次开机实际生效』不变
+    try { pendingId = id; render(); } catch (e) {}
+    try { await refreshStatusOnly(); } catch (e) {}
+    try { await refreshAll(); } catch (e) {}
+    setTimeout(() => { try { refreshStatusOnly(); } catch (e) {} }, 1200);
   }
 }
 
@@ -9757,7 +9789,9 @@ async function toggleSetting(key) {
   //   原来只调 refreshStatusOnly()（只更新顶部几行），槽位数要等下次整页刷新，
   //   于是用户看到的就是"开关点了、数字没变"。
   //   用 refreshAll() 会连发 list+status 两条命令，但这两条现在都很快（有缓存）。
-  try { await refreshAll(); } catch (e) { await refreshStatusOnly(); }
+  try { await refreshStatusOnly(); } catch (e) {}
+  try { await refreshAll(); } catch (e) {}
+  setTimeout(() => { try { refreshStatusOnly(); } catch (e) {} }, 1200);
 }
 /* ---------- 诊断报告 ---------- */
 // 设计要点（全部围绕"点了立刻有反应"）：
