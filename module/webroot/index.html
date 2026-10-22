@@ -1793,7 +1793,10 @@ async function backfillFam() {
   //   20 个字体就是 20 次，界面卡好几秒。
   //   现在：先把所有字体探测完（纯前端读文件），收集成一份，
   //   再一次 ksuExec 交给后端的 setmeta-many 批量写。
-  const todo = fonts.filter(f => !f.meta.fam && !famTried.has(f.id));
+  // ★ 2026-10-22：缺 family / upem / subfamily 也要补（老档案没有这些字段，
+  //   字组校验会因此报「档案里没有族名原文」）。
+  const _needProbe = (m) => !m.fam || !m.family || !m.upem || !m.subfamily;
+  const todo = fonts.filter(f => _needProbe(f.meta) && !famTried.has(f.id));
   if (!todo.length) return false;
   let changed = false;
   const lines = [];
@@ -1804,8 +1807,11 @@ async function backfillFam() {
       if (m && m.fam) {
         Object.assign(f.meta, m);
         changed = true;
-        const kv = Object.entries(m).map(([k, v]) => k + "=" + v).join(" ");
-        lines.push(`${f.id} ${kv}`);
+        // ★ 2026-10-22 修：原来把多个 k=v 用空格拼成一行，后端按空格切分 →
+        //   family=Source Han Sans TC 被切成 family=Source + Han + Sans + TC，
+        //   结果族名原文永远写不进去（真机：SourceHanSansTC 一套全报缺失）。
+        //   现在一个 k=v 一行，每行都带 id。
+        for (const [k, v] of Object.entries(m)) lines.push(`${f.id} ${k}=${v}`);
       }
     } catch (e) { /* 单个失败不影响其他 */ }
   }
