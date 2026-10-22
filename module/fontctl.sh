@@ -1498,10 +1498,11 @@ case "${1:-}" in
       [ -n "$_id" ] || continue
       case "$_id" in f[0-9]*|builtin_*) ;; *) continue ;; esac
       case "$_kv" in "") continue ;; esac
-      for kv in $_kv; do
-        case "$kv" in *=*) ;; *) continue ;; esac
-        meta_set "$_id" "${kv%%=*}" "${kv#*=}" 2>/dev/null && _n=$((_n+1))
-      done
+      # ★ 2026-10-22 修：一行只放一个 k=v（值里允许空格）。
+          #   原来按空格切分，`family=Source Han Sans TC` 会变成
+          #   family=Source / Han / Sans / TC → 族名原文永远写不进去。
+          case "$_kv" in *=*) ;; *) continue ;; esac
+          meta_set "$_id" "${_kv%%=*}" "${_kv#*=}" 2>/dev/null && _n=$((_n+1))
     done
     echo "OK:$_n"
     ;;
