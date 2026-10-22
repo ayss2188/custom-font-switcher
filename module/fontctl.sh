@@ -639,74 +639,23 @@ slot_weight() {
 #     · 字形数量相差不超过 20%（防止把"只有拉丁的粗体"配进中文族）
 #   任何一条不满足 → 跳过该成员并写日志，绝不硬配。
 grp_load() {
-  local leader="$1" fam m id fam2 w
-  local pairs="$leader:$(meta_get "$leader" wght)"
-  GRP_PAIRS="$pairs"
-  # ★ 显式字重组优先：用户手动组合过（meta 里有 group=）就按它分组，
-  #   不再看 pair_family 开关（手动组合 = 明确表示"这些确实是一套"）。
+  local leader="$1" id w
+  GRP_PAIRS="$leader:$(meta_get "$leader" wght)"
+  # ★ 2026-10-22：只认**手动字重组**（meta 里有 group=）。
+  #   原来还有一个"按族名自动配对"的分支（cfg pair_family），已删除：
+  #   族名相同的字体不一定是同一套，混挂会缺字/方块，甚至开不了机；
+  #   而字重组是用户明确勾选 + 五道校验，安全得多。
   _grp=$(meta_get "$leader" group)
-  if [ -n "$_grp" ]; then
-    for id in $(lib_font_ids); do
-      [ "$id" = "$leader" ] && continue
-      [ -f "$LIB/$id.meta" ] || continue
-      [ "$(meta_get "$id" group)" = "$_grp" ] || continue
-      pairs="$pairs $id:$(meta_get "$id" wght)"
-    done
-    GRP_PAIRS="$pairs"
-    return 0
-  fi
-  # 没有手动组合 → 才看开关（默认 0 关闭）
-  [ "$(cfg_get pair_family 0)" = 1 ] || return 0
-  if [ "$(meta_get "$leader" merged)" = 1 ] || [ "$(meta_get "$leader" merge)" = 1 ]; then
-    return 0                                   # 族长是合成字体：不配对
-  fi
-  fam=$(meta_get "$leader" fam)
-  case "$fam" in ""|none) return 0 ;; esac
-  # 族长的"基准"属性
-  local l_upem l_cjk l_lat l_gly
-  l_upem=$(meta_get "$leader" upem); [ -n "$l_upem" ] || l_upem="?"
-  l_cjk=$(meta_get "$leader" cjk)
-  l_lat=$(meta_get "$leader" latin)
-  l_gly=$(meta_get "$leader" glyphs)
-  # 统一用 lib_font_ids（各项目这个函数各写各的规则：
-  #   主项目只认 f*，子项目还认 builtin_*）—— 这样函数体在两边一模一样。
+  [ -n "$_grp" ] || return 0
+  case "$_grp" in ""|none) return 0 ;; esac
   for id in $(lib_font_ids); do
     [ "$id" = "$leader" ] && continue
     [ -f "$LIB/$id.meta" ] || continue
-    # 合成产物永远不参与"按族名自动配对"（它的族名可能和基座相同，串了就出事）
-    if [ "$(meta_get "$id" merged)" = 1 ] || [ "$(meta_get "$id" merge)" = 1 ]; then
-      continue
-    fi
-    fam2=$(meta_get "$id" fam)
-    [ "$fam2" = "$fam" ] || continue
-    # ---- 成员校验（任何一条不过就跳过）----
-    if [ "$(meta_get "$id" outline)" != 1 ]; then
-      echo "同族配对跳过 $id：字体没有可用轮廓" >> "$LIB/.pair.log" 2>/dev/null
-      continue
-    fi
-    _up=$(meta_get "$id" upem)
-    if [ -n "$l_upem" ] && [ "$l_upem" != "?" ] && [ -n "$_up" ] && [ "$_up" != "$l_upem" ]; then
-      echo "同族配对跳过 $id：upem $_up ≠ $l_upem" >> "$LIB/.pair.log" 2>/dev/null
-      continue
-    fi
-    if [ "$(meta_get "$id" cjk)" != "$l_cjk" ] || [ "$(meta_get "$id" latin)" != "$l_lat" ]; then
-      echo "同族配对跳过 $id：语种覆盖类别不同（cjk/latin）" >> "$LIB/.pair.log" 2>/dev/null
-      continue
-    fi
-    case "$l_gly" in ''|*[!0-9]*) ;; *)
-      _g2=$(meta_get "$id" glyphs)
-      case "$_g2" in ''|*[!0-9]*) ;; *)
-        _lo=$(( l_gly * 80 / 100 )); _hi=$(( l_gly * 120 / 100 ))
-        if [ "$_g2" -lt "$_lo" ] || [ "$_g2" -gt "$_hi" ]; then
-          echo "同族配对跳过 $id：字形数 $_g2 与族长 $l_gly 相差过大" >> "$LIB/.pair.log" 2>/dev/null
-          continue
-        fi ;;
-      esac ;;
-    esac
+    [ "$(meta_get "$id" group)" = "$_grp" ] || continue
     w=$(meta_get "$id" wght)
-    pairs="$pairs $id:$w"
+    GRP_PAIRS="$GRP_PAIRS $id:$w"
   done
-  GRP_PAIRS="$pairs"
+  return 0
 }
 
 # 从族里挑字重最接近 want 的那一份；族里只有一份就直接返回它
@@ -1083,8 +1032,29 @@ do_apply() {
             # ★ 2026-10-16：**别再吞报错**。真机上"合集没生成"导致挂载一直失败，
             #   而 ttc.log 里一个字都没有 —— 因为这里原来是 2>/dev/null || cand=""，
             #   失败原因彻底丢失。现在把 stderr 第一行 + 产物大小 + 剩余空间都记下来。
+            # ★ 2026-10-22（提速）：合集生成结果缓存。
+            #   键包含"用户字体 + 原合集 + face 集合"，任何一项变了都算未命中。
+            TTC_CACHE="$LIB/.ttc.cache"
+            _tc_sz=$(stat -c %s "$src" 2>/dev/null); _tc_mt=$(stat -c %Y "$src" 2>/dev/null)
+            _tc_osz=$(stat -c %s "/$rel" 2>/dev/null); _tc_omt=$(stat -c %Y "/$rel" 2>/dev/null)
+            _tc_cn=$(printf '%s' "$cn" | tr -d ' ')
+            _tc_key="${id}_${_tc_sz}_${_tc_mt}_${_tc_osz}_${_tc_omt}_${nf}_${_tc_cn}_g1"
+            _tc_hit=""
+            if [ -n "$_tc_key" ] && [ -s "$TTC_CACHE/$_tc_key.ttc" ]; then
+              _tc_hit="$TTC_CACHE/$_tc_key.ttc"
+            fi
+            if [ -n "$_tc_hit" ]; then
+              if cp -f "$_tc_hit" "$cand" 2>/dev/null && [ -s "$cand" ]; then
+                _twrc=0; _twerr=""
+              else
+                _twrc=1; _twerr="cache-copy-failed"; cand=""
+              fi
+              printf '%s %s faces=%s replace=%s via=ttc-cache-hit\n' \
+                "$id" "$rel" "$nf" "$(printf '%s' "$cn" | tr ' ' ',')" >> "$LIB/ttc.log" 2>/dev/null
+            else
             _twerr=$(ttc_wrap_mix "$src" "$nf" "$cand" "/$rel" "$cn" 2>&1)
             _twrc=$?
+            fi
             [ "$_twrc" = 0 ] || cand=""
             if [ -z "$cand" ] || [ ! -s "$cand" ]; then
               _twsz=$(wc -c < "$cand" 2>/dev/null | tr -d ' ')
@@ -1117,6 +1087,23 @@ do_apply() {
                   >> "$LIB/ttc.log" 2>/dev/null
                 rm -f "$cand" 2>/dev/null
                 cand=""
+              fi
+            fi
+            # 产物合格 → 存进缓存（下次同条件直接复用）
+            if [ -n "$cand" ] && [ -n "${_tc_key:-}" ] && [ ! -s "$TTC_CACHE/$_tc_key.ttc" ]; then
+              # 空间保护：剩余不足 300MB 就不缓存（宁可下次慢，也不能把存储占满）
+              _tc_free=$(free_kb "$LIB" 2>/dev/null)
+              case "${_tc_free:-}" in ''|*[!0-9]*) _tc_free=0 ;; esac
+              if [ "$_tc_free" -gt 0 ] && [ "$_tc_free" -lt 307200 ]; then
+                printf '%s %s via=ttc-no-cache detail=剩余空间不足(%sKB)\n' \
+                  "$id" "$rel" "${_tc_free}" >> "$LIB/ttc.log" 2>/dev/null
+              else
+              mkdir -p "$TTC_CACHE" 2>/dev/null
+              cp -f "$cand" "$TTC_CACHE/$_tc_key.ttc" 2>/dev/null
+              # 只保留最近 3 份（当前字体 + 上一次），避免占太多空间
+              ls -1t "$TTC_CACHE"/*.ttc 2>/dev/null | tail -n +4 | while IFS= read -r _old; do
+                rm -f "$_old" 2>/dev/null
+              done
               fi
             fi
             if [ -n "$cand" ]; then
@@ -1249,6 +1236,103 @@ do_report() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# ★ 2026-10-22（底层优化）：**永久索引**
+#   目的：把"当前真相"落盘一次，之后谁要用就直接读文件，不再现场 glob/解析。
+#   谁维护：所有会改字体库的子命令在结束时调用 index_build（见各分支末尾）。
+#   谁读取：界面（fastquery/index）、诊断报告、挂载脚本需要清单时。
+#   格式：纯文本 key=value + 若干 font= 行，便于 shell/grep 直接取。
+#   自愈：文件不存在或 schema 版本不符 → index_build 重建一次。
+# ---------------------------------------------------------------------------
+INDEX_SCHEMA=3
+
+
+# ---------------------------------------------------------------------------
+# ★ 2026-10-22（修「导入字体后界面不刷新」）：
+#   原来是在各个分支**末尾**调用 index_build —— 但那些分支几乎都是
+#   `echo "$out"; exit $rc` 的形式，exit 后面的代码永远不会执行，
+#   于是索引一直是旧的，界面读旧索引 ⇒ 看不到刚导入的字体。
+#
+#   现在改成"脏标记 + 退出时统一重建"：
+#     · 会改字体库的分支开头写 mark_dirty
+#     · 不管从哪条路径退出（exit / 正常结束 / 出错），trap 都会重建一次
+#     · 只读命令（status / list / quick / index …）不标记，不会多余重建
+# ---------------------------------------------------------------------------
+INDEX_DIRTY=0
+mark_dirty() { INDEX_DIRTY=1; return 0; }
+
+_index_on_exit() {
+  [ "${INDEX_DIRTY:-0}" = 1 ] || return 0
+  index_build 2>/dev/null
+  return 0
+}
+trap '_index_on_exit' EXIT
+
+index_path() { printf '%s/.index' "$LIB"; }
+
+index_build() {
+  local _p _tmp _id _lf _lnm _lsz _lmt _n
+  _p=$(index_path)
+  _tmp="$_p.tmp.$$"
+  mkdir -p "$LIB" 2>/dev/null
+  {
+    printf '#CFS-INDEX %s\n' "$INDEX_SCHEMA"
+    printf 'built=%s\n' "$(date +%s 2>/dev/null)"
+    printf 'ver=%s\n' "$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null | head -n1 | tr -d '\r')"
+    printf 'active=%s\n' "$(cur_active 2>/dev/null)"
+    printf 'pending=%s\n' "$(cur_pending 2>/dev/null)"
+    printf 'rom=%s\n' "$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/current_rom")"
+    printf 'mode=%s\n' "$(mount_mode 2>/dev/null)"
+    printf 'slots=%s\n' "$(grep -c . "$MODDIR/slots.map" 2>/dev/null)"
+    _n=0
+    for _lf in "$LIB"/*.ttf; do
+      [ -e "$_lf" ] || continue
+      case "$_lf" in *'*'*) continue ;; esac
+      _id=${_lf##*/}
+      case "$_id" in f[0-9]*.ttf|builtin_*.ttf) ;; *) continue ;; esac
+      _id=${_id%.ttf}
+      _lnm=""
+      [ -f "$LIB/$_id.name" ] && IFS= read -r _lnm < "$LIB/$_id.name" 2>/dev/null
+      _lsz=0
+      _lmt=""
+      if [ -f "$LIB/$_id.meta" ]; then
+        while IFS= read -r _kv; do
+          [ -z "$_kv" ] && continue
+          case "$_kv" in \#*) continue ;; esac
+          _lmt="${_lmt}${_lmt:+,}${_kv}"
+          case "$_kv" in
+            size=*) _lsz=${_kv#size=} ;;
+            outline_sz=*) [ "$_lsz" = 0 ] && _lsz=${_kv#outline_sz=} ;;
+          esac
+        done < "$LIB/$_id.meta" 2>/dev/null
+      fi
+      case "${_lsz:-}" in ''|*[!0-9]*) _lsz=0 ;; esac
+      printf 'font=%s|%s|%s|%s\n' "$_id" "${_lnm:-$_id}" "$_lsz" "$_lmt"
+      _n=$((_n + 1))
+    done
+    printf 'fonts=%s\n' "$_n"
+  } > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$_p" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
+  return 0
+}
+
+index_ok() {
+  local _p _s _newer
+  _p=$(index_path)
+  [ -s "$_p" ] || return 1
+  _s=$(sed -n '1s/^#CFS-INDEX //p' "$_p" 2>/dev/null | tr -d '\r')
+  [ "$_s" = "$INDEX_SCHEMA" ] || return 1
+  # ★ 自愈：字体库里有比索引更新的字体文件（手工放进来的/外部改动）→ 视为过期
+  _newer=$(find "$LIB" -maxdepth 1 -name '*.ttf' -newer "$_p" -print -quit 2>/dev/null)
+  [ -z "$_newer" ] || return 1
+  return 0
+}
+
+# 输出索引内容（缺失/过期就重建一次）
+index_get() {
+  index_ok || index_build
+  cat "$(index_path)" 2>/dev/null
+}
+
 case "${1:-}" in
   status)
     A=$(cur_active); P=$(cur_pending)
@@ -1363,6 +1447,50 @@ case "${1:-}" in
       esac
     done
     ;;
+
+
+
+  index)
+    # 直接吐索引（缺失就现场建一次）
+    index_get
+    ;;
+
+  index-build)
+    index_build && echo OK
+    ;;
+
+  quick)
+    # ★ 2026-10-22（性能）：首屏一次性拿「状态 + 字体列表」。
+    #   为什么不直接调 status + list：KernelSU 的 exec 是同步的，两次调用 = 两次
+    #   shell 启动 + 两次解析（common.sh/slots.sh/mount.sh + fontctl 本身 ≈ 250KB）。
+    #   这里还额外跳过 slot_sources_report（要跑外部进程，是 status 里最重的一步），
+    #   SP/SP4 留空，界面那三行先隐藏，随后由后台 status 补齐。
+    A=$(cur_active); P=$(cur_pending)
+    echo "A=$A"
+    echo "P=$P"
+    echo "R=$(cat "$MODDIR/current_rom" 2>/dev/null | tr -d '[:space:]')"
+    if [ -f "$MODDIR/rescued" ]; then echo "X=1"; else echo "X=0"; fi
+    echo "N=$(wc -l 2>/dev/null < "$APPLIED" | tr -d ' ')"
+    echo "S=$(effective_scope "$P" 2>/dev/null)"
+    echo "M=$(mount_mode)"
+    echo "PM=$(cat "$MODDIR/payload.mode" 2>/dev/null | tr -d '[:space:]')"
+    echo "RM=$(root_manager)"
+    echo "V=$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null)"
+    echo "KL=$(cfg_get keep_lockscreen 0)"
+    _ttcn=$(awk '$2 ~ /\.ttc$/ { c++ } END { print c + 0 }' "$MODDIR/slots.map" 2>/dev/null)
+    case "${_ttcn:-}" in ''|*[!0-9]*) _ttcn=0 ;; esac
+    echo "TT=$_ttcn"
+    echo "@@L@@"
+    # ★ 2026-10-22（底层优化）：优先读永久索引 —— 单文件、单次读，不再现场 glob。
+    #   索引不存在或 schema 不符 → 现场建一次（只发生一次）。
+    if index_ok; then
+      sed -n 's/^font=//p' "$(index_path)" 2>/dev/null
+    else
+      sed -n 's/^font=//p' "$(index_path)" 2>/dev/null
+    fi
+
+    ;;
+
   list)
     # ★★ 2026-10-18 重写（修「界面卡在 ① 发送 list」）：
     #   **不 stat 任何字体文件，不启动任何外部命令。**
@@ -1408,6 +1536,7 @@ case "${1:-}" in
     printf '%s' "$_lout"
     ;;
   import)
+    mark_dirty
     bad_path "$2" && { echo "ERROR:路径不允许"; exit 1; }
     src=$(to_real "$2")
     [ -f "$src" ] || src="$2"
@@ -1420,6 +1549,7 @@ case "${1:-}" in
     echo "OK"
     ;;
   upload-finish)
+    mark_dirty
     [ -f "$PART" ] || { echo "ERROR:没有待处理的上传"; exit 1; }
     if [ -n "$2" ] && [ "$(wc -c < "$PART" | tr -d ' ')" != "$2" ]; then
       rm -f "$PART"
@@ -1430,6 +1560,7 @@ case "${1:-}" in
     echo "$out"; exit $rc
     ;;
   rename)
+    mark_dirty
     check_id "$2"
     [ -n "$3" ] || { echo "ERROR:名称不能为空"; exit 1; }
     printf '%s' "$(clean_name "$3")" > "$LIB/$2.name"
@@ -1437,6 +1568,7 @@ case "${1:-}" in
     echo "OK"
     ;;
   delete)
+    mark_dirty
     shift
     DEL=0; SKIP=0
     for id in "$@"; do
@@ -1451,9 +1583,11 @@ case "${1:-}" in
     echo "OK:$DEL:$SKIP"
     ;;
   apply)
+    mark_dirty
     do_apply "$2"
     ;;
   rescan)
+    mark_dirty
     # ★ 2026-10-17：重新扫描本机字体并覆盖设备清单。
     #   什么时候用：换了系统大版本、装了新字体但界面没显示、或诊断建议你重扫。
     #   平时**不需要**跑 —— apply/reapply 只读清单，不扫描。
@@ -1467,6 +1601,7 @@ case "${1:-}" in
     fi
     ;;
   reapply)
+    mark_dirty
     do_apply "$(cur_pending)"
     ;;
   plan)
@@ -1479,6 +1614,7 @@ case "${1:-}" in
     rm -f "$p"
     ;;
   setmeta)
+    mark_dirty
     check_id "$2"
     id="$2"; shift 2
     for kv in "$@"; do
@@ -1488,6 +1624,7 @@ case "${1:-}" in
     echo "OK"
     ;;
   setmeta-many)
+    mark_dirty
     # ★ 2026-10-17 新增（UI 首屏提速）：一次给多个字体写 meta。
     #   原来界面会给每个缺族键的字体单独调一次 `setmeta`，
     #   而 fontctl.sh 每次启动都要把 common.sh + slots.sh 全加载一遍 —
@@ -1728,6 +1865,7 @@ case "${1:-}" in
     fi
     ;;
   sync)
+    mark_dirty
     [ -f "$MODDIR/pending_font" ] && cp -f "$MODDIR/pending_font" "$MODDIR/active_font"
     cp -f "$MODDIR/active_font" "$LIB/last_selection" 2>/dev/null
     refresh_prop
