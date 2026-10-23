@@ -723,6 +723,7 @@ slot_scan_cache_stamp() {   # $1=moddir → 扫描完成后写指纹
 
 slot_device_scan() {   # $1=moddir → 生成 device.list
   local moddir="${1:-${MODDIR:-}}"
+
   local _sd="${LIB:-/data/adb/custom_font_lib}/scanned"
   local _dev="$_sd/device.list"
   local tmp n
@@ -730,10 +731,10 @@ slot_device_scan() {   # $1=moddir → 生成 device.list
   mkdir -p "$_sd" 2>/dev/null
   tmp="$_dev.tmp.$$"
   {
-    slot_xml_names              | sed 's/^/x /'
-    slot_static_names "$moddir" 0 0 0 | sed 's/^/s /'
-    slot_oem_names "$moddir"    | sed 's/^/o /'
-    slot_dir_names              | sed 's/^/d /'
+    slot_xml_names                      | sed 's/^/x /'
+    slot_static_names "$moddir" 0 0 0   | sed 's/^/s /'
+    slot_oem_names "$moddir"            | sed 's/^/o /'
+    slot_dir_names                      | sed 's/^/d /'
   } 2>/dev/null > "$tmp.raw"
   awk '{ src=substr($0,1,1); nm=substr($0,3)
          if (nm == "") next
@@ -742,19 +743,8 @@ slot_device_scan() {   # $1=moddir → 生成 device.list
        END { for (nm in L) print L[nm] }' "$tmp.raw" > "$tmp.names" 2>/dev/null
   rm -f "$tmp.raw" 2>/dev/null
   : > "$tmp"
-  local dirs d role l name _rom
+  local dirs d role l name
   dirs=$(slot_dirs 2>/dev/null)
-  # ★ 2026-10-23（魅族闪退，定稿）：**Flyme 上不做本机扫描**。
-  #   1.4.3 只有"机型清单"（约 70 个槽位）时魅族完全正常；
-  #   后来加了"本机扫描补槽位"（多出 80 多个，多在 /product、/vendor），
-  #   魅族 App 开始闪退 / 酷安跳不了外链 / B站视频退回桌面；
-  #   而且只有把「卸载模块」关掉（App 能看到挂载）才触发 → 说明是"替换范围太宽"。
-  #   所以 Flyme 上直接跳过本机扫描，槽位只来自机型清单 —— **与 1.4.3 行为一致**。
-  #   厂商字体名单（slot_oem_names_raw 的 flyme 分支）作为第二层保险保留。
-  _rom=$(tr -d '[:space:]' 2>/dev/null < "$moddir/current_rom")
-  if [ "$_rom" = "flyme" ]; then
-    return 1
-  fi
   while read -r name; do
     [ -n "$name" ] || continue
     l=$(_lc "$name")
@@ -773,7 +763,7 @@ slot_device_scan() {   # $1=moddir → 生成 device.list
   if [ "${n:-0}" -ge 1 ]; then
     if mv -f "$tmp" "$_dev" 2>/dev/null; then
       slot_scan_cache_stamp "$moddir"
-    return 0
+      return 0
     fi
     rm -f "$tmp" 2>/dev/null
     return 1
