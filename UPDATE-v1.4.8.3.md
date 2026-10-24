@@ -1,3 +1,4 @@
+# 自定义字体切换模块 v1.4.8.3
 
 ### 🐞 修「魅族上什么都替换不了」（槽位计划变成 0 个）
 
@@ -18,3 +19,10 @@
 - Flyme **恢复本机扫描**，但**只扫 `/system` 下的字体目录**
 - `/product`、`/vendor`、`/my_product`、`/my_stock` 等厂商分区**一律不碰**
   （Flyme 的 UI 字体就在这些分区里，替换它们会引发闪退/跳转失败）
+- 厂商字体名单（SFPro / SFDIN / DINPro / MyriadPro…）继续排除，作为第二层保险
+
+升级后会重扫一次（扫描印记 14083）。这一版对非魅族设备无行为变化。
+
+---
+
+完整日志见 [CHANGELOG](https://github.com/ayss2188/custom-font-switcher/blob/main/CHANGELOG.md)。
