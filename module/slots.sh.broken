@@ -1,0 +1,498 @@
+#!/system/bin/sh
+# slots.sh - 字体槽位发现与分类
+#
+# 思路（吸取"按设备真实情况生成"的做法，而不是固定清单硬铺）：
+#   1. 只替换设备上"真实存在"的字体文件，不凭空创建不存在的路径（减少挂载节点）
+#   2. 候选来源：字体配置 XML 中的主文字族 ∪ 本 ROM 已知文件名 ∪ OEM 命名规则
+#   3. 按文件名给每个槽位分角色，默认不碰：其他文字体系/日韩、符号/Emoji、
+#      衬线/等宽/时钟/展示/斜体 等"高风险"槽位
+#   4. 按字体实际覆盖范围决定范围（中英文 / 仅英文 / 仅中文）
+#
+# 用法（source 后调用）：
+#   slot_plan <模块目录> <scope:all|latin|cjk> <keep_lang:0|1> <keep_special:0|1>
+#     -> 每行输出 "角色 目标路径"，目标路径相对 /，如 latin system/fonts/Roboto-Regular.ttf
+#   slot_report <模块目录>   -> 角色统计（诊断用）
+#
+# FSROOT 仅供测试：把真实路径前缀到一个模拟根目录下。
+
+FSROOT=${FSROOT:-}
+
+_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ---------------------------------------------------------------------------
+# 真实存在的字体目录（输出绝对路径，不含 FSROOT）
+# ---------------------------------------------------------------------------
+slot_dirs() {
+  # ★ 1.0.9.2：**加进程内缓存**（SLOT_DIRS_CACHE）。
+  #   这个函数每次调用都要遍历所有分区、用 glob 找 `*/fonts` 目录
+  #   （`"$FSROOT"/*/fonts "$FSROOT"/*/*/fonts`）。而它在一次运行里被调用 **6 次以上**
+  #   （slot_candidates、slot_scan_candidates、slot_plan、报告第 5 节、字体目录映射…）。
+  #   "设备上有哪些字体目录"在一次运行内不会变 —— 重复扫描纯属浪费，
+  #   在真机（分区多、目录多）上尤其明显。这是第 1 步里最容易被忽略的一块固定开销。
+  # ★ 2026-10-16 修（作者真机 v1.2.6）：**空结果不许缓存**。
+  #   故障链：customize.sh 一开始 detect_rom → _xm_exclusive_font → 这里。
+  #   那一刻若分区还没就绪，算出来是空的，而旧判断用 "${SLOT_DIRS_CACHE+x}"
+  #   （变量"存在"就返回，**空串也算存在**）→ 空缓存锁死整场运行 →
+  #     找不到 fonts.xml（界面显示「系统配置里引用的 0 个」）、
+  #     找不到 MiSans（识别系统误判成 原生/类原生）、
+  #     挂载计划为空。
+  #   现在：只有非空才认缓存。空 = "这次没读到"，下次重新扫
+  #   （重新扫的代价只是两次 glob，比"整场算错"划算得多）。
+  if [ -n "${SLOT_DIRS_CACHE+x}" ] && [ -n "$SLOT_DIRS_CACHE" ]; then
+    printf '%s\n' "$SLOT_DIRS_CACHE" | grep -v '^[[:space:]]*$'
+    return 0
+  fi
+  SLOT_DIRS_CACHE=$(
+    {
+      for d in /system/fonts /system_ext/fonts /product/fonts /vendor/fonts /odm/fonts /oem/fonts \
+               /my_product/fonts /my_region/fonts /my_company/fonts /my_carrier/fonts /my_stock/fonts \
+               /my_heytap/fonts /my_manifest/fonts /my_bigball/fonts /mi_ext/fonts /hw_product/fonts \
+               /prism/fonts /optics/fonts /product/vivo/fonts /system_ext/vivo/fonts /vendor/vivo/fonts \
+               /oplus_product/fonts /oplus_engineering/fonts /oplus_version/fonts /oplus_region/fonts; do
+        [ -d "$FSROOT$d" ] && echo "$d"
+      done
+      # 未知厂商分区自动发现：/xxx/fonts 与 /xxx/yyy/fonts
+      for d in "$FSROOT"/*/fonts "$FSROOT"/*/*/fonts; do
+        [ -d "$d" ] || continue
+        parent=${d%/fonts}
+        [ -L "$parent" ] && continue          # /system/product 之类的符号链接，避免重复
+        p=${d#"$FSROOT"}
+        case "$p" in
+          /data/*|/sdcard/*|/storage/*|/mnt/*|/proc/*|/sys/*|/dev/*|/apex/*|/linkerconfig/*|\
+          /config/*|/metadata/*|/cache/*|/acct/*|/debug_ramdisk/*|/second_stage_resources/*|\
+          /system/etc/*|/system/usr/*|/system/app/*|/system/priv-app/*) continue ;;
+        esac
+        echo "$p"
+      done
+    } | sort -u
+  )
+  # ★ 2026-10-16 兜底（真机实测：/system/fonts 明明存在，这里却返回 0 条）：
+  #   一台有字体的机器**绝不该**一条目录都扫不到 —— 这是不变量。
+  #   返回 0 条的后果极严重：_xm_exclusive_font 找不到字体 → 识别系统误判，
+  #   而识别错了会去读 targets/aosp.list（36 条）而不是 targets/hyperos.list（99 条），
+  #   替换范围跟着错。
+  #   所以：扫完是空 → 直接用硬编码清单兜底（逐个核实存在），不让"0 条"传下去。
+  if [ -z "$(printf '%s' "$SLOT_DIRS_CACHE" | tr -d '[:space:]')" ]; then
+    SLOT_DIRS_CACHE=$(
+      for d in /system/fonts /system_ext/fonts /product/fonts /vendor/fonts \
+               /odm/fonts /oem/fonts /mi_ext/fonts /my_product/fonts /hw_product/fonts \
+               /prism/fonts /optics/fonts; do
+        [ -d "$FSROOT$d" ] && echo "$d"
+      done | sort -u
+    )
+  fi
+  printf '%s\n' "$SLOT_DIRS_CACHE" | grep -v '^[[:space:]]*$'
+}
+
+# ---------------------------------------------------------------------------
+# 字体配置 XML 文件列表
+# ---------------------------------------------------------------------------
+slot_xml_files() {
+  local x
+  for x in "$FSROOT"/system/etc/*font*.xml "$FSROOT"/system_ext/etc/*font*.xml \
+           "$FSROOT"/product/etc/*font*.xml "$FSROOT"/vendor/etc/*font*.xml \
+           "$FSROOT"/odm/etc/*font*.xml "$FSROOT"/*/etc/*font*.xml; do
+    [ -f "$x" ] && echo "$x"
+  done | sort -u
+}
+
+# ---------------------------------------------------------------------------
+# 一次扫完所有字体配置，列出**所有被中文（lang 以 zh 开头）引用的 .ttc 合集**：
+#   每行 "<文件名> <序号> <lang>"，例如
+#   NotoSansCJK-Regular.ttc 2 zh-Hans
+#   NotoSansCJK-Regular.ttc 3 zh-Hant,zh-Bopo
+#
+# 为什么要有它：一个合集里装着好几套字（实测三星 SM-S9280 与魅族 Flyme 12.6 都是
+#   0=ja  1=ko  2=zh-Hans  3=zh-Hant,zh-Bopo），**只能换中文那几号**，
+# 日/韩留着原字形，否则用户的中文字体没有假名/谚文字形，日韩文本就变方块。
+#
+# 性能：整份 XML 只起 2 个进程（tr + sed），和 slot_xml_names 一个路子；结果在同一个
+# 进程里缓存（TTC_PAIRS_CACHE），一条命令里被问多次也只扫一遍。
+# ---------------------------------------------------------------------------
+ttc_cn_pairs() {
+  local x fam hdr body rest attrs name l idx
+  if [ -z "${TTC_PAIRS_CACHE+x}" ]; then
+    TTC_PAIRS_CACHE=$(
+      for x in $(slot_xml_files); do
+        [ -f "$x" ] || continue
+        tr '\n\r\t' '   ' 2>/dev/null < "$x" | sed 's/<family/\n<family/g' \
+          | while IFS= read -r fam || [ -n "$fam" ]; do
+              case "$fam" in '<family'*) ;; *) continue ;; esac
+              hdr=${fam%%>*}
+              l=""
+              case "$hdr" in *' lang="'*) l=${hdr#*' lang="'}; l=${l%%\"*} ;; esac
+              case "$l" in [Zz][Hh]*) ;; *) continue ;; esac
+              body=${fam#*>}
+              rest=$body
+              while :; do
+                case "$rest" in *'<font'*) ;; *) break ;; esac
+                rest=${rest#*<font}
+                attrs=${rest%%>*}
+                rest=${rest#*>}
+                name=${rest%%<*}
+                _trim "$name"
+                case "$TRIM_OUT" in
+                  *.[Tt][Tt][Cc])
+                    idx=0
+                    case "$attrs" in *' index="'*) idx=${attrs#*' index="'}; idx=${idx%%\"*} ;; esac
+                    case "$idx" in ''|*[!0-9]*) idx=0 ;; esac
+                    printf '%s %s %s\n' "$TRIM_OUT" "$idx" "$l"
+                    ;;
+                esac
+              done
+            done
+      done | sort -u
+    )
+  fi
+  [ -n "$TTC_PAIRS_CACHE" ] && printf '%s\n' "$TTC_PAIRS_CACHE"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# 某个 .ttc 合集里"哪几号 face 是中文" —— 要换成用户字体的就是这几号
+# 用法：ttc_cn_indices <文件名> [face总数]
+#
+# 兜底：这个文件一个中文引用都没有时，**只换 2 号**那一号 face。
+#
+# 为什么只换 2 号（以前是"2 号往后全换"）：2 号是 Noto / 三星这几套 CJK 合集里
+# 简体中文（zh-Hans）的位置，这是最可靠的一个惯例；再往后是什么**完全没法保证**——
+# 万一某机型的 3 号是日文，全换就会把日文换成用户字体、日文直接变方块。
+# 换句话说：这里宁可"只让中文跟着变"，也不赌别的语言。
+# （配置里能读到中文引用时走上面的 xml 分支，压根用不到这个兜底。）
+#
+# 顺便把"凭什么这么判"回填到两个全局变量，给诊断报告用（见 fontctl.sh 的 ttc.log）：
+#   TTC_CN_SRC    = xml（按字体配置）/ fallback（按惯例兜底）/ none（没得换）
+#   TTC_CN_DETAIL = 匹配到的 lang:index 明细，如 "zh-Hans:2 zh-Hant,zh-Bopo:3 "
+# 注意：要拿到这两个变量，调用时别用 $(...) 包（那会开子 shell），改成重定向到临时文件再读。
+# ---------------------------------------------------------------------------
+ttc_cn_indices() {
+  local want="$1" total="${2:-0}" pairs hans i
+  TTC_CN_SRC="none"; TTC_CN_DETAIL=""
+  pairs=$(ttc_cn_pairs 2>/dev/null | awk -v f="$want" '$1 == f { print $3 ":" $2 }' | sort -u)
+  if [ -n "$pairs" ]; then
+    TTC_CN_SRC="xml"     # 依据：字体配置里的 zh-* 引用
+    # 繁体那一号要不要跳过 —— 1.0.8 起按"用户有没有自己调过 + 字体有没有繁体字形"判：
+    #   · 用户自己调过 keep_lang  → 完全按他的（1=保留繁体 / 0=连繁体一起换）
+    #   · 没调过 → 看字体 meta：没有繁体字形（hant=0）就跳过繁体那一号（免得变方块），有就一起换
+    # 例外：如果这个合集**只**被繁中引用（纯繁体用户），就照换 —— 否则中文一点都不会变。
+    _skip_hant=0
+    _kl_user=$(sed -n 's/^keep_lang=//p' "$SETTINGS" 2>/dev/null | tail -n1 | tr -d '\r\n')
+    if [ -n "$_kl_user" ]; then
+      [ "$_kl_user" = 1 ] && _skip_hant=1
+    else
+      _meta_have hant || _skip_hant=1
+    fi
+    if [ "$_skip_hant" = 1 ]; then
+      hans=$(printf '%s\n' "$pairs" | grep -vi 'hant\|bopo')
+      if [ -n "$hans" ]; then
+        TTC_CN_DETAIL="$(printf '%s' "$pairs" | tr '\n' ' ')（已跳过繁体那一号：你的字体没有繁体字形）"
+        pairs="$hans"
+      fi
+    fi
+    [ -n "$TTC_CN_DETAIL" ] || TTC_CN_DETAIL=$(printf '%s' "$pairs" | tr '\n' ' ')
+    printf '%s\n' "$pairs" | sed 's/.*://' | sort -n -u
+    return 0
+  fi
+  if [ "$total" -ge 3 ] 2>/dev/null; then
+    TTC_CN_SRC="fallback"   # 配置里没找到中文引用 → 只按最可靠的惯例动 2 号
+    TTC_CN_DETAIL="配置里没有中文引用，按惯例只换 2 号（zh-Hans 常见位置）"
+    printf '2\n'
+  fi
+  return 0
+}
+
+# 某个 <family> 是否属于"主文字族"（无语言 / 拉丁 / 中文），排除衬线、等宽、Emoji 等
+# 纯 shell 大小写不敏感匹配，不启动任何外部进程（性能关键）
+_xml_family_ok() {
+  case "$1" in
+    *[Ee][Mm][Oo][Jj][Ii]*|*[Ss][Yy][Mm][Bb][Oo][Ll]*|*[Mm][Oo][Nn][Oo]*|*[Cc][Uu][Rr][Ss][Ii][Vv][Ee]*|\
+    *[Cc][Aa][Ss][Uu][Aa][Ll]*|*[Mm][Aa][Tt][Hh]*|*[Mm][Uu][Ss][Ii][Cc]*|*[Cc][Ll][Oo][Cc][Kk]*)
+      return 1 ;;
+  esac
+  case "$1" in
+    *[Ss][Aa][Nn][Ss]-[Ss][Ee][Rr][Ii][Ff]*|*[Ss][Aa][Nn][Ss][Ss][Ee][Rr][Ii][Ff]*) : ;;
+    *[Ss][Ee][Rr][Ii][Ff]*) return 1 ;;
+  esac
+  if [ -n "$2" ]; then
+    case "$2" in
+      *[Zz][Hh]*|*[Uu][Nn][Dd]-[Ll][Aa][Tt][Nn]*|[Ee][Nn]|[Ee][Nn]-*) : ;;
+      *) return 1 ;;
+    esac
+  fi
+  return 0
+}
+
+# 去掉字符串首尾空格（纯 shell，结果写入 TRIM_OUT，不启动进程）
+_trim() {
+  local s="$1"
+  while case "$s" in ' '*) true ;; *) false ;; esac; do s=${s# }; done
+  while case "$s" in *' ') true ;; *) false ;; esac; do s=${s% }; done
+  TRIM_OUT="$s"
+}
+
+# ---------------------------------------------------------------------------
+# 语言标签精确判定（2026-10-14 新增）
+#
+# 为什么需要它：`_role_set` 原来用 `*ko*` / `*ja*` 这种**子串**判日韩，会误命中：
+#     lang="und-Nkoo"（西非 NKo 文字）  含 "ko" → 被判成**韩文**
+#     lang="und-Java"（爪哇文）          含 "ja" → 被判成**日文**
+# 后果不只是"名字叫错"：自适应补全会把这两种字体当成韩文/日文槽位**换掉**，
+#   而用户字体里没有 NKo / 爪哇字形 → **那两种文字变方块**。
+#
+# 判定规则（精确，不是子串）：
+#     整串必须是 <码> 或 <码>-<地区…> 的形式；
+#     也接受逗号分隔的多个标签（如 `zh-Hant,zh-Bopo`）。
+#     `und-Nkoo` 里的 "nkoo" 是以 `und-` 开头的脚本码，**不算**语言码。
+# ---------------------------------------------------------------------------
+_lang_is() {   # $1=语言标签串  $2=要找的码（如 ko / ja）
+  local _s _t _p
+  _s=$(_lc "${1:-}")
+  _t=$(_lc "$2")
+  [ -n "$_s" ] || return 1
+  while [ -n "$_s" ]; do
+    _p=${_s%%,*}
+    case "$_p" in
+      "$_t"|"$_t"-*) return 0 ;;
+    esac
+    case "$_s" in
+      *,*) _s=${_s#*,} ;;
+      *)   break ;;
+    esac
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# 【1.0.9 新增】自适应扫描：从**设备自己的字体配置**挖出"哪种语言用哪个字体文件"
+#
+# 为什么需要（作者要求）：
+#   作者手上只有小米机器，适配别的机型全靠别人的真机报告。诊断报告**最核心的价值**
+#   就是回答"他这台系统的字体到底靠什么生效"。以前这条信息散在第 5/6 节的原始 XML 里，
+#   得人肉去读；这一版直接把它整理成"语言 → 字体文件"的清单。
+#
+#   另外：**角色判定必须看配置里的语言标签**，不能看文件名。
+#   实测教训：UnknownHant-Regular.ttf 这种名字一眼能看出是繁体，但真实机型上
+#   中文主字体常常叫 SysSans-Hans-Regular.ttf / VivoFont.ttf / SECCJK-Regular.ttc ——
+#   文件名里根本没有 hans/hant/kana 这些字样，猜不出来。配置里的 lang="zh-Hans" 才是实锤。
+#
+# 输出（每行）："<角色> <文件名> <语言标签>"，角色由 family 的 lang 决定：
+#   lang 含 zh-Hant/zh-Bopo/zh-HK/zh-TW/zh-MO → lang   （繁体那份，归"保留日韩等文字"管）
+#   lang 含 zh                                 → cjk    （简中 / CJK 主字体）
+#   lang 含 ja                                 → kana   （日文）
+#   lang 含 ko                                 → hangul （韩文）
+#   lang 为空                                  → main   （无语言的通用主字体）
+#   lang 含 en / und-Latn                      → latin  （拉丁）
+#   其它语言（阿拉伯、泰文、天城文…）           → 跳过   （不归我们碰）
+#   family 名带 Emoji/Symbol/Clock/Serif…      → 跳过   （装饰/符号，_xml_family_ok 挡掉）
+# 性能：整份 XML 只起 2 个进程（tr + sed），结果在同一进程里缓存（SCAN_NAMES_CACHE）。
+# ---------------------------------------------------------------------------
+slot_scan_names() {
+  local x fam hdr body rest name n l role
+  # ★ 2026-10-16 修：空结果不许当缓存（跟 slot_dirs / DIR_NAMES_CACHE 同一个坑）
+  if [ -z "${SCAN_NAMES_CACHE+x}" ] || [ -z "$SCAN_NAMES_CACHE" ]; then
+    SCAN_NAMES_CACHE=$(
+      for x in $(slot_xml_files); do
+        [ -f "$x" ] || continue
+        tr '\n\r\t' '   ' 2>/dev/null < "$x" | sed 's/<family/\n<family/g' \
+          | while IFS= read -r fam || [ -n "$fam" ]; do
+              case "$fam" in '<family'*) ;; *) continue ;; esac
+              hdr=${fam%%>*}
+              n=""; l=""
+              case "$hdr" in *' name="'*) n=${hdr#*' name="'}; n=${n%%\"*} ;; esac
+              case "$hdr" in *' lang="'*) l=${hdr#*' lang="'}; l=${l%%\"*} ;; esac
+              # 装饰/符号/等宽/衬线这类不碰（和主文字族同一套判定）
+              _xml_family_ok "$n" "" || continue
+              # ★ 按"配置里的语言标签"定角色（这是实锤；文件名只能算线索，见上面说明）
+              #
+              # ★★ 2026-10-14 修：这里原来是 `*ja*` / `*ko*` **子串**匹配，会误命中：
+              #     lang="und-Nkoo"（西非 NKo 文字）含 "ko" → 判成**韩文**
+              #     lang="und-Java"（爪哇文）        含 "ja" → 判成**日文**
+              #   危害不是"名字叫错"：自适应补全会把这两种字体当韩文/日文槽位**换掉**，
+              #   而用户字体没有 NKo / 爪哇字形 → **那两种文字变方块**。
+              #   （合成一个"没适配过的 ROM"复现过：NKo、Java 两个都被当成日韩补进了计划。）
+              #   现在用 `_lang_is`（完整语言标签判定），`und-Nkoo` 里的 "nkoo" 是以
+              #   `und-` 开头的脚本码，不再算语言码。
+              l=$(_lc "$l")
+              case "$l" in
+                *zh-hant*|*zh-bopo*|*zh-hk*|*zh-tw*|*zh-mo*) role=lang ;;
+                *zh*)                                          role=cjk ;;
+                "")                                            role=main ;;
+                *en*|*und-latn*)                               role=latin ;;
+                *)
+                  if   _lang_is "$l" ja; then role=kana
+                  elif _lang_is "$l" ko; then role=hangul
+                  else role=""          # 其它语言（阿拉伯、天城文、NKo、爪哇…）：不碰
+                  fi ;;
+              esac
+              [ -n "$role" ] || continue
+              body=${fam#*>}
+              rest=$body
+              while :; do
+                case "$rest" in
+                  *'>'*'<'*) ;;
+                  *) break ;;
+                esac
+                rest=${rest#*>}
+                name=${rest%%<*}
+                rest=${rest#*<}
+                _trim "$name"; name="$TRIM_OUT"
+                case "$name" in *.[Tt][Tt][Ff]|*.[Oo][Tt][Ff]) ;;
+                  *) continue ;;
+                esac
+                printf '%s %s %s\n' "$role" "${name##*/}" "${l:-und}"
+              done
+            done
+      done | sort -u
+    )
+  fi
+  printf '%s\n' "$SCAN_NAMES_CACHE" | grep -v '^[[:space:]]*$'
+}
+
+# 从 XML 里取主文字族引用的字体文件名
+# 性能：整份 XML 只起 2 个进程（tr + sed），family/文件名都用 shell 内建解析；
+# 旧写法是"每个 family 起 4~6 个进程"，500 个 family 会 fork 上千次，手机上要卡好几秒。
+slot_xml_names() {
+  local x fam hdr body rest name n l
+  for x in $(slot_xml_files); do
+    tr '\n\r\t' '   ' 2>/dev/null < "$x" \
+      | sed 's/<family/\n<family/g' \
+      | while IFS= read -r fam || [ -n "$fam" ]; do
+          case "$fam" in '<family'*) ;; *) continue ;; esac
+          hdr=${fam%%>*}
+          n=""; l=""
+          case "$hdr" in *' name="'*) n=${hdr#*' name="'}; n=${n%%\"*} ;; esac
+          case "$hdr" in *' lang="'*) l=${hdr#*' lang="'}; l=${l%%\"*} ;; esac
+          _xml_family_ok "$n" "$l" || continue
+          # family 头之后的部分里，逐个取出 >名字< 形式的内容
+          body=${fam#*>}
+          rest=$body
+          while :; do
+            case "$rest" in
+              *'>'*'<'*) ;;
+              *) break ;;
+            esac
+            rest=${rest#*>}
+            name=${rest%%<*}
+            rest=${rest#*<}
+            _trim "$name"; name="$TRIM_OUT"
+            case "$name" in
+              *.[Tt][Tt][Ff]|*.[Oo][Tt][Ff]) printf '%s\n' "$name" ;;
+            esac
+          done
+        done
+  done
+  # ★ 2026-10-16 加一路"宽容解析"：
+  #   上面那段只认 <family> 段里 >xxx.ttf< 的写法。真机实测发现**大量被配置引用的
+  #   文件名没被收进来**（报告里"设备上真实存在、且被配置引用"的有 276 个，
+  #   而这条路只给出 23 个）。所以再直接抓一遍 xml 里**所有** .ttf/.otf 文件名，
+  #   跟上面取并集 —— 宁可多给候选（下游还要判角色/存在性），也别漏掉。
+  for x in $(slot_xml_files); do
+    tr '<>"' '\n   ' 2>/dev/null < "$x" \
+      | grep -Eio '[A-Za-z0-9_.-]+\.(ttf|otf)' 2>/dev/null || true
+  done | sed 's#.*/##' | sort -u
+}
+
+# 本 ROM 已知文件名（targets/<rom>.list；aosp 清单始终包含）
+slot_static_names() {
+  local moddir="$1" rom list
+  rom=$(tr -d '[:space:]' 2>/dev/null < "$moddir/current_rom")
+  for list in "$moddir/targets/$rom.list" "$moddir/targets/aosp.list"; do
+    [ -f "$list" ] || continue
+    grep -v '^#' "$list" | tr -d '\r' | sed 's#.*/##' | grep -v '^[[:space:]]*$'
+  done | sort -u
+}
+
+# OEM 命名规则：扫描真实目录，匹配厂商主字体命名
+slot_oem_names() {
+  local moddir="$1" rom pat d b l t
+  rom=$(tr -d '[:space:]' 2>/dev/null < "$moddir/current_rom")
+  case "$rom" in
+    coloros)  pat='sysfont*|syssans*|oplussans*|oplusosui*|opposans*|opsans*|din*|oppodin*|sourcesanspro*' ;;
+    originos) pat='*vivosans*|*vivo-sans*|*originsans*|*origin-sans*|*iqoosans*|*iqoo-sans*' ;;
+    flyme)    pat='*flymefont*|*flymesans*|*flyme-sans*|*meizusans*|*meizu-sans*|*mflyme*' ;;
+    *) return 0 ;;
+  esac
+  t="${TMPDIR:-/data/local/tmp}/.oem.$$"
+  for d in $(slot_dirs); do
+    ls -1 "$FSROOT$d" 2>/dev/null > "$t"
+    tr '[:upper:]' '[:lower:]' < "$t" > "$t.l"
+    exec 3< "$t"; exec 4< "$t.l"
+    while IFS= read -r b <&3 && IFS= read -r l <&4; do
+      case "$l" in *.ttf|*.otf) ;; *) continue ;; esac
+      case "$l" in
+        $pat) [ -f "$FSROOT$d/$b" ] && echo "$b" ;;
+      esac
+    done
+    exec 3<&- 4<&-
+  done | sort -u
+  rm -f "$t" "$t.l" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# ★ 2026-10-16（作者定稿）：「模块额外补的」这个数字怎么算
+#
+#   compact：slot_sources_report 给的 x/s/o/d 是**优先级去重后**的归属
+#   （x 配置 > s 清单 > o 厂商 > d 目录）。真机上目录扫描扫到 215 个名字，
+#   其中 212 个配置也提到了 → 全被配置赢走 → d 显示 0。
+#   但"扫描真正多补了几个"是用户关心的，不能显示 0（会以为扫描坏了）。
+#
+#   ★ 2026-10-17 修（真机又显示 0）：**不再依赖 slot_dir_names / slot_dirs**。
+#     原因：那两个函数有进程内缓存，而这个判断可能被更早的调用（detect_rom 链）
+#     先跑过一次、拿到空结果 → 这里跟着空。
+#     现在**自己直接扫目录**，判据跟扫描层保持一致（>32KB + 排除规则）。
+#     代价是多扫两个目录（可忽略），收益是数字永远跟候选/计划自洽。
+#
+#   输出两个数：
+#     extra   = 目录里存在、而配置/清单/厂商都没提到的名字数（= 扫描的净贡献）
+#     symskip = 目录里存在、但因符号/emoji 规则刻意不换的名字数
+#   —— 每个只算一次（去重），不受"名字出现在几个分区"影响。
+# ---------------------------------------------------------------------------
+slot_extra_report() {
+  local moddir="${1:-${MODDIR:-}}" xf df n_extra n_sym d f b bl sz
+
+  xf="${TMPDIR:-/data/local/tmp}/.xr.$$"
+  df="${TMPDIR:-/data/local/tmp}/.dr.$$"
+  : > "$xf"; : > "$df"
+
+  # ① 配置引用的名字（只用 slot_xml_names —— 它没有缓存，读文件而已）
+  slot_xml_names 2>/dev/null | grep -v '^[[:space:]]*$' | sort -u > "$xf"
+  # ② 加上机型清单 / 厂商规则提过的名字（同样不吃缓存）
+  if [ -n "$moddir" ]; then
+    slot_static_names "$moddir" 2>/dev/null | grep -v '^[[:space:]]*$' >> "$xf"
+    slot_oem_names "$moddir" 2>/dev/null | grep -v '^[[:space:]]*$' >> "$xf"
+  fi
+  sort -u -o "$xf" "$xf"
+
+  # ③ 直接扫字体目录（不走 slot_dirs / slot_dir_names，避免缓存污染）
+  n_sym=0
+  for d in /system/fonts /system_ext/fonts /product/fonts /vendor/fonts \
+           /odm/fonts /oem/fonts /mi_ext/fonts /my_product/fonts /my_heytap/fonts \
+           /hw_product/fonts /prism/fonts /optics/fonts /oplus_product/fonts; do
+    [ -d "$FSROOT$d" ] || continue
+    for f in "$FSROOT$d"/*.ttf "$FSROOT$d"/*.otf "$FSROOT$d"/*.TTF "$FSROOT$d"/*.OTF; do
+      [ -f "$f" ] || continue
+      b=${f##*/}
+      case "$b" in *'*') continue ;; esac
+      sz=$(wc -c < "$f" 2>/dev/null | tr -dc '0-9')
+      [ -n "$sz" ] || continue
+      [ "$sz" -lt 32768 ] && continue
+      bl=$(printf '%s' "$b" | tr '[:upper:]' '[:lower:]')
+      case "$bl" in
+        *sans-serif*|*sansserif*) : ;;          # Sans-Serif 例外 → 收
+        *emoji*|*symbol*|*dingbat*|*braille*)
+          n_sym=$((n_sym + 1)); continue ;;     # 刻意不换的（符号/emoji）
+        *mono*|*cursive*|*casual*|*math*|*music*|*clock*|*serif*)
+          continue ;;                           # 扫描层同样排除（不算"额外补的"）
+      esac
+      printf '%s\n' "$b" >> "$df"
+    done
+  done
+  sort -u -o "$df" "$df"
+
+  # ④ 目录里有、而上面三路都没提到的 → 扫描的净贡献
+  n_extra=$(grep -Fxvf "$xf" "$df" 2>/dev/null | grep -c .)
+
+  rm -f "$xf" "$df" 2>/dev/null
+  printf 'extra=%d\nsymskip=%d\n' "${n_extra:-0}" "${n_sym:-0}"
+}
+
