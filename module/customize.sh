@@ -198,8 +198,12 @@ fi
 [ -n "$LAST" ] || LAST=none
 
 for f in common.sh slots.sh mount.sh fontctl.sh update.sh google_font.sh gms_cache.sh nameclone.sh action.sh \
-         metaprobe.sh fdata.sh diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh; do
+         metaprobe.sh fdata.sh diag.sh post-fs-data.sh post-mount.sh service.sh uninstall.sh logcatch.sh; do
   chmod 755 "$MODPATH/$f" 2>/dev/null
+done
+# Magisk 用户没有「操作」按钮：这几个文件放在模块目录里，点「执行」就能用
+for _uf in "抓日志-开始.sh" "抓日志-停止导出.sh" "抓日志-状态.sh" "打开WebUI.sh"; do
+  [ -f "$MODPATH/$_uf" ] && chmod 755 "$MODPATH/$_uf" 2>/dev/null
 done
 rm -f "$MODPATH/customize.sh.bak" 2>/dev/null
 
@@ -215,18 +219,12 @@ fi
 RESTORED=0
 if [ "$LAST" != none ]; then
   ui_print "- 正在恢复上次的字体选择…"
-  # ★ 2026-10-18（文案跟上实情）：这行提示是 v1.2.x 时代留下的 ——
-  #   那时候 `apply` 真的要"扫一遍机器上的字体配置 + 逐文件判定"，十几秒到一分钟。
-  #   现在槽位清单在刷入时已经生成好了（scanned/slots.list），
-  #   `apply` 只是读文件 + 写 map，实测 **0.5 秒**。
-  #   所以按实际状态说话：有清单就说"很快"，没清单（极少数情况）才提示要等。
-  if [ -s "$LIB/scanned/slots.list" ]; then
-    ui_print "  正在套用（清单已就绪，很快）…"
-  else
-    ui_print "  ⏳ 正在扫描本机字体并生成槽位清单"
-    ui_print "     大概十几秒到一分钟。"
-    ui_print "     卡住不动是正常的，请稍等…"
-  fi
+  # ★ 2026-10-24（作者真机反馈，打脸了上面那段注释）：
+  #   实测 152 个槽位时，这一步能有好几分钟 —— 因为 apply 不只是写 map，
+  #   还要逐槽位比对、必要时合成 .ttc 合集。原来写"很快"是错的。
+  #   现在按实情说，并且**不给具体秒数**（给了就会被下一张截图打脸）。
+  ui_print "  ⏳ 正在生成挂载计划（槽位多或设备慢时要几十秒到几分钟）"
+  ui_print "     这段时间没有任何输出是正常的，请耐心等，别退出管理器"
   # ★ 用 sed 取最后一个非空行 —— tail -n1 遇到末尾空行会拿到空串，
   #   于是 OK:* 匹配不上，把一次成功的恢复误判成失败（会把用户字体清成 none）。
   OUT=$(sh "$MODPATH/fontctl.sh" apply "$LAST" 2>&1 | sed '/^[[:space:]]*$/d' | tail -n1)
