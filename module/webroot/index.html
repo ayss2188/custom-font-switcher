@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2525</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2535</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -14734,9 +14734,19 @@ function u2paint() {
     case "installing":
       showPanel = showSpin = true; checkDis = true; mainDis = true;
       mainText = "安装中…"; footText = "正在安装，这一步没有进度条，装完会提示重启。"; break;
-    case "done":
-      mainText = "立即重启生效"; mainCls = "g-btn urgent"; mainDis = false;
-      footText = "已安装完成，重启后生效。"; break;
+    case "done": {
+      // ★ 2026-10-26 本机版本已经追上线上版本 → 更新早已生效，不再催重启
+      const _newest = window.__curCode && UPD2.newCode && window.__curCode >= UPD2.newCode;
+      if (_newest) {
+        UPD2.phase = "idle";
+        mainText = "下载并安装"; mainCls = "g-btn primary-blue"; mainDis = !UPD2.has;
+        footText = "已是最新版本。";
+      } else {
+        mainText = "立即重启生效"; mainCls = "g-btn urgent"; mainDis = false;
+        footText = "已安装完成，重启后生效。";
+      }
+      break;
+    }
     case "error":
       checkDis = false; mainDis = !UPD2.has;
       mainText = UPD2.has ? "重试下载并安装" : "下载并安装";
