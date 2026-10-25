@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2555</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2565</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -14951,7 +14951,7 @@ async function u2pollOnce() {
   }
 
   if (stage === "finished" || stage === "done" || stage === "ok") {
-    UPD2.phase = "done";
+    UPD2.phase = "done"; window.__updJustFinished = true;
     u2pollStop();
     try { localStorage.setItem(UPD2_DONE_KEY, String(UPD2.newCode)); } catch (e) {}
     u2paint();
@@ -14974,7 +14974,7 @@ async function u2pollOnce() {
     const m = st.match(/^stage=(.+)$/m);
     const s2 = m ? m[1].trim().toLowerCase() : "";
     if (s2 === "finished") {
-      UPD2.phase = "done";
+      UPD2.phase = "done"; window.__updJustFinished = true;
       u2pollStop();
       try { localStorage.setItem(UPD2_DONE_KEY, String(UPD2.newCode)); } catch (e) {}
       u2paint();
@@ -14986,7 +14986,8 @@ async function u2pollOnce() {
 async function updResume() {
   try {
     const doneVer = localStorage.getItem(UPD2_DONE_KEY) || "";
-    if (doneVer) { UPD2.phase = "done"; u2paint(); }
+    // ★ 2026-10-26 只有本次会话刚装完才算"待重启"；重启后再开页面不再提示
+if (doneVer && window.__updJustFinished) { UPD2.phase = "done"; window.__updJustFinished = true; u2paint(); }
   } catch (e) {}
   try {
     const kv = await u2readState();
