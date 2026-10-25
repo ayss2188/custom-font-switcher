@@ -1,6 +1,14 @@
 #!/system/bin/sh
 
 
+# ★ 2026-10-26 开机时无条件清掉上一轮的更新状态
+#   开机意味着"上一轮更新流程已经结束"（装好或失败），状态留着只会让界面误报"待重启"。
+if [ -d "$LIB/.update" ]; then
+  echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 开机清理更新状态目录" >> "$LIB/mount.log" 2>/dev/null
+  rm -rf "$LIB/.update" 2>/dev/null
+fi
+
+
 # ★ 2026-10-26 清掉过期的"更新待重启"状态：
 #   更新已经装好（本机 versionCode >= state 记录的目标版本）时，
 #   .update/state 里残留的 done/pending 会让界面一直亮"立即重启生效"。
