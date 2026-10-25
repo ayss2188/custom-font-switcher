@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2505</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2515</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -14260,10 +14260,12 @@ async function cfsClearStaleUpdateMark() {
     const raw = await ksuExec(`sed -n 's/^versionCode=//p' ${MODDIR}/module.prop 2>/dev/null | head -n1`);
     const cur = parseInt(String(raw || "").trim(), 10) || 0;
     const done = parseInt(String(updateDoneCode() || "0"), 10) || 0;
+    // doneCode <= 当前版本 就说明装好的版本已经在跑 → 清掉
     if (cur && done && cur >= done) {
       setUpdateDone("");
       setUpdateDoneBoot("");
       try { resetInstallButton(false); } catch (e) {}
+      try { document.getElementById("rebootBtn").style.display = "none"; } catch (e) {}
       const box = document.getElementById("updProgress");
       if (box) box.classList.remove("show");
       const lb = document.getElementById("newVerLabel");
@@ -14271,7 +14273,7 @@ async function cfsClearStaleUpdateMark() {
     }
   } catch (e) {}
 }
-setTimeout(() => { try { cfsClearStaleUpdateMark(); } catch (e) {} }, 1000);
+[1000, 3000, 6000, 10000].forEach(ms => setTimeout(() => { try { cfsClearStaleUpdateMark(); } catch (e) {} }, ms));
 
 function renderUpdate(u) {
   const lbl = document.getElementById("newVerLabel");
