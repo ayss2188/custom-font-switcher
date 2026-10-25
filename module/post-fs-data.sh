@@ -3,6 +3,7 @@
 
 # ★ 2026-10-26 开机时无条件清掉上一轮的更新状态
 #   开机意味着"上一轮更新流程已经结束"（装好或失败），状态留着只会让界面误报"待重启"。
+LIB="${LIB:-/data/adb/custom_font_lib}"
 if [ -d "$LIB/.update" ]; then
   echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 开机清理更新状态目录" >> "$LIB/mount.log" 2>/dev/null
   rm -rf "$LIB/.update" 2>/dev/null
