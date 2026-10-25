@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2535</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2545</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -14183,6 +14183,11 @@ function startUpdateProgress() {
     while (!stop) {
       let s = "";
       try { s = await ksuExec(`cat ${LIB}/.update/state 2>/dev/null`); } catch (e) { s = ""; }
+    // ★ 2026-10-26 过期的"装完"状态：删掉，别再催重启
+    if (/stage=finished/.test(String(s || "")) && !updRunning) {
+      try { await ksuExec(`rm -rf ${LIB}/.update`); } catch (e) {}
+      s = "";
+    }
       const kv = {};
       String(s || "").split("\n").forEach(l => { const m = l.match(/^(\w+)=(.*)$/); if (m) kv[m[1]] = m[2]; });
       const stage = kv.stage || "";
