@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# ★ 2026-10-26 清掉上一版遗留的壁纸文件（管理器覆盖安装不会删旧文件）
+rm -f "$MODPATH/webroot/bg.jpg" "$MODPATH/webroot/bg.b64" 2>/dev/null
 # 自定义字体切换模块 - 安装脚本（Magisk / KernelSU / APatch 通用）
 # 刷机包里的文件已由管理器解压到 $MODPATH
 
@@ -307,6 +309,7 @@ mk_need() {  # mk_need <key> → 返回 0 表示需要扫
 
 mk_set() {   # mk_set <key> <value>
   mkdir -p "$LIB" 2>/dev/null
+date +%s > "$LIB/.install_id" 2>/dev/null
   [ -f "$MARKS" ] || : > "$MARKS" 2>/dev/null
   grep -v "^$1=" "$MARKS" > "$MARKS.tmp" 2>/dev/null
   echo "$1=$2" >> "$MARKS.tmp"
