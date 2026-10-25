@@ -49,6 +49,12 @@ _restore_theme_fonts() {
   return 0
 }
 
+# ★ 2026-10-26 卸载时物理删除壁纸（存在模块 webroot 里，不删就会跟着下次安装回来）
+rm -f "$MODDIR/webroot/bg.jpg" "$MODDIR/webroot/bg.b64" 2>/dev/null
+
+# ★ 2026-10-26 卸载：壁纸存在用户数据目录，无条件物理删除
+rm -f "$LIB/bg.jpg" "$LIB/bg.b64" 2>/dev/null
+
 LIB=/data/adb/custom_font_lib
 
 # ---------------------------------------------------------------------------
