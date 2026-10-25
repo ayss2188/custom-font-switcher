@@ -1,7 +1,1 @@
-{
-  "version": "v1.4.9",
-  "versionCode": 14090,
-  "zipUrl": "https://github.com/ayss2188/custom-font-switcher/releases/download/v1.4.9/custom-font-switcher.zip",
-  "changelog": "https://cdn.jsdelivr.net/gh/ayss2188/custom-font-switcher@main/CHANGELOG.md",
-  "sha256": "37576a0b15bb697f3f43f85659a49e5298f011989930e785e925b158463c3ec9"
-}
+{"version":"v1.4.9","versionCode":14090,"zipUrl":"https://github.com/ayss2188/custom-font-switcher/releases/download/v1.4.9/custom-font-switcher.zip","changelog":"https://cdn.jsdelivr.net/gh/ayss2188/custom-font-switcher@main/CHANGELOG.md","sha256":"37576a0b15bb697f3f43f85659a49e5298f011989930e785e925b158463c3ec9"}
