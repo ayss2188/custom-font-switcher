@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2545</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2555</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -11243,6 +11243,8 @@ function uiToggleLightDark() {
   window.cfsHeaderFix = apply;
   setTimeout(() => { try { cfsCheckInstallId(); } catch (e) {} }, 1200);
 
+setTimeout(() => { try { UPD2.phase = "idle"; window.__updJustFinished = false; const b = document.getElementById("rebootBtn"); if (b) b.style.display = "none"; } catch (e) {} }, 600);
+
 document.addEventListener("DOMContentLoaded", apply);
   setTimeout(apply, 300);
   setTimeout(apply, 1500);
@@ -14740,9 +14742,9 @@ function u2paint() {
       showPanel = showSpin = true; checkDis = true; mainDis = true;
       mainText = "安装中…"; footText = "正在安装，这一步没有进度条，装完会提示重启。"; break;
     case "done": {
-      // ★ 2026-10-26 本机版本已经追上线上版本 → 更新早已生效，不再催重启
-      const _newest = window.__curCode && UPD2.newCode && window.__curCode >= UPD2.newCode;
-      if (_newest) {
+      // ★ 2026-10-26 只有"本次会话里刚装完"才允许显示待重启；
+      //   页面重新打开时不认这个状态（否则重启后红灯会一直亮）
+      if (!window.__updJustFinished) {
         UPD2.phase = "idle";
         mainText = "下载并安装"; mainCls = "g-btn primary-blue"; mainDis = !UPD2.has;
         footText = "已是最新版本。";
@@ -14835,7 +14837,7 @@ async function updCheck(manual) {
   let doneVer = "";
   try { doneVer = localStorage.getItem(UPD2_DONE_KEY) || ""; } catch (e) {}
   if (doneVer && doneVer === String(UPD2.newCode)) {
-    UPD2.phase = "done";
+    UPD2.phase = "done"; window.__updJustFinished = true;
   } else {
     UPD2.phase = "idle";
   }
