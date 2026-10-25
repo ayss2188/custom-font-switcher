@@ -39,7 +39,14 @@ STORAGE=${STORAGE:-/data/media/0}
 #   后果不是"少个功能"：fontctl.sh 是界面的唯一入口，它当场退出 = 卡片空白、切不了字体、
 #   诊断打不开、所有开关失效，而且用户拿不到任何线索。
 #   （2026-10-11 姊妹项目同步 v1.0.5 时抓到的，原来是 `. ... 2>/dev/null`）
+# ★ 2026-10-25 提速：settings 系列只需要 common.sh，不必解析 slots.sh / mount.sh
+#   （开关切换会调用它，之前每次都要把十几万字符的脚本读一遍）
+_need_heavy=1
+case "${1:-}" in
+  settings) _need_heavy=0 ;;
+esac
 for _mf in common.sh slots.sh mount.sh; do
+  [ "$_need_heavy" = 0 ] && [ "$_mf" != "common.sh" ] && continue
   [ -f "$MODDIR/$_mf" ] || { echo "ERROR:模块文件缺失（$_mf）—— 请重新安装模块"; exit 3; }
   . "$MODDIR/$_mf"
 done
@@ -994,10 +1001,24 @@ do_apply() {
           # 合集里装着好几种字（三星：0=日 1=韩 2=简中 3=繁中），**只换中文那几号**，
           # 日/韩保留原字形 —— 否则用户的中文字体没有假名/谚文字形，日韩就变方块。
           # 注意用重定向而不是 $(...)：那会开子 shell，TTC_CN_SRC / TTC_CN_DETAIL 就丢了。
-          ttc_cn_indices "${rel##*/}" "$nf" > "$LIB/.ttccn.$$" 2>/dev/null
-          cn=$(tr '\n' ' ' < "$LIB/.ttccn.$$" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')
-          cn_src="$TTC_CN_SRC"; cn_detail="$TTC_CN_DETAIL"
-          rm -f "$LIB/.ttccn.$$" 2>/dev/null
+          # ★ 2026-10-24 B4：合集策略（默认 = 只换中文那几号）
+          if [ "$(cfg_get ttc_no_mix 0 2>/dev/null)" = 1 ]; then
+            printf '%s %s faces=%s via=skip detail=B4 不生成混合合集（高级设置）\n' \
+              "$id" "$rel" "$nf" >> "$LIB/ttc.log" 2>/dev/null
+            continue
+          fi
+          if [ "$(cfg_get ttc_all_faces 0 2>/dev/null)" = 1 ]; then
+            cn=""
+            _i=0
+            while [ "$_i" -lt "$nf" ]; do cn="$cn $_i"; _i=$((_i + 1)); done
+            cn=$(printf '%s' "$cn" | sed 's/^ //')
+            cn_src="all-faces"; cn_detail="B4 全 face 替换（高级设置）"
+          else
+            ttc_cn_indices "${rel##*/}" "$nf" > "$LIB/.ttccn.$$" 2>/dev/null
+            cn=$(tr '\n' ' ' < "$LIB/.ttccn.$$" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')
+            cn_src="$TTC_CN_SRC"; cn_detail="$TTC_CN_DETAIL"
+            rm -f "$LIB/.ttccn.$$" 2>/dev/null
+          fi
           # 决策记录：报告里那份 fonts.xml 是被截断的，看不出代码到底怎么判的，
           # 所以这里把"换了哪几号、凭什么"写进 ttc.log，诊断报告会原样打印。
           printf '%s %s faces=%s replace=%s via=%s detail=%s\n' \
@@ -1393,6 +1414,13 @@ case "${1:-}" in
         #   界面靠它决定下次点击要写 0 还是 1；不回传的话，界面只能靠本地缓存，
         #   一旦某次没回写就会"交替失败"（用户实测过）。
         echo "KL=$(cfg_get keep_lockscreen 0)"
+        # ★ 2026-10-24：把「中文合集替换」的**生效值**也给界面（1/0），
+        #   界面新增的开关靠它回显；没有这一行，开关就只能靠猜。
+        echo "TR=$(ttc_effective 2>/dev/null)"
+        echo "SPF=$(cfg_get skip_product 0)"
+        # 三个新开关默认都是 0（关），只能人为打开
+        echo "KS=$(cfg_get keep_samsung 0)"
+        echo "SVF=$(cfg_get skip_vf 0)"
         echo "SP=x=${_xsx:-0},a=$(( ${_xss2:-0} + ${_xso:-0} + ${_xsd:-0} ))"
       else
         echo "SP="
@@ -1684,11 +1712,57 @@ case "${1:-}" in
           ttc_replace)
             # auto = 交给自动判断（三星开、其它关）；界面上的开关写 0/1，写进去就是手动指定
             case "$4" in auto|0|1) ;; *) echo "ERROR:取值只能是 auto / 0 / 1"; exit 1 ;; esac ;;
+          skip_vf)
+            case "$4" in 0|1) ;; *) echo "ERROR:取值只能是 0 或 1"; exit 1 ;; esac ;;
+          skip_product|keep_samsung)
+            # ★ 2026-10-24 三星 One UI 专区（高级设置里，普通用户看不到）
+            case "$4" in 0|1) ;; *) echo "ERROR:取值只能是 0 或 1"; exit 1 ;; esac ;;
+          targets_only|skip_other_lang|keep_serif|keep_italic_mono|keep_bold|\
+          only_system_fonts|system_and_product|skip_vendor_fonts|main_only|\
+          ttc_cn_only|ttc_all_faces|ttc_no_mix|mount_system_only|mount_in_service|\
+          dry_run|no_auto_disable|no_rescue|no_auto_reapply|no_boot_selfcheck)
+            # ★ 2026-10-24 高级设置 B1/B2/B4/B5/B6：一律 0/1，默认关 = 行为不变
+            case "$4" in 0|1) ;; *) echo "ERROR:取值只能是 0 或 1"; exit 1 ;; esac ;;
+          skip_vendor_dirs|whitelist|blacklist|exclude_dirs|force_list)
+            # 文本型：逗号/分号分隔；空串表示不生效
+            ;;
+          mount_retry|mount_delay)
+            case "$4" in ''|*[!0-9]*) echo "ERROR:取值必须是数字"; exit 1 ;; esac ;;
+          keep_misans|keep_flyme|no_theme_phys|keep_mitype|keep_oppo|keep_vivo|keep_harmony|keep_roboto|flyme_core|chcon_fonts|flyme_scan|hotboot_watchdog|hotboot_kill|\
+          allow_sym|allow_vadj|force_manager)
+            case "$4" in 0|1) ;; *) echo "ERROR:取值只能是 0 或 1"; exit 1 ;; esac ;;
           mount_mode)
             case "$4" in self|manager) ;; *) echo "ERROR:取值只能是 self 或 manager"; exit 1 ;; esac ;;
           *) echo "ERROR:未知设置项"; exit 1 ;;
         esac
         cfg_set "$3" "$4"; echo "OK"
+        ;;
+      dump)
+        # ★ 2026-10-24：把高级设置里的所有开关一次性吐出来（界面回显用）
+        for _k in ttc_replace skip_vf keep_samsung skip_product skip_vendor_dirs \
+                  targets_only skip_other_lang keep_serif keep_italic_mono keep_bold \
+                  only_system_fonts system_and_product skip_vendor_fonts main_only \
+                  ttc_cn_only ttc_all_faces ttc_no_mix mount_system_only mount_in_service \
+                  dry_run no_auto_disable no_rescue no_auto_reapply no_boot_selfcheck \
+                  whitelist blacklist exclude_dirs force_list mount_retry mount_delay \
+                  keep_misans keep_flyme no_theme_phys \
+                  keep_mitype keep_oppo keep_vivo keep_harmony keep_roboto flyme_core chcon_fonts flyme_scan \
+                  hotboot_watchdog hotboot_kill theme_phys keep_secnum \
+                  allow_sym allow_vadj force_manager; do
+          case "$_k" in
+            # ★ 2026-10-25：回显不用「生效值」，避免 dump 去扫字体配置（手机上要几秒，
+            #   会把整个界面卡住）。界面只显示用户设置过的值即可。
+            ttc_replace) _v=$(cfg_get ttc_replace auto) ;;
+            skip_vf|keep_samsung|skip_product) _v=$(cfg_get "$_k" 0) ;;
+            skip_vendor_dirs|whitelist|blacklist|exclude_dirs) _v=$(cfg_get "$_k" "") ;;
+            mount_retry) _v=$(cfg_get "$_k" 3) ;;
+            mount_delay) _v=$(cfg_get "$_k" 0) ;;
+            ttc_cn_only) _v=$(cfg_get "$_k" 1) ;;
+            keep_lang|keep_special|theme_fonts|keep_lockscreen) _v=$(cfg_get "$_k" 0) ;;
+            *) _v=$(cfg_get "$_k" 0) ;;
+          esac
+          echo "$_k=$_v"
+        done
         ;;
       *)
         # ttc_replace 回显的是**生效值**：这类机型即使没手动设过，界面开关也该是亮的
