@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2495</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1025-2505</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -13866,6 +13866,10 @@ async function fbkExportFile() {
 // 重启：先停掉所有后台轮询（它们会抢提示条），再用独立遮罩显示进度，
 // 并依次尝试 3 种重启方式；8 秒还没重启就明确提示用户手动重启。
 async function doReboot() {
+  // ★ 2026-10-26 点过重启就不再提示：立刻清掉本机的装完标记
+  try { setUpdateDone(""); setUpdateDoneBoot(""); } catch (e) {}
+  try { resetInstallButton(false); } catch (e) {}
+
   if (rebooting) return;
   rebooting = true;
   stopAllBg();
@@ -14830,6 +14834,23 @@ function updMainClick() {
 }
 
 /* 开始下载+安装 */
+
+/* ★ 2026-10-26 联网最多等 6 秒：没连 VPN 时不能一直卡在"正在连接 GitHub…" */
+function cfsWithTimeout6(promise) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const t = setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error("连接超时（6 秒无响应，请先连 VPN 再试）"));
+    }, 6000);
+    Promise.resolve(promise).then(
+      v => { if (done) return; done = true; clearTimeout(t); resolve(v); },
+      e => { if (done) return; done = true; clearTimeout(t); reject(e); }
+    );
+  });
+}
+
 async function updInstall() {
   if (!UPD2.has) { showToast("没有可安装的新版本"); return; }
   const yes = await dialog({
@@ -14838,6 +14859,14 @@ async function updInstall() {
     okText: "下载并安装"
   });
   if (!yes) return;
+
+  // ★ 2026-10-26 6 秒连通性预检：连不上就取消，不让你干等
+  try {
+    await cfsWithTimeout6(fetch(UPD_JSON_URLS[0] + "?t=" + Date.now(), { cache: "no-store" }));
+  } catch (e) {
+    showToast("连不上 GitHub（可能没连 VPN），已取消更新");
+    return;
+  }
 
   UPD2.phase = "downloading";
   UPD2.msg = "";
