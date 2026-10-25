@@ -1,4 +1,23 @@
 #!/system/bin/sh
+
+
+# ★ 2026-10-26 清掉过期的"更新待重启"状态：
+#   更新已经装好（本机 versionCode >= state 记录的目标版本）时，
+#   .update/state 里残留的 done/pending 会让界面一直亮"立即重启生效"。
+#   这里在开机早期直接删掉这份过期状态，界面读不到就不会再提示。
+_cfs_clear_stale_update_state() {
+  _st="$LIB/.update/state"
+  [ -s "$_st" ] || return 0
+  _cur=$(sed -n 's/^versionCode=//p' "$MODDIR/module.prop" 2>/dev/null | head -n1 | tr -d '\r ')
+  [ -n "$_cur" ] || return 0
+  _tgt=$(grep -oE '(140[0-9][0-9]|14[0-9][0-9][0-9])' "$_st" 2>/dev/null | sort -n | tail -n1)
+  if [ -n "$_tgt" ] && [ "$_cur" -ge "$_tgt" ] 2>/dev/null; then
+    rm -rf "$LIB/.update" 2>/dev/null
+    echo "[$(date '+%m-%d %H:%M:%S' 2>/dev/null)] 清理过期更新状态（本机 $_cur >= 目标 $_tgt）" >> "$LIB/mount.log" 2>/dev/null
+  fi
+  return 0
+}
+_cfs_clear_stale_update_state
 # 开机完成后：撤掉开机保护标记，把 pending_font 确认为 active_font，并检查挂载是否执行
 #
 # 【这里有一条最关键的规则】只有在真的「开机完成」时才撤掉 .booting 保护标记：
