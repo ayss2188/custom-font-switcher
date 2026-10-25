@@ -60,6 +60,16 @@ rm -f "$MODDIR/mount_missed"
 # 会把老设备的开机动画卡住（真机反馈过）。这里开机已经起来了，慢一点没人受影响。
 # 只补"确实没有计划"的情况：正常情况下计划在 apply 时就写好了，这里什么都不做。
 # ---------------------------------------------------------------------------
+# ★ 2026-10-24 B5：把挂载延后到开机完成（service 阶段）再做
+if [ "$(cfg_get mount_in_service 0 2>/dev/null)" = 1 ] && [ -f "$MODDIR/mount.sh" ]; then
+  _p3=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/pending_font")
+  case "$_p3" in ""|none) ;; *)
+    beat service "B5：改为开机完成后挂载（service 阶段）"
+    ( . "$MODDIR/mount.sh"; payload_mount "$MODDIR" service ) >> "$LIB/mount.log" 2>&1
+    ;;
+  esac
+fi
+
 if [ -f "$MODDIR/fontctl.sh" ] && [ ! -s "$MODDIR/slots.map" ]; then
   _p2=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/pending_font")
   case "$_p2" in
@@ -245,6 +255,13 @@ beat service "finish active=$(tr -d '[:space:]' 2>/dev/null < "$MODDIR/active_fo
 #     · 循环里每条命令都 `|| true`，出错就安静退出，不自我重启
 # ---------------------------------------------------------------------------
 _wd_start() {
+  # ★ 2026-10-25 默认关闭（真凶定位）：
+  #   看门狗在「system_server 的 PID 变了两次」时会先 panic 回滚、再 killall system_server。
+  #   任何原因的热重启都会命中 —— 一 kill，所有 App 的 WebView 渲染进程跟着死，
+  #   crashpad 报「Render process crash wasn't handled」→ 宿主 App 直接 abort。
+  #   现场就是「任何模块的 WebUI 一点就闪退」+ 几十个 tombstone。
+  #   现在只有用户显式打开 hotboot_watchdog 才启用；开启时默认也是「干跑」。
+  [ "$(cfg_get hotboot_watchdog 0 2>/dev/null)" = 1 ] || return 0
   [ -f "$_LIB/.no_watchdog" ] && return 0
   [ -s "$_LIB/active_font" ] || return 0
   [ "$(cat "$_LIB/active_font" 2>/dev/null)" = "none" ] && return 0
@@ -279,9 +296,13 @@ _wd_start() {
           else
             sh "$MODDIR/fontctl.sh" panic >/dev/null 2>&1 && _pan=1 || _pan=0
             # 只有真的卸掉了挂载，才允许让 system_server 重启一次
-            if [ "$_pan" = 1 ] && [ "$_cnt" -lt 4 ] && [ ! -f "$_LIB/.reboot_fired" ]; then
+            # ★ 2026-10-25：默认只记录，不 kill（kill 会连带杀死所有 WebView 渲染进程）
+            if [ "$(cfg_get hotboot_kill 0 2>/dev/null)" = 1 ] && \
+               [ "$_pan" = 1 ] && [ "$_cnt" -lt 4 ] && [ ! -f "$_LIB/.reboot_fired" ]; then
               : > "$_LIB/.reboot_fired" 2>/dev/null || true
               killall system_server 2>/dev/null || true
+            else
+              printf 'would-kill hotboot=%s（hotboot_kill 未开启）\n' "$_cnt" >> "$_LIB/.panic.log" 2>/dev/null || true
             fi
           fi
         fi
