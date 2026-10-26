@@ -30,36 +30,52 @@ http_size() {
     n=$(curl -sIL --connect-timeout 10 -m 30 "$1" 2>/dev/null | tr -d '\r' \
         | grep -i '^content-length:' | tail -n1 | tr -dc '0-9')
   fi
+  case "${n:-}" in
+    ''|*[!0-9]*) n=0 ;;
+    *) [ "$n" -ge 1048576 ] 2>/dev/null || n=0 ;;
+  esac
   echo "${n:-0}"
 }
 
 # fetch <地址> <输出文件> [最长秒数]
 # 注意超时：检查更新/更新日志用短超时（否则网络差时会把 WebUI 卡住好几分钟），
 # 下载刷机包才用长超时。
-fetch() {
-  local url bb mt
+fetch() {   # $1=url $2=目标 $3=总超时
+  local url bb mt rc
   url="$1"; mt="${3:-60}"
   rm -f "$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 8 -m "$mt" -o "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+    curl -fsSL --connect-timeout 8 -m "$mt" -o "$2" "$url" 2>/dev/null; rc=$?
+    [ "$rc" = 0 ] && [ -s "$2" ] && return 0
+    echo "[fetch] curl 失败 rc=$rc url=${url%%\?*}" >> "$TMP/worker.log" 2>/dev/null
   fi
   bb=$(find_busybox)
-  # wget 只有"-T 单次读超时"，没有总时长上限：网络卡在半路时它会一直挂着，
-  # 这个进程又是在后台跑的（父脚本早退了）→ 会一直活到关机窗口里。
-  # 所以有 timeout 就套一层总超时，没有就用 -T（至少别无限等）。
   if [ -n "$bb" ]; then
     if command -v timeout >/dev/null 2>&1; then
-      timeout "$mt" "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+      timeout "$mt" "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null; rc=$?
     else
-      "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+      "$bb" wget -q -T 12 -O "$2" "$url" 2>/dev/null; rc=$?
     fi
+    [ "$rc" = 0 ] && [ -s "$2" ] && return 0
+    echo "[fetch] busybox wget 失败 rc=$rc" >> "$TMP/worker.log" 2>/dev/null
   fi
   if command -v wget >/dev/null 2>&1; then
     if command -v timeout >/dev/null 2>&1; then
-      timeout "$mt" wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+      timeout "$mt" wget -q -T 12 -O "$2" "$url" 2>/dev/null; rc=$?
     else
-      wget -q -T 12 -O "$2" "$url" 2>/dev/null && [ -s "$2" ] && return 0
+      wget -q -T 12 -O "$2" "$url" 2>/dev/null; rc=$?
     fi
+    [ "$rc" = 0 ] && [ -s "$2" ] && return 0
+    echo "[fetch] wget 失败 rc=$rc" >> "$TMP/worker.log" 2>/dev/null
+  fi
+  if command -v toybox >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "$mt" toybox wget -q -O "$2" "$url" 2>/dev/null; rc=$?
+    else
+      toybox wget -q -O "$2" "$url" 2>/dev/null; rc=$?
+    fi
+    [ "$rc" = 0 ] && [ -s "$2" ] && return 0
+    echo "[fetch] toybox wget 失败 rc=$rc" >> "$TMP/worker.log" 2>/dev/null
   fi
   rm -f "$2"
   return 1
@@ -101,7 +117,7 @@ _read_json() {   # $1=json 文件；把五个字段填进全局
 _try_update_url() {   # $1=url  $2=目标文件
   _TRY_CODE=""
   rm -f "$2" 2>/dev/null
-  fetch "$1" "$2" 20 || return 1
+  fetch "$1" "$2" 8 || return 1
   [ -s "$2" ] || return 1
   _read_json "$2"
   case "$NEW_CODE" in ''|*[!0-9]*) return 1 ;; esac
@@ -126,11 +142,13 @@ load_json() {
   _BEST=""; _BEST_SRC=""
 
   # 依次尝试；记下 versionCode 最大的那个
+  _BUST=$(date +%s 2>/dev/null)
+  case "${_BUST:-}" in ''|*[!0-9]*) _BUST=0 ;; esac
   for base in \
-      "${url:-}" \
-      "$([ -n "$repo" ] && printf '%s/update?repo=%s' "$UPD_WORKER" "$repo")" \
-      "$([ -n "$repo" ] && printf 'https://cdn.jsdelivr.net/gh/%s@main/update.json' "$repo")" \
-      "$([ -n "$repo" ] && printf 'https://raw.githubusercontent.com/%s/main/update.json' "$repo")" ; do
+      "$([ -n "$repo" ] && printf 'https://raw.githubusercontent.com/%s/main/update.json?t=%s' "$repo" "$_BUST")" \
+      "$([ -n "$repo" ] && printf 'https://cdn.jsdelivr.net/gh/%s@main/update.json?t=%s' "$repo" "$_BUST")" \
+      "$([ -n "$repo" ] && printf '%s/update?repo=%s&t=%s' "$UPD_WORKER" "$repo" "$_BUST")" \
+      "${url:-}" ; do
     [ -n "$base" ] || continue
     if _try_update_url "$base" "$TMP/update.json"; then
       if [ -z "$_BEST" ] || [ "$_TRY_CODE" -gt "$_BEST" ] 2>/dev/null; then
@@ -216,7 +234,7 @@ case "${1:-check}" in
   # 结果写到 $TMP/check.out，界面用下面的 checkstate 轮询（每次只是一个 cat）
   bgcheck)
     rm -f "$TMP/check.out" "$TMP/check.rc" 2>/dev/null
-    ( sh "$MODDIR/update.sh" check > "$TMP/check.out" 2>&1; echo $? > "$TMP/check.rc" ) &
+    ( sh "$MODDIR/update.sh" check > "$TMP/check.out" 2>&1; echo $? > "$TMP/check.rc" ) >/dev/null 2>&1 &
     echo "OK:started"
     ;;
   checkstate)
@@ -243,6 +261,15 @@ case "${1:-check}" in
     # 已经有 worker 在跑就别再来一个（用户连点两下按钮的情况）
     _ps=$(sed -n 's/^pid=//p' "$STATE" 2>/dev/null)
     _st=$(sed -n 's/^stage=//p' "$STATE" 2>/dev/null)
+    if [ -f "$STATE" ]; then
+      _now=$(date +%s 2>/dev/null); _smt=$(stat -c %Y "$STATE" 2>/dev/null)
+      case "${_now:-}" in ''|*[!0-9]*) _now=0 ;; esac
+      case "${_smt:-}" in ''|*[!0-9]*) _smt=0 ;; esac
+      if [ "$_now" -gt 0 ] && [ "$_smt" -gt 0 ] && [ $((_now - _smt)) -gt 300 ]; then
+        case "$_ps" in ''|*[!0-9]*) ;; *) kill -9 "$_ps" 2>/dev/null ;; esac
+        rm -f "$STATE" "$TMP/dl.rc" "$TMP/worker.rc" "$TMP/install.log" 2>/dev/null
+      fi
+    fi
     case "$_st" in
       download|verify|install)
         case "$_ps" in ''|*[!0-9]*) ;; *) kill -0 "$_ps" 2>/dev/null && { echo "OK:running"; exit 0; } ;; esac
@@ -253,7 +280,7 @@ case "${1:-check}" in
     printf 'stage=download\ncur=0\ntotal=0\nmsg=正在准备下载\npid=0\n' > "$STATE" 2>/dev/null
     # setsid：让 worker 脱离当前会话，WebUI 那边断开也不会把它带走
     _ss=""; command -v setsid >/dev/null 2>&1 && _ss=setsid
-    ( $_ss sh "$MODDIR/update.sh" install >/dev/null 2>&1 < /dev/null; echo $? > "$TMP/worker.rc" ) &
+    ( $_ss sh "$MODDIR/update.sh" install "${2:-}" >> "$TMP/worker.log" 2>&1 < /dev/null; echo $? > "$TMP/worker.rc" ) >/dev/null 2>&1 &
     # ★ 立刻把 **worker 自己的 pid** 写进 state。
     #   不能写 installbg 自己的 $$：那个进程马上就退出了，installstate 里的
     #   `kill -0 $pid` 判活会立刻判成"worker 死了" → 进度条刚出来就报错。
@@ -392,8 +419,20 @@ case "${1:-check}" in
         break
       fi
       if [ -n "$_MID" ] && [ -d "/data/adb/modules_update/$_MID" ]; then
-        _iok=1
-        break
+        _uv=$(sed -n 's/^versionCode=//p' "/data/adb/modules_update/$_MID/module.prop" 2>/dev/null | head -n1 | tr -d '\r')
+        if [ -n "$_uv" ] && [ "$_uv" = "$NEW_CODE" ]; then
+          _usz=$(du -sk "/data/adb/modules_update/$_MID" 2>/dev/null | tr -dc '0-9')
+          if [ -n "$_usz" ] && [ "$_usz" = "${_pst:-}" ]; then
+            _pstn=$((${_pstn:-0} + 1))
+          else
+            _pstn=0
+          fi
+          _pst="$_usz"
+          if [ "${_pstn:-0}" -ge 3 ] 2>/dev/null; then
+            _iok=1
+            break
+          fi
+        fi
       fi
       # 关机中就别再等了
       [ -n "$(getprop sys.powerctl)$(getprop sys.shutdown.requested)" ] && { kill "$_IPID" 2>/dev/null; break; }
