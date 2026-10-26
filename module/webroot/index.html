@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1027-0345</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1027-1335</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -14480,9 +14480,10 @@ async function installUpdate() {
     //   这样 JS 线程立刻空出来，上面那个 startUpdateProgress() 的轮询才画得动进度条。
     //   （以前这里直接 `await update.sh install` —— 同步 exec 阻塞整个页面，
     //     几十 MB 的下载过程中界面完全不动，正是"进度条是摆设"的原因。）
-    const out = (await ksuExec(`sh ${MODDIR}/update.sh installbg`)).trim();
+    const out = (await ksuExec(`rm -f ${LIB}/.update/state ${LIB}/.update/worker.rc; sh ${MODDIR}/update.sh installbg force`) || "").trim();
+    // 命令已丢到后台，正常拿不到输出；是否真的开始下载交给下面的轮询判断（22 秒兜底）
     const last = out.split("\n").pop() || "";
-    if (last.indexOf("OK:") !== 0) {
+    if (last.indexOf("ERROR:") === 0) {
       done = true;
       const msg = last.replace(/^ERROR:/, "") || "无法开始下载";
       updProg("更新失败：" + msg + "\n（更新包从 GitHub 下载，挂个梯子再试）", 0);
@@ -14850,7 +14851,7 @@ async function updCheck(manual) {
   // 上次装完还没重启 → 直接进 done
   let doneVer = "";
   try { doneVer = localStorage.getItem(UPD2_DONE_KEY) || ""; } catch (e) {}
-  if (doneVer && doneVer === String(UPD2.newCode)) {
+  if (false && doneVer && doneVer === String(UPD2.newCode)) {
     UPD2.phase = "done"; window.__updJustFinished = true;
   } else {
     UPD2.phase = "idle";
@@ -14910,12 +14911,13 @@ async function updInstall() {
 
   let out = "";
   try {
-    out = String(await ksuExec(`sh ${MODDIR}/update.sh installbg`) || "");
+    out = String(await ksuExec(`rm -f ${LIB}/.update/state ${LIB}/.update/worker.rc; sh ${MODDIR}/update.sh installbg force`) || "");
+  // 命令已丢到后台，立刻返回；下面按 state 轮询判断是否真的在下载
   } catch (e) {
     UPD2.phase = "error"; UPD2.msg = "启动下载失败：" + errText(e); u2paint(); return;
   }
   const last = (out.trim().split("\n").pop() || "").trim();
-  if (last.indexOf("OK:") !== 0) {
+  if (last.indexOf("ERROR:") === 0) {
     UPD2.phase = "error";
     UPD2.msg = last.replace(/^ERROR:/, "") || "无法开始下载（先连 VPN 再试）";
     u2paint();
@@ -14939,6 +14941,7 @@ async function u2pollOnce() {
   if (UPD2.phase !== "downloading" && UPD2.phase !== "installing") { u2pollStop(); return; }
   const kv = await u2readState();
   const stage = String(kv.stage || "").toLowerCase();
+  if (stage === "download" || stage === "install" || stage === "installing") window.__u2SawActive = true;
   const cur = parseInt(kv.cur || "0", 10) || 0;
   const total = parseInt(kv.total || "0", 10) || 0;
 
@@ -14966,6 +14969,7 @@ async function u2pollOnce() {
   }
 
   if (stage === "finished" || stage === "done" || stage === "ok") {
+    if (!window.__u2SawActive) { return; }
     UPD2.phase = "done"; window.__updJustFinished = true;
     u2pollStop();
     try { localStorage.setItem(UPD2_DONE_KEY, String(UPD2.newCode)); } catch (e) {}
@@ -15002,7 +15006,7 @@ async function updResume() {
   try {
     const doneVer = localStorage.getItem(UPD2_DONE_KEY) || "";
     // ★ 2026-10-26 只有本次会话刚装完才算"待重启"；重启后再开页面不再提示
-if (doneVer && window.__updJustFinished) { UPD2.phase = "done"; window.__updJustFinished = true; u2paint(); }
+if (false && doneVer && window.__updJustFinished) { UPD2.phase = "done"; window.__updJustFinished = true; u2paint(); }
   } catch (e) {}
   try {
     const kv = await u2readState();
