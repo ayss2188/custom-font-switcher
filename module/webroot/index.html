@@ -2027,7 +2027,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1027-1335</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1028-0345</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -10835,9 +10835,9 @@ const ADV_TREE = [
           hint: "如果换完字体就闪退，先打开这个再试。" },
         { id: "sw_flyme_scan", type: "switch", key: "flyme_scan", el: "sw_flyme_scan",
           name: "允许在 Flyme 上扫描本机字体",
-          desc: "默认**不扫**（和 4.4.8 一致）：槽位只来自机型清单，约 30 来个。"
-              + "打开后会扫描本机全部字体，槽位涨到 96 个左右。",
-          hint: "真机上扫描后出现过「任何 WebUI 一点就闪退」，除非你要试，否则别开。" },
+          desc: "默认**扫描**（1.4.9.7 起）：槽位 = 机型清单 + 本机扫描。"
+              + "关掉只走机型清单（约 30 个），某些机型升级后会出现没有槽位可换。",
+          hint: "如果打开后界面变卡或闪退，把它关掉即可（老版本在 Flyme 上出现过）。" },
         { id: "sw_theme_phys_flyme2", type: "switch", key: "theme_phys", el: "sw_theme_phys_flyme2", danger: 1,
           name: "主题字体写真实文件（默认关）",
           desc: "打开后，模块会把字体**真的复制**进 /data 主题字体目录"
