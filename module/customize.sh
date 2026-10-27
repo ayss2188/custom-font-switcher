@@ -54,7 +54,9 @@ _MK="$LIB/.scan_version"
 _CUR=$(sed -n 's/^versionCode=//p' "$MODPATH/module.prop" 2>/dev/null | head -n1 | tr -d '\r\n')
 _OLD=$(cat "$_MK" 2>/dev/null | tr -d '\r\n')
 if [ -n "$_CUR" ] && [ "$_OLD" != "$_CUR" ]; then
-  rm -rf "$LIB/scanned" 2>/dev/null
+  # ★ 2026-10-27：不再直接删，先搬到 scanned.old —— 新扫描失败时可以回退
+  rm -rf "$LIB/scanned.old" 2>/dev/null
+  [ -d "$LIB/scanned" ] && mv -f "$LIB/scanned" "$LIB/scanned.old" 2>/dev/null
   rm -f "$LIB"/*.ttc[0-9]* 2>/dev/null
   rm -f "$LIB/.verify.cache" "$LIB/.device_fonts" "$LIB/.cand.cache" \
         "$LIB/.plan.cache" "$LIB/.plan.marks" 2>/dev/null
@@ -96,6 +98,17 @@ if command -v slot_build_slots >/dev/null 2>&1; then
   else
     ui_print "- 清单生成未完成（第一次切换时会自动再试）"
   fi
+fi
+
+# ★ 2026-10-27（Flyme 反馈）：安装环境里扫不出槽位（厂商分区没挂上）时，
+#   直接把清单删掉会让界面拿到一张空表 → "没有找到可替换的槽位"。
+#   这里改成：扫不出来就沿用升级前那份，并在输出里说清楚。
+if [ ! -s "$LIB/scanned/slots.list" ] && [ -s "$LIB/scanned.old/slots.list" ]; then
+  rm -rf "$LIB/scanned" 2>/dev/null
+  mv -f "$LIB/scanned.old" "$LIB/scanned" 2>/dev/null
+  ui_print "- 这次没扫到槽位，已沿用上次的清单（进界面可点「重新数一遍系统的字体」重扫）"
+else
+  rm -rf "$LIB/scanned.old" 2>/dev/null
 fi
 
 # ============================================================================
