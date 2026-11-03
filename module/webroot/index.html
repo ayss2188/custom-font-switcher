@@ -1874,7 +1874,7 @@ try {
   <button class="import-main fade" style="--d:.08s" id="mergeBtn" onclick="mgSheet()">✨ 合成字体（中文为底 + 分区更换）</button>
   <div class="section-title fade" style="--d:.08s"><span>导入字体</span></div>
   <button class="import-main fade" style="--d:.1s" id="importBtn" onclick="openBrowser()">📂 选择字体文件（可多选）</button>
-  <input type="file" id="fileInput" accept=".ttf,.otf" multiple style="display:none" onchange="onFilePicked(this)">
+  <input type="file" id="fileInput" accept=".ttf,.otf,.woff,.woff2,.zip" multiple style="display:none" onchange="onFilePicked(this)">
   <div class="progress" id="progress">
     <div class="t" id="progressText">准备中...</div>
     <div class="bar"><i id="progressBar"></i></div>
@@ -1894,7 +1894,7 @@ try {
     <div class="sw" id="sw_theme_fonts"></div>
   </div>
   <div class="switch-row fade" onclick="toggleSetting('keep_lockscreen')">
-    <div><div class="t">保留锁屏时钟字体</div><div class="d">小米/红米/POCO 的锁屏时钟有<b>自己专用的一份字体</b>，默认会一起换成你的字体。<br><b>开</b>：那几份保留原样，你还能在系统里换锁屏时钟样式。<br><b>关</b>：连锁屏时钟也换成你的字体。<br>（其他品牌没有这种专用字体，开关无影响）</div></div>
+    <div><div class="t">保留锁屏时钟字体</div><div class="d">已知这几家把<b>时钟字体单独放一族</b>：<br>· 小米 / 红米 / POCO（miclock、mitype-clock）<br>· 红魔 / 努比亚 / 中兴（RedMagicDigit、ZDigit）<br>· 三星 One UI（SECNum 数字族）<br>默认会连它们一起换成你的字体。<br><b>开</b>：这些保留原样，你还能在系统里换时钟样式。<br><b>关</b>：连锁屏时钟也一起换。<br>（其他品牌没有单独的时钟字体，开关无影响）</div></div>
     <div class="sw" id="sw_keep_lockscreen"></div>
   </div>
 
@@ -2037,7 +2037,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1101-0410</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1103-1450</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -2449,7 +2449,7 @@ async function fbkSelfTest() {
 }
 
 const NONE_LABEL = "无字体（系统默认）";
-const ROM_NAMES = {hyperos:"澎湃OS/HyperOS/MIUI", coloros:"ColorOS/OPPO/一加/realme", originos:"OriginOS/vivo/iQOO", flyme:"Flyme/魅族", samsung:"三星 One UI", honor:"荣耀 MagicOS（自动发现）", huawei:"华为 EMUI/鸿蒙（自动发现）", nothing:"Nothing OS（自动发现）", aosp:"原生/类原生/谷歌Pixel"};
+const ROM_NAMES = {hyperos:"澎湃OS/HyperOS/MIUI", coloros:"ColorOS/OPPO/一加/realme", originos:"OriginOS/vivo/iQOO", flyme:"Flyme/魅族", oneui:"三星 One UI", samsung:"三星 One UI", redmagic:"红魔 / 努比亚（RedMagic OS）", honor:"荣耀 MagicOS（自动发现）", huawei:"华为 EMUI/鸿蒙（自动发现）", nothing:"Nothing OS（自动发现）", aosp:"原生/类原生/谷歌Pixel"};
 const HUGE_FONT = 30 * 1048576;    // 超过这个体积应用前要确认
 const SCOPE_TEXT = {all: "中英文", latin: "仅英文/数字", cjk: "仅中文"};
 const THEME_LABELS = {auto:"🌓 自动", light:"☀️ 浅色", dark:"🌙 深色"};
@@ -2458,7 +2458,8 @@ let cbCounter = 0, busy = false, themePref = "auto", toastTimer = null, rebootin
 let fonts = [];            // [{id,name,size}]
 let activeId = "none", pendingId = "none";
 let manageMode = false;
-let __cardsAnimated = false;
+  let __cardsAnimated = false;
+  let __importSawList = false;   // ★ 2026-11-03：最近一次 refreshAll 是否拿到非空列表（导入流程的重试判据）
 let __listSig = "";
 let __paintedFromCache = false;   // 本轮是否已经用缓存画过首屏        // 字体列表指纹：没变就不重建
 let __listManage = null;     // 上次渲染时的多选模式
@@ -2630,6 +2631,7 @@ function labelOf(id) {
      ② 补族键 / 渲染：各自保护，出错不影响状态显示（少个配对信息而已）
      ③ 重入保护：同一时间只跑一次，避免互相覆盖 */
 let refreshBusy = false;
+let __refreshAgain = false;   // ★ 2026-11-03：force 刷新撞上忙碌时，排队等结束再补一次
 // 后台补齐 status 里较重的部分（槽位来源 SP/SP4、合集数 TT 等）
 // 单独跑的原因：这些要跑外部进程，放首屏会把界面拖住
 async function refreshFullStatus() {
@@ -2683,8 +2685,91 @@ function cacheClearList() {
   try { localStorage.removeItem(LIST_CACHE_KEY); } catch (e) {}
 }
 
-async function refreshAll() {
-  if (refreshBusy) return;          // ③ 已经在跑就别再发一遍
+
+// ★ 2026-11-03：导入后列表不刷新的硬兜底
+//   直接调 `fontctl.sh list`（不经过 quick 的状态+列表合包），
+//   拿到非空结果就覆盖 fonts 并强制重绘；不依赖任何缓存标记。
+
+// ★ 2026-11-03：导入后"列表不刷新"的最终兜底
+//   不依赖 refreshAll 的并发/缓存路径：直接读 list、覆盖 fonts、
+//   把 __listSig 清空（绕过"内容没变就不重建"的短路），再 render()。
+async function forceReloadFonts() {
+  try {
+    const raw = String(await ksuExec(`sh ${MODDIR}/fontctl.sh list`) || "");
+    const lines = String(raw || "").split("\n").map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return false;
+    const parsed = lines.map(l => {
+      const p = l.split("|");
+      const id = p.shift();
+      const metaStr = p.pop();
+      const size = parseInt(p.pop(), 10) || 0;
+      const meta = {};
+      (metaStr || "").split(",").forEach(kv => { const q = kv.indexOf("="); if (q > 0) meta[kv.slice(0, q)] = kv.slice(q + 1); });
+      return { id, name: p.join("|") || id, size, meta };
+    });
+    if (!parsed.length) return false;
+    fonts = parsed;
+    __cacheUnverified = false;
+    __listSig = null;          // 强制重建
+    __cardsAnimated = false;
+    try { cacheSaveList(fonts); } catch (e) {}
+    const paint = () => {
+      try { render(); } catch (e) {
+        try { showToast("列表重绘出错：" + (e && e.message ? e.message : e), true, 9000); } catch (_) {}
+      }
+    };
+    paint();
+    // DOM 卡片数和数据对不上 → 清空重画
+    try {
+      const box = document.getElementById("fontList");
+      if (box && box.children.length !== fonts.length + 1) {
+        __listSig = null;
+        box.innerHTML = "";
+        paint();
+        if (box.children.length !== fonts.length + 1) {
+          showToast("列表 " + fonts.length + " 个，界面只画出 " + box.children.length + " 个", true, 9000);
+        }
+      }
+    } catch (e) {}
+    // 首屏缓存可能晚一步覆盖，700ms 再补一次
+    setTimeout(() => { try { __listSig = null; paint(); } catch (e) {} }, 700);
+    return true;
+  } catch (e) { return false; }
+}
+
+async function reloadListHard() {
+  try {
+    const raw = String(await ksuExec(`sh ${MODDIR}/fontctl.sh list`) || "");
+    const lines = String(raw || "").split("\n").map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return false;
+    const parsed = lines.map(l => {
+      const p = l.split("|");
+      const id = p.shift();
+      const metaStr = p.pop();
+      const size = parseInt(p.pop(), 10) || 0;
+      const meta = {};
+      (metaStr || "").split(",").forEach(kv => { const q = kv.indexOf("="); if (q > 0) meta[kv.slice(0, q)] = kv.slice(q + 1); });
+      return { id, name: p.join("|") || id, size, meta };
+    });
+    if (!parsed.length) return false;
+    fonts = parsed;
+    __cacheUnverified = false;
+    try { cacheSaveList(fonts); } catch (e) {}
+    __cardsAnimated = false;
+    try { renderFonts(); } catch (e) { try { render(); } catch (_) {} }
+    return true;
+  } catch (e) { return false; }
+}
+
+async function refreshAll(force) {
+  if (refreshBusy) {
+    // ★ 2026-11-03（作者反馈"导入完成但界面不刷新"）：导入结束的那次刷新
+    //   常撞上别的刷新正在跑 → 被这里静默吞掉，列表永远停在旧的。
+    //   force=true 时等当前刷新跑完再补一次；普通调用维持原语义（跳过）。
+    if (!force) return;
+    for (let i = 0; i < 20 && refreshBusy; i++) await new Promise(r => setTimeout(r, 250));
+    if (refreshBusy) { __refreshAgain = true; return; }   // 排队：当前那次结束后自动补刷
+  }
   // ★ 2026-10-22：先用缓存秒画一次（只在第一次进入时用，之后 follow 真实数据）
   if (!__paintedFromCache) {
     __paintedFromCache = true;
@@ -2741,6 +2826,9 @@ async function refreshAll() {
         __cardsAnimated = false;            // 重新拉列表 → 允许播一次入场动画
         try { renderFonts(); } catch (e) { /* 渲染失败不影响状态行 */ }
       }
+      // ★ 2026-11-03：这次刷新"拿到非空列表"了 —— 导入流程据此判断要不要再补一次
+      // （刚导入完设备忙，第一次 quick 偶发只回状态不回列表）。
+      if (parsed.length) __importSawList = true;
     }
     if (!st && !listOut) {
       setValue("activeLabel", "无法读取（请在支持WebUI的模块管理器中打开）");
@@ -2772,6 +2860,10 @@ async function refreshAll() {
     try { console.warn("[cfs] refreshAll 异常：" + (e && e.stack ? e.stack : e)); } catch (e2) {}
   } finally {
     refreshBusy = false;
+    if (__refreshAgain) {
+      __refreshAgain = false;
+      setTimeout(() => { try { refreshAll(true); } catch (e) {} }, 0);
+    }
   }
 }
 
@@ -9307,9 +9399,10 @@ async function selectFont(id) {
     // ★ 2026-11-01：先让徽章/列表的变更绘制出来，再进 refreshAll（quick 会阻塞
     //   JS 线程一小段）—— 否则"已选择"提示挂着的几分钟里界面看着像没刷新
     await nextPaint();
-    try { await refreshAll(); } catch (e) {}
-    // ★ 2026-11-03：结果提示**最后弹** —— 刷新期间线程被冻结，定时器不走，
-    //   提示会超时挂着（作者实测 0408 上"3 秒不对"的根因）；现在 3 秒就是 3 秒。
+    // ★ 2026-11-03：force —— 撞上在跑的刷新时等它结束再补一次，不再被静默吞掉。
+    //   结果提示**最后弹**：刷新期间线程被冻结、定时器不走（0408 上"3 秒不对"的根因），
+    //   刷新完了再弹，3 秒就是 3 秒。
+    try { await refreshAll(true); } catch (e) {}
     if (_selMsg) showToast(_selMsg, false, 3000);
     setTimeout(() => { try { refreshStatusOnly(); } catch (e) {} }, 1200);
   }
@@ -9387,6 +9480,7 @@ const PROBES = {
 //   一次性通过同步桥接回传 WebView。解析 40MB 级大字体时很容易把管理器
 //   WebView 的内存撑爆（用户侧表现就是"点开 WebUI 直接闪退"）。
 //   现在每次最多 256KB 二进制（≈768KB 文本），循环拼接，并给 8MB 硬上限。
+let __probeAbort = false;   // 探测超时后置 true，readHex 立即退出
 const READ_CHUNK = 256 * 1024;
 const READ_MAX = 8 * 1024 * 1024;
 
@@ -9397,12 +9491,13 @@ async function readHex(path, offset, length) {
   const parts = [];
   let total = 0;
   for (let done = 0; done < len; done += READ_CHUNK) {
+    if (__probeAbort) break;
     const n = Math.min(READ_CHUNK, len - done);
     let hex = "";
     try {
       hex = String(await ksuExec(
-        "tail -c +" + (offset + done + 1) + " " + shq(path)
-        + " | head -c " + n + " | od -An -v -tx1 | tr -d ' \n'") || "").trim();
+        "od -An -v -tx1 -j " + (offset + done) + " -N " + n + " " + shq(path)
+        + " 2>/dev/null | tr -d ' \n'") || "").trim();
     } catch (e) {
       break;                     // 单块失败：返回已读部分，不打断整次探测
     }
@@ -9790,6 +9885,8 @@ async function probeFont(path) {
 
 // 导入后读取覆盖范围并写入元数据；失败不影响导入（按中英文处理）
 async function probeAndSave(id) {
+  __probeAbort = false;
+  const _abortTimer = setTimeout(() => { __probeAbort = true; }, 8000);
   try {
     const m = await probeFont(`${LIB}/${id}.ttf`);
     const kv = Object.entries(m).map(([k, v]) => k + "=" + v).join(" ");
@@ -9805,6 +9902,7 @@ async function probeAndSave(id) {
     delete mOut.__inv;                          // 长文本不进 meta
     return mOut;                                  // 给界面显示"这个字体覆盖了哪些文字"
   } catch (e) { return null; }
+  finally { clearTimeout(_abortTimer); }
 }
 // 同族一共有几个字重（含它自己）。>1 就说明"加粗/细体"能各就各位。
 function sibCount(m, before) {
@@ -9854,7 +9952,7 @@ function setProgress(text, ratio) {
   document.getElementById("progressBar").style.width = Math.round((ratio || 0) * 100) + "%";
 }
 function summarize(ok, fails) {
-  if (!fails.length) return "导入成功 " + ok + " 个";
+  if (!fails.length) return "导入成功 " + ok + " 个（列表 " + fonts.length + " 个）";
   return "成功 " + ok + " 个，失败 " + fails.length + " 个：" + fails[0];
 }
 
@@ -9862,6 +9960,7 @@ function summarize(ok, fails) {
 async function importMany(items) {
   if (busy || !items.length) return;
   busy = true; setImporting(true);
+  __importSawList = false;   // ★ 2026-11-03：同 impDoImport —— finally 里等列表真的刷出来
   let ok = 0; const fails = []; let lastMeta = null;
   try {
     for (let i = 0; i < items.length; i++) {
@@ -9885,7 +9984,11 @@ async function importMany(items) {
     showToast(summarize(ok, fails) + (ok === 1 && lastMeta ? "\n" + coverageText(lastMeta, fonts) : ""));
   } finally {
     busy = false; setImporting(false);
-    await refreshAll();
+    // ★ 2026-11-03：导入完必须等在跑的刷新结束再补一次（force），
+    //   且列表拿到才算数（刚导入完设备忙，quick 偶发只回状态）。
+    await refreshAll(true);
+    if (!__importSawList) await refreshAll(true);
+    try { await forceReloadFonts(); } catch (e) {}
   }
 }
 
@@ -10543,6 +10646,7 @@ async function impDoImport() {
   const files = idx.map(i => IMP.list[i]);
   impClose();
   busy = true; setImporting(true);
+  __importSawList = false;   // ★ 2026-11-03：导入开始 → 下面的 finally 要等"列表真的刷新出来"
   let ok = 0; const fails = []; let lastMeta = null;
   try {
     for (let k = 0; k < files.length; k++) {
@@ -10573,14 +10677,24 @@ async function impDoImport() {
         if (out.indexOf("OK:") === 0) {
           ok++;
           const _nid = out.trim().slice(3);
-          lastMeta = await probeAndSave(_nid);
-          // ★ 2026-10-31：导入完成 → 触发预生成（计划+中文合集落永久缓存），
-          //   轮询状态文件把「现在在干嘛」显示在进度条上；
-          //   预热在后台跑（prewarm-bg 立即返回），这里只等结果，界面不冻。
-          try {
-            await ksuExec(`sh ${MODDIR}/fontctl.sh prewarm-bg ${shq(_nid)}`);
-            await waitPrewarm(_nid, file.name, k / files.length, files.length);
-          } catch (e) {}
+          // ★ 2026-11-03（作者）：导入成功就刷新一次列表，别让"读字体信息"卡住进度条。
+          //   刷新是同步的；探测与预热都丢后台，不 await、不显示在进度条上。
+          setProgress(tag + "正在刷新列表…", (k + 0.6) / files.length);
+          await nextPaint();
+          try { await forceReloadFonts(); } catch (e) {}
+          setProgress(tag + "完成", (k + 1) / files.length);
+          // 后台补字体信息（字形/覆盖范围），好了再重绘一次
+          // ★ 2026-11-03：预热必须等"字体档案探测"写完再跑 ——
+          //   否则计划按半成品档案生成，探测写入 meta 后缓存钥匙变了，等于白做。
+          setTimeout(function () {
+            const warm = function () {
+              try { ksuExec(`sh ${MODDIR}/fontctl.sh prewarm-bg ${shq(_nid)}`); } catch (e) {}
+            };
+            probeAndSave(_nid).then(function (m) {
+              if (m) { try { __listSig = null; render(); } catch (e) {} }
+              warm();
+            }).catch(function () { warm(); });
+          }, 50);
         }
         else fails.push(file.name + "：" + out.replace(/^ERROR:/, ""));
       } catch (e) {
@@ -10591,7 +10705,17 @@ async function impDoImport() {
     showToast(summarize(ok, fails) + (ok === 1 && lastMeta ? "\n" + coverageText(lastMeta, fonts) : ""));
   } finally {
     busy = false; setImporting(false);
-    await refreshAll();
+    // ★ 2026-11-03（作者：导入完成但界面不刷新）：
+    //   这一条以前只写 refreshAll()，撞上别的刷新在跑就被静默丢掉。
+    //   与 importMany 对齐：force 等它跑完，列表没拿到就再补一次。
+    __importSawList = false;
+    try { await refreshAll(true); } catch (e) {}
+    if (!__importSawList) {
+      await new Promise(r => setTimeout(r, 300));
+      try { await refreshAll(true); } catch (e) {}
+    }
+    // ★ 2026-11-03：不管前面刷没刷到，最后都强制重读一次（这条不再看 __importSawList）
+    try { await forceReloadFonts(); } catch (e) {}
   }
 }
 
@@ -10626,10 +10750,24 @@ async function waitPrewarm(id, label, idx, total) {
 }
 
 async function onFilePicked(input) {
-  const list = Array.from(input.files || []);
+  const raw = Array.from(input.files || []);
   input.value = "";
-  if (!list.length || busy) return;
-  impOpen(list);          // ★ 2026-10-20：改为**先预览**，点「导入」才真正写入
+  if (!raw.length || busy) return;
+  // ★ 2026-11-03：WOFF / WOFF2 / ZIP 先在浏览器里转成 TTF，再走原来的导入流程
+  let list = raw;
+  if (window.FontConv && raw.some(f => FontConv.needConvert(f))) {
+    try {
+      showToast("正在转换字体格式（WOFF / WOFF2 / ZIP → TTF）…", false, 8000);
+      const r = await FontConv.convertFiles(raw);
+      if (r.notes && r.notes.length) showToast(r.notes.slice(0, 3).join("\n"), true, 9000);
+      list = r.files || [];
+      if (!list.length) { showToast("没有可导入的字体（转换失败，详见提示）", true, 9000); return; }
+    } catch (e) {
+      showToast("转换失败：" + (e && e.message ? e.message : e), true, 9000);
+      return;
+    }
+  }
+  impOpen(list);
 }
 
 async function _onFilePickedLegacy(input) {
@@ -10672,6 +10810,7 @@ async function _onFilePickedLegacy(input) {
   } finally {
     busy = false; setImporting(false);
     await refreshAll();
+    try { await forceReloadFonts(); } catch (e) {}
   }
 }
 
@@ -10795,6 +10934,34 @@ const ADV_TREE = [
       { id: "adv_refresh_set", name: "刷新开关状态",
         desc: "重新从模块读一遍所有开关。打开菜单不再自动读（会卡），所以想确认状态就点这里。",
         hint: "读不到会直接告诉你；读到会更新界面。", safe: 1, cmd: "advRefreshSettings" },
+      { id: "reload_list", name: "刷新字体列表（手动兜底）",
+        desc: "重新从模块读一遍字体库并重绘列表。导入后列表没更新、或列表显示的是旧数据时点一下。",
+        hint: "只刷新界面显示，不改任何字体文件。", safe: 1, cmd: "advRefreshList" },
+      { id: "kernel_umount", name: "让所有 App 都能看到字体（一键修）",
+        desc: "KernelSU 默认会把模块挂载从普通应用里卸掉，于是只有 root 应用能看到字体。"
+            + "点这里会自动关掉那个开关。",
+        hint: "改完重启才生效；会先备份配置文件，想恢复有备份。APatch 会告诉你开关在哪，Magisk 不需要。",
+        safe: 2, cmd: "kernelumount" },
+      { id: "conflicts_card", name: "查一下有没有别的字体/主题模块",
+        desc: "两个模块同时改字体时，只有后挂的生效，表现就是「换了一半」。"
+            + "这里列出所有可能抢字体的模块（含 zygisk 类）。",
+        hint: "列出来的模块，留一个就行：管理器里停用另一个再重启。", safe: 1, cmd: "conflicts" },
+      { id: "fontlib_bak", name: "备份字体库（含设置）",
+        desc: "把字体库里的字体、名称、设置、当前选择打成一个压缩包，存到手机的 Download。"
+            + "换机、刷机、或者想折腾前先备份一份。",
+        hint: "字体大的话要几十秒，别退出；备份文件叫 fontlib-日期.tar.gz，可能很大。",
+        safe: 2, cmd: "fontbackup" },
+      { id: "fontlib_restore", name: "从备份恢复（最新一份）",
+        desc: "自动选 Download 里最新的 fontlib-*.tar.gz，先校验字体是否完好，再写回字体库。",
+        hint: "恢复完回主界面点一次「切换」，再重启才生效。",
+        safe: 2, cmd: "fontrestore" },
+      { id: "fontlib_list", name: "看看有哪些备份",
+        desc: "列出 Download 里所有 fontlib-*.tar.gz 和它们的大小、时间。",
+        hint: "只想看不想动，用这个。", safe: 1, cmd: "backuplist" },
+      { id: "ota_report", name: "系统更新后的自动适配记录",
+        desc: "每次系统更新（OTA）后，模块会自动重扫槽位、按你当前的选择重新生成计划，"
+            + "这里能看到它做了什么、有没有失败。",
+        hint: "字体在系统更新后没生效，先看这里。", safe: 1, cmd: "otareport" },
 
       { id: "export", name: "把现场打包发给作者", desc: "作者要你提供情况时，用这里的第一个就够了", children: [
         { id: "pack", name: "打个包（推荐先点这个）",
@@ -12122,7 +12289,7 @@ function cfsZoneAllowed(id) {
   return re.test(txt);
 }
 function cfsZoneName(id) {
-  const t = { oneui: "三星 One UI", hyperos: "澎湃OS / MIUI", flyme: "Flyme",
+  const t = { oneui: "三星 One UI", redmagic: "红魔 / 努比亚", hyperos: "澎湃OS / MIUI", flyme: "Flyme",
               coloros: "ColorOS / realme", vivo: "vivo / iQOO",
               honor: "荣耀 / 华为", aosp: "原生 / 类原生" };
   return t[id] || id;
@@ -15389,5 +15556,6 @@ if (false && doneVer && window.__updJustFinished) { UPD2.phase = "done"; window.
       <div class="adv-out" id="advConOut">正在执行…</div>
     </div>
   </div>
+<script src="fontconv.js"></script>
 </body>
 </html>
