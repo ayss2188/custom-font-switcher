@@ -15,6 +15,15 @@
 #
 # FSROOT 仅供测试：把真实路径前缀到一个模拟根目录下。
 
+# ★ 2026-11-03：旧版把三星写成 samsung，现在内部 id 改为 oneui（targets/oneui.list）
+_rom_norm_oneui() {
+  case "${1:-}" in
+    samsung|Samsung|SAMSUNG) echo "oneui" ;;
+    *) echo "${1:-}" ;;
+  esac
+}
+
+
 FSROOT=${FSROOT:-}
 
 _lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -1274,7 +1283,10 @@ _role_set_core() {  _rf_init
   esac
   # ★ 2026-10-24 各系统专区：按名字保留厂商字体（默认关）
   if [ ""$_RF_keep_mitype"" = 1 ]; then
-    case "$l" in *mitype*) ROLE=sym; return ;; esac
+    case "$l" in
+    *mitypevf*|*mitype-clock*|*mitype_clock*) ROLE=clock; return ;;
+    *mitype*) ROLE=sym; return ;;
+  esac
   fi
   if [ ""$_RF_keep_oppo"" = 1 ]; then
     case "$l" in *opposans*|*oplus*) ROLE=sym; return ;; esac
@@ -1590,7 +1602,7 @@ _lk_add_byname() {   # $1=已有名单 → 输出补全后的名单
       n=${f##*/}
       case "$n" in *'*') continue ;; esac      # glob 没匹配到会原样留着
       case "$(_lc "$n")" in
-        *clock*|*keyguard*) ;;
+        *clock*|*keyguard*|*redmagicdigit*|*zdigit*|*osans-solid-digits*|*flymenumber*) ;;
         *) continue ;;
       esac
       case "$out" in
@@ -1667,7 +1679,7 @@ slot_lockscreen_files() {
       hdr=${fam%%>*}
       l=$(_lc "$hdr")
       case "$l" in
-        *clock*|*keyguard*) ;;
+        *clock*|*keyguard*|*osans-solid-digits*|*flymenumber*|*mitype-clock*) ;;
         *) continue ;;
       esac
       # 这个 family 里的所有字体文件都算进去
