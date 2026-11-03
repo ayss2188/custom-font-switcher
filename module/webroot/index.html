@@ -141,9 +141,15 @@ body { min-height: 100%; }
   .icon-btn:active { background: var(--card-press); }
 
   .option.busy { cursor: progress; }
+  /* ★ 2026-11-01（作者要求）：「修改中」遮罩 = 二级菜单同款毛玻璃 ——
+     原来是纯色卡片色整块盖住，看不出"底下还有内容"；现在半透明 + 背面模糊
+     （跟弹层的 blur(20px) saturate(1.1) 同一配方，明暗主题各自取 --glass-bg） */
   .option .overlay {
     position: absolute; top: 0; right: 0; bottom: 0; left: 0; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 8px;
-    background: var(--card); color: var(--pending-blue); font-size: 13px; font-weight: 600; border-radius: 16px;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(20px) saturate(1.1);
+    backdrop-filter: blur(20px) saturate(1.1);
+    color: var(--pending-blue); font-size: 13px; font-weight: 600; border-radius: 16px;
   }
   /* 转圈：1.0.9 换掉"一个边框缺口在转"的老式写法。
      现在是"环形轨道 + 双弧 + 中心点呼吸"：看着更顺、不像一个符号在打转，
@@ -554,7 +560,8 @@ body { min-height: 100%; }
   .switch-row { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 8px; cursor: pointer; transition: transform .16s ease, background .22s ease, border-color .22s ease; }
   .switch-row:active { transform: scale(.98); background: var(--card-press); }
   .switch-row.loading { pointer-events: none; border-color: var(--pending-blue); }
-  .switch-row .overlay { position: absolute; top: 0; right: 0; bottom: 0; left: 0; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--card); color: var(--pending-blue); font-size: 13px; font-weight: 600; animation: popIn .25s ease both; }
+  /* ★ 2026-11-01：开关行的「修改中」遮罩同款毛玻璃（跟卡片遮罩统一） */
+  .switch-row .overlay { position: absolute; top: 0; right: 0; bottom: 0; left: 0; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--glass-bg); -webkit-backdrop-filter: blur(20px) saturate(1.1); backdrop-filter: blur(20px) saturate(1.1); color: var(--pending-blue); font-size: 13px; font-weight: 600; animation: popIn .25s ease both; }
   .switch-row .t { font-size: 14px; font-weight: 600; }
   .switch-row .d { font-size: 11px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
   .sw { flex-shrink: 0; width: 44px; height: 26px; border-radius: 13px; background: var(--border); position: relative; transition: background .25s ease; }
@@ -1837,6 +1844,9 @@ try {
   <div class="banner warn" id="fpBanner">
   ⚠ 系统更新过（构建指纹已变），本模块的字体可能没有完全生效。请重新选一次字体并重启；若仍不对，把「替换范围」调小再试。
   </div>
+  <div class="banner" id="planBanner">
+  🕐 计划/设置已更新：<b>重启手机后生效</b>。上方「实际生效」显示的还是上一次开机挂载的结果，不是没换上。
+  </div>
   <div class="banner warn" id="missedBanner">
     ⚠ 本次开机没有执行自带挂载。最常见的原因是 Root 管理器在开机时没有运行模块脚本（例如临时 root：重启后需要重新激活的那种），也可能是模块被停用或进了安全模式。可先重启一次；仍不行就在下方「替换范围（高级）」里改为「交给管理器挂载」再试。
   </div>
@@ -2027,7 +2037,7 @@ try {
          （"出问题了"这个上下文里，用户自然会想看详细数据）。 -->
 
   <div class="hint">开机异常时：进入安全模式或在管理器里禁用本模块即可恢复</div>
-  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1028-0345</div>
+  <div class="foot">自定义字体切换模块 · 作者 暗影双生 · 构建 1101-0410</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-head">
@@ -2040,7 +2050,7 @@ try {
       <button class="chip" onclick="fbLoad(FB_ROOT + '/Download')">⬇ Download</button>
       <button class="chip" onclick="fbUp()">↩ 上一级</button>
       <button class="chip" id="fbAllBtn" onclick="fbSelectAll()">全选本页</button>
-      <button class="chip" onclick="fbClear()">清空已选</button>
+      <button class="chip" id="fbClearBtn" onclick="fbClear()">清空已选</button>
     </div>
     <div class="sheet-list" id="fbList"></div>
     <div class="sheet-foot">
@@ -2480,13 +2490,16 @@ const nextPaint = () => new Promise(r => setTimeout(r, 50));
 const baseName = p => p.split("/").pop();
 const stripExt = n => n.replace(/\.[^.]+$/, "");
 
-function showToast(msg, sticky) {
+function showToast(msg, sticky, ms) {
   if (rebooting && !msg.startsWith("正在重启")) return;   // 重启中不让后台进度提示抢提示条
   const t = document.getElementById("toast");
   t.textContent = msg;
   t.classList.add("show");
   if (toastTimer) clearTimeout(toastTimer);
-  if (!sticky) toastTimer = setTimeout(() => t.classList.remove("show"), 2800);
+  // ★ 2026-11-01（作者反馈"还没来得及看就没了"）：加了第三个参数自定义时长 ——
+  //   切字体/切开关的结果提示给 3 秒（作者定稿：8 秒太长）；
+  //   普通短提示维持 2.8 秒；sticky（修改中…）仍然常驻、由流程收尾时清掉。
+  if (!sticky) toastTimer = setTimeout(() => t.classList.remove("show"), ms || 2800);
 }
 
 function clearToast() {
@@ -2717,11 +2730,17 @@ async function refreshAll() {
       return {id, name: p.join("|") || id, size, meta};
     });
     if (listOut) {
-      fonts = parseList(listOut);
-      __cacheUnverified = false;          // 真实数据到了，放开操作
-      try { cacheSaveList(fonts); } catch (e) {}
-      __cardsAnimated = false;            // 重新拉列表 → 允许播一次入场动画
-      try { renderFonts(); } catch (e) { /* 渲染失败不影响状态行 */ }
+      const parsed = parseList(listOut);
+      // ★ 2026-11-01（作者反馈"开关时列表可能变空白"）：开关刚 reapply 完设备正忙，
+      //   quick 偶发只回状态、列表段是空的 —— 原来直接 fonts=[] 把列表清空。
+      //   现在空结果**不顶掉已有列表**（手上有一份就先用一份，下次刷新再校准）。
+      if (parsed.length || !fonts.length) {
+        fonts = parsed;
+        __cacheUnverified = false;          // 真实数据到了，放开操作
+        try { cacheSaveList(fonts); } catch (e) {}
+        __cardsAnimated = false;            // 重新拉列表 → 允许播一次入场动画
+        try { renderFonts(); } catch (e) { /* 渲染失败不影响状态行 */ }
+      }
     }
     if (!st && !listOut) {
       setValue("activeLabel", "无法读取（请在支持WebUI的模块管理器中打开）");
@@ -2823,7 +2842,16 @@ function applyStatus(st) {
     pendingId = g("P").trim() || activeId;
     const rom = g("R").trim();
     const nSlots = g("N").trim();
-    setValue("slotLabel", nSlots && +nSlots > 0 ? nSlots + " 个" : "0（未替换）");
+    // ★ 2026-11-01（作者反馈"已替换槽位没跟着一起改"）：计划比本次开机新时，
+    //   这行也按「当前」口径 —— 显示开机快照的替换数（BN），重启后才更新成
+    //   新计划的数字；新计划的数字在下面「实际生效」行的「新计划 N 个」里能看到。
+    if (g("PD").trim() === "1") {
+      const _bnS = parseInt((g("BN") || "").trim(), 10) || 0;
+      const _cur = _bnS > 0 ? _bnS : (+nSlots || 0);
+      setValue("slotLabel", _cur + " 个（重启后变 " + nSlots + "）");
+    } else {
+      setValue("slotLabel", nSlots && +nSlots > 0 ? nSlots + " 个" : "0（未替换）");
+    }
     // ★ 槽位来源（定稿）：三行 —— 总数 / 机型清单里的 / 本机扫描补的
     //   「槽位总数」是这两项之和，也就是设备上的全部槽位（安装时扫出来的，不随开关变）；
     //   而上面那行「已替换槽位」是**这次计划替换**的数量（受「保留锁屏时钟」等开关影响）。
@@ -2864,6 +2892,35 @@ function applyStatus(st) {
     {
       const fpB = document.getElementById("fpBanner");
       if (fpB) fpB.classList.toggle("show", g("FP").trim() === "1");
+    }
+    // ★ 2026-11-01：计划/设置比本次开机新 → 持久提示「重启后生效」——
+    //   解决"拨了开关/切了字体没重启，顶部实际生效还显示旧结果让人以为已换完"的迷惑
+    //   ★ 2026-11-01（作者要求）：横幅带上槽位计数 —— 没重启就按当前生效算，
+    //     重启才更新数字（例如 当前 154 个 → 新计划 121 个）
+    {
+      const pb = document.getElementById("planBanner");
+      const pdOn = g("PD").trim() === "1";
+      if (pb) {
+        pb.classList.toggle("show", pdOn);
+        if (pdOn) {
+          const pv = g("VF").split(",");
+          if (pv[0] !== "" && +pv[1] > 0) {
+            // ★ 2026-11-01 v24：「当前实际生效」改读开机快照 BN —— apply 会当场
+            //   重写 payload，VF 在未重启时也跟着变；快照才是"这次开机挂了什么"
+            const bnN = parseInt((g("BN") || "").trim(), 10) || (+pv[0]);
+            // ★ 数字一样就不报数（例如刚覆盖安装、计划与开机挂载内容相同）——
+            //   "121 个重启后变 121 个"看着像废话
+            if (bnN !== +pv[1]) {
+              pb.innerHTML = "🕐 计划/设置已更新：<b>重启手机后生效</b>。当前实际生效 " + bnN +
+                " 个，重启后变 " + (+pv[1]) + " 个 —— 「实际生效」那行在重启前保持当前数字不变。";
+            } else {
+              pb.innerHTML = "🕐 计划/设置已更新：<b>重启手机后生效</b>。上方「实际生效」显示的还是上一次开机挂载的结果，不是没换上。";
+            }
+          } else {
+            pb.innerHTML = "🕐 计划/设置已更新：<b>重启手机后生效</b>。上方「实际生效」显示的还是上一次开机挂载的结果，不是没换上。";
+          }
+        }
+      }
     }
     setValue("romLabel", ROM_NAMES[rom] || rom || "未知");
     setValue("curVerLabel", g("V") || "-");
@@ -2929,7 +2986,16 @@ function applyStatus(st) {
       vl.classList.remove("warn", "ok");
       if (vf[0] !== "" && +vf[1] > 0) {
         const hitN = +vf[0], planN = +vf[1];
-        if (hitN === planN) {
+        // ★ 2026-11-01（作者要求）：计划比本次开机新（拨了开关/换了字体还没重启）时，
+        //   数字口径固定为"左边 = 当前实际生效，重启后才更新成新计划的数量"。
+        //   ★ v24：「已生效」改读开机快照 BN —— apply 会当场把 payload 换成新计划，
+        //   VF 的 hit 跟着变，两个数会"一起改"；开机快照在重启前纹丝不动。
+        if (g("PD").trim() === "1") {
+          const bnN = parseInt((g("BN") || "").trim(), 10) || hitN;
+          setValue("verifyLabel", "已生效 " + bnN + " 个 · 新计划 " + planN + " 个 · 重启后更新");
+          vl.classList.add("warn");
+          vl.removeAttribute("title");
+        } else if (hitN === planN) {
           setValue("verifyLabel", hitN + " / " + planN + " 个槽位");
           vl.classList.add("ok");
           vl.removeAttribute("title");
@@ -3139,6 +3205,9 @@ function showFontSheet(id, name, isNone) {
     sheet.append(mkItem("👁", "字体属性", "", () => { close(); showFontInfo(id, name); }));
     sheet.append(mkItem("🖼", "分享海报", "", () => { close(); posterOpen(id, name); }));
     sheet.append(mkItem("✎", "重命名", "", () => editFont(id)));
+    // ★ 2026-11-01：导出字体文件 —— 走模块自带的文件浏览器选目标文件夹
+    //   （和导入同一套界面反着用；字体文件本体在字体库里永久保存，导出=复制一份）
+    sheet.append(mkItem("📤", "导出字体文件（.ttf）", "", () => { close(); exportFontBrowse(id, name); }));
     sheet.append(mkItem("🗑", "删除", "danger", () => deleteFonts([id])));
   }
   sheet.append(Object.assign(document.createElement("div"), { className: "fontact-sep" }));
@@ -3211,7 +3280,10 @@ async function pvLoadFace(id) {
   ksuExec(`rm -f ${shq(MODDIR + "/webroot")}/.pvtmp-*.ttf 2>/dev/null; echo ok`).catch(() => {});
   const src = `${LIB}/${id}.ttf`;
   const tmp = `${MODDIR}/webroot/.pvtmp-${id}.ttf`;
-  await ksuExec(`cp -f ${shq(src)} ${shq(tmp)} 2>/dev/null; echo done`);
+  // ★ 2026-10-30（性能）：硬链接代替整份复制 —— $LIB 和 webroot 同在 /data 分区，
+  //   ln 是瞬时的；60MB 级内置字体的预览 / A-B 对比 / 海报不再每次拷几十 MB。
+  //   链接失败（跨设备等极端情况）自动回退 cp。之后 rm 掉的只是链接本身，源文件不动。
+  await ksuExec(`ln -f ${shq(src)} ${shq(tmp)} 2>/dev/null || cp -f ${shq(src)} ${shq(tmp)} 2>/dev/null; echo done`);
   let buf;
   try {
     const url = new URL(`.pvtmp-${id}.ttf`, location.href).href;
@@ -5061,6 +5133,11 @@ const newId = "f" + nextNo;
         }
       } catch (e) { finishMeta(); }
       mgLog("meta", "probe + setmeta " + mergeKVs.join(" "));
+      // ★ 2026-10-31：合成入库 → 预生成计划+合集（后台跑，不阻塞收尾）
+      try {
+        await ksuExec(`sh ${MODDIR}/fontctl.sh prewarm-bg ${shq(realId)}`);
+        mgLog("prewarm", "已触发后台预热（完成后第一次切换就是秒级）");
+      } catch (e) {}
       setProg(100, "完成");
       // 合成结果报告：各分区覆盖率用合并后的 cmap 现算
       try {
@@ -8603,8 +8680,13 @@ async function abCompare(targetId) {
 }
 
 // 应用入口：需要时先弹 A/B 对比
+// ★ 2026-10-31（性能）：A/B 对比**默认关闭** —— 它要在切换前把两份字体
+//   （可能各 40~60MB）完整加载进 WebView 才能显示，用户的感知就是
+//   "点应用要等好几秒才出窗，确认了还要等"。想要对比预览：
+//   高级设置 → 界面自定义 → 打开「切换前先弹 A/B 对比」。
 async function applyFont(id) {
   try {
+    if (String(UI.ab || "0") !== "1") return selectFont(id);
     const cur = (activeId && activeId !== "none") ? activeId : null;
     if (!cur || cur === id) return selectFont(id);
     const shown = await abCompare(id);
@@ -9116,6 +9198,22 @@ function setCardBusy(card, on) {
 }
 
 /* ---------- 切换 / 重命名 / 删除 ---------- */
+// ★ 2026-11-02：异步应用的结果轮询 —— apply-bg 在后台跑（JS 线程不被冻住，
+//   提示条/滚动/点击都正常响应），这里每 0.5 秒读一次状态文件，
+//   读到 OK:/ERROR: 开头即结束。超时 180 秒（后台其实还在跑，不丢结果）。
+async function pollApplyResult(timeoutMs) {
+  const sf = LIB + "/.reapply.state";
+  const T0 = Date.now();
+  await new Promise(r => setTimeout(r, 600));   // 先给后台一小会再开始问
+  while (Date.now() - T0 < (timeoutMs || 180000)) {
+    let st = "";
+    try { st = String(await ksuExec(`cat ${shq(sf)} 2>/dev/null`) || "").trim(); } catch (e) {}
+    if (st && st.indexOf("stage=running") !== 0) return st.split("\n")[0];
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return "ERROR:处理超时（后台可能还在跑，稍后看顶部状态）";
+}
+
 async function selectFont(id) {
   // ★ 2026-10-22：列表还没被真实数据校准（来自缓存）→ 不允许操作
   if (typeof __cacheUnverified !== "undefined" && __cacheUnverified) {
@@ -9141,6 +9239,12 @@ async function selectFont(id) {
   showToast("修改中…", true);
   // ★ 2026-10-23：apply 是同步 exec，卡住时界面会永远"修改中" → 加超时收尾
   let __applyDone = false;
+  // ★ 2026-11-03（作者实测 0408 上"3 秒不对"）：结果提示**不能在这里弹** ——
+  //   弹完紧接着的 refreshAll（quick）是同步 exec，会冻住 JS 线程几秒，
+  //   setTimeout 定时器在冻结期间不走 → 实际显示 = 冻结时长 + 设定值，
+  //   改 2.8/3/5/6 秒全都"看着一样长"。改成攒进 _selMsg，
+  //   等 finally 里刷新全部结束后再弹（那时线程是闲的，3 秒就是 3 秒）。
+  let _selMsg = "";
   const __applyWd = setTimeout(() => {
     if (__applyDone) return;
     try { busy = false; } catch (e) {}
@@ -9150,7 +9254,10 @@ async function selectFont(id) {
   }, 180000);
   await nextPaint();
   try {
-    const out = await ksuExec(`sh ${MODDIR}/fontctl.sh apply ${shq(id)}`);
+    // ★ 2026-11-02：改异步 —— apply-bg 立即返回、后台真跑、这里轮询结果。
+    //   原来同步等整个 apply，JS 线程冻住几秒（作者反馈"点卡片像冻结"）。
+    await ksuExec(`sh ${MODDIR}/fontctl.sh apply-bg ${shq(id)}`);
+    const out = await pollApplyResult();
     // ★ 2026-10-18 修：返回值末尾可能带 `:kl=N`（do_apply 附带的诊断字段），
     //   这里以前没接受它 → 后端明明成功、界面却提示"切换失败"（真机实测）。
     // ★ 2026-10-23（ColorOS 真机）：后端返回 "OK:无字体（系统默认）:0:none:" ——
@@ -9159,20 +9266,29 @@ async function selectFont(id) {
     const m = out.match(/^OK:(.*?):(\d+):(\w+)(?::([^\n]*))?\s*$/m);
     if (m) {
       const slots = parseInt(m[2], 10) || 0;
+      // ★ 2026-10-31：后端尾部附带 t=X.XXs（应用耗时）和 kl=N —— 分开解析，
+      //   让用户切完立刻看到真实耗时（慢不慢用数据说话，不再靠感觉）
+      const _klM = (m[4] || "").match(/kl=(\d)/);
+      const _tM = (m[4] || "").match(/t=([0-9.]+)s/);
+      const klTag = _klM ? "，时钟开关=" + _klM[1] : "";
+      const tTag = _tM ? "，应用耗时 " + _tM[1] + " 秒" : "";
       if (id === "none" || slots === 0) {
-        showToast("已恢复系统默认（重启后生效）");
+        _selMsg = "已恢复系统默认（重启后生效）" + tTag;
       } else {
-        showToast("已选择「" + labelOf(id) + "」：将替换 " + slots + " 个槽位（" +
-                  (SCOPE_TEXT[m[3]] || m[3]) + "），重启后生效");
+        _selMsg = "已选择「" + labelOf(id) + "」：将替换 " + slots + " 个槽位（" +
+                  (SCOPE_TEXT[m[3]] || m[3]) + "）" + klTag + tTag + "，重启后生效";
       }
+      // ★ 2026-11-02：切完也在后台预热全部字体（同开关流程）——
+      //   设置指纹变了或新字体入库后，其他字体的第一次切换也是命中。
+      try { ksuExec(`sh -c 'sh ${MODDIR}/fontctl.sh prewarm-all >/dev/null 2>&1 &'`); } catch (_) {}
     } else if (/^\s*OK:/m.test(out)) {
       // 后端说 OK，只是格式没按预期 —— 也当成功，别吓用户
-      showToast("已应用（重启后生效）");
+      _selMsg = "已应用（重启后生效）";
     } else {
-      showToast("切换失败：" + out.replace(/^ERROR:/, ""));
+      _selMsg = "切换失败：" + out.replace(/^ERROR:/, "");
     }
   } catch (e) {
-    showToast("切换失败：" + errText(e));
+    _selMsg = "切换失败：" + errText(e);
   } finally {
     __applyDone = true; try { clearTimeout(__applyWd); } catch (e) {}
     // ★ 2026-10-22：必须显式清掉自己加的"修改中"遮罩。
@@ -9183,9 +9299,18 @@ async function selectFont(id) {
     //   refreshAll() 开头有 `if (refreshBusy) return;` —— 撞上别的刷新在跑会直接返回
     //   （还不抛错），界面就停在旧状态。所以先乐观更新 + 直刷顶部，再全量。
     // 只改 pending（待重启生效）；active 保持『本次开机实际生效』不变
+    // ★ 2026-10-30（性能）：apply 的返回值已带槽位数/范围，顶部状态由 refreshAll(quick)
+    //   补齐即可；紧跟的那次完整 status 砍掉（挂载/验证状态不会因为"写计划"而变，
+    //   每次完整 status 都要重新加载一遍后端脚本）。1.2 秒后的那次保留 —— 它负责
+    //   把 VF/MO/verify 这些重字段刷准。
     try { pendingId = id; render(); } catch (e) {}
-    try { await refreshStatusOnly(); } catch (e) {}
+    // ★ 2026-11-01：先让徽章/列表的变更绘制出来，再进 refreshAll（quick 会阻塞
+    //   JS 线程一小段）—— 否则"已选择"提示挂着的几分钟里界面看着像没刷新
+    await nextPaint();
     try { await refreshAll(); } catch (e) {}
+    // ★ 2026-11-03：结果提示**最后弹** —— 刷新期间线程被冻结，定时器不走，
+    //   提示会超时挂着（作者实测 0408 上"3 秒不对"的根因）；现在 3 秒就是 3 秒。
+    if (_selMsg) showToast(_selMsg, false, 3000);
     setTimeout(() => { try { refreshStatusOnly(); } catch (e) {} }, 1200);
   }
 }
@@ -9745,7 +9870,7 @@ async function importMany(items) {
       //   检测其实一直在导入时跑（fontctl 的 store_font → valid_font），但界面上不显示，
       //   用户完全不知道有这一步。这里把它说出来 —— 顺便让"导入要等一下"变得可解释。
       const pfx = items.length > 1 ? ("导入 " + (i + 1) + "/" + items.length + "：") : "";
-      setProgress(pfx + "正在校验字体文件：" + name, i / items.length);
+      setProgress(pfx + "正在校验并写入字体库：" + name + "（大文件这一步最久，别退出）", i / items.length);
       await nextPaint();
       try {
         const out = await ksuExec(`sh ${MODDIR}/fontctl.sh import ${shq(path)} ${shq(stripExt(name))}`);
@@ -9773,11 +9898,86 @@ const joinPath = (d, n) => d.replace(/\/$/, "") + "/" + n;
 
 function openBrowser() {
   if (busy) return;
+  fbExportExit();                       // 防御：上一次导出模式没复位就先复位
   document.getElementById("sheet").classList.add("show");
   updatePickCount();
   fbLoad(FB.path);
 }
-function closeBrowser() { document.getElementById("sheet").classList.remove("show"); }
+function closeBrowser() {
+  document.getElementById("sheet").classList.remove("show");
+  fbExportExit();
+}
+
+/* ---------- 导出字体文件（2026-11-01）----------
+   复用导入的文件浏览器，反着用：不选文件，选"导到哪个文件夹"。
+   字体文件本体一直在字体库（$LIB/f*.ttf，永久保存），导出 = 复制一份出去，
+   不影响模块运行；重名自动加 (2) (3)。
+   后端命令：fontctl.sh export（目标限定在手机存储里）。 */
+let FB_EXPORT = null;   // {id, name} = 导出模式；null = 导入模式
+
+function exportFontBrowse(id, name) {
+  if (busy) return;
+  FB_EXPORT = {id, name};
+  const t = document.querySelector("#sheet .fontact-title");
+  if (t) t.textContent = "导出「" + name + "」到哪个文件夹？";
+  const b = document.getElementById("fbImport");
+  b.textContent = " 导出到此文件夹";
+  b.disabled = false;
+  b.onclick = fbExportHere;
+  document.getElementById("fbAllBtn").style.display = "none";
+  document.getElementById("fbClearBtn").style.display = "none";
+  document.getElementById("sheet").classList.add("show");
+  fbLoad(FB.path);
+}
+
+// 关闭/退出导出模式：把浏览器还原成导入形态（按钮文字、onclick、标题、多选工具）
+function fbExportExit() {
+  if (!FB_EXPORT) return;
+  FB_EXPORT = null;
+  const t = document.querySelector("#sheet .fontact-title");
+  if (t) t.textContent = "选择字体（可多选）";
+  const b = document.getElementById("fbImport");
+  b.textContent = "导入选中 (0)";
+  b.disabled = true;
+  b.onclick = fbImport;
+  document.getElementById("fbAllBtn").style.display = "";
+  document.getElementById("fbClearBtn").style.display = "";
+  updatePickCount();
+}
+
+async function fbExportHere() {
+  if (!FB_EXPORT) return;
+  const {id, name} = FB_EXPORT;
+  const dir = FB.path;
+  FB_EXPORT = null;
+  closeBrowser();
+  await exportFontTo(id, name, dir);
+}
+
+async function exportFontTo(id, name, dir) {
+  if (busy) return;
+  busy = true;
+  try {
+    setProgress("正在导出「" + name + "」（大文件要等几秒）…", 0.4);
+    await nextPaint();
+    const out = String(await ksuExec(
+      `sh ${MODDIR}/fontctl.sh export ${shq(b64(id))} ${shq(b64(dir))} ${shq(b64(name))}`) || "").trim();
+    if (out.indexOf("OK:") === 0) {
+      const [p, sz] = out.slice(3).split("|");
+      document.getElementById("progress").classList.remove("show");
+      showToast("已导出：" + p + (sz ? "（" + fmtSize(+sz) + "）" : ""));
+    } else {
+      document.getElementById("progress").classList.remove("show");
+      showToast(out.replace(/^ERROR:/, "") || "导出失败");
+    }
+  } catch (e) {
+    document.getElementById("progress").classList.remove("show");
+    showToast("导出失败：" + errText(e));
+  } finally {
+    busy = false;
+    try { document.getElementById("progress").classList.remove("show"); } catch (_) {}
+  }
+}
 
 // ★ 2026-10-16：「遇到问题」弹层（把原来摊在主界面上的那一大块收起来）
 function openFbk() {
@@ -9894,24 +10094,31 @@ function renderBrowser() {
 
   FB.files.forEach(f => {
     const it = document.createElement("div");
-    it.className = "pick-item" + (picked.has(f.full) ? " selected" : "");
-    const ck = document.createElement("div"); ck.className = "ckbox"; ck.textContent = "✓";
+    it.className = "pick-item" + (!FB_EXPORT && picked.has(f.full) ? " selected" : "");
     const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = f.n;
     const sz = document.createElement("span"); sz.className = "psize"; sz.textContent = fmtSize(f.s);
-    it.append(ck, nm, sz);
-    it.onclick = () => {
-      if (picked.has(f.full)) picked.delete(f.full); else picked.set(f.full, {name: f.n, size: f.s});
-      it.classList.toggle("selected", picked.has(f.full));
-      updatePickCount();
-    };
+    if (FB_EXPORT) {
+      // ★ 导出模式：不选文件，只选"导到哪个文件夹"——文件行纯展示
+      it.append(nm, sz);
+    } else {
+      const ck = document.createElement("div"); ck.className = "ckbox"; ck.textContent = "✓";
+      it.append(ck, nm, sz);
+      it.onclick = () => {
+        if (picked.has(f.full)) picked.delete(f.full); else picked.set(f.full, {name: f.n, size: f.s});
+        it.classList.toggle("selected", picked.has(f.full));
+        updatePickCount();
+      };
+    }
     list.append(it);
   });
 
-  if (!FB.dirs.length && !FB.files.length) fbMsg("这个文件夹里没有子文件夹，也没有 .ttf/.otf 字体");
+  if (!FB.dirs.length && !FB.files.length)
+    fbMsg(FB_EXPORT ? "这个文件夹是空的" : "这个文件夹里没有子文件夹，也没有 .ttf/.otf 字体");
   updatePickCount();
 }
 
 function updatePickCount() {
+  if (FB_EXPORT) return;   // 导出模式：按钮文案由 exportFontBrowse / fbExportExit 管
   const b = document.getElementById("fbImport");
   b.textContent = "导入选中 (" + picked.size + ")";
   b.disabled = picked.size === 0;
@@ -10345,7 +10552,11 @@ async function impDoImport() {
         let out;
         if (file.path) {
           // 内置浏览器选的：设备上已有文件，直接 import（不用传输）
-          setProgress(tag + "正在校验字体文件：" + file.name, k / files.length);
+          // ★ 2026-11-01（作者反馈"卡在效验"）：这一步实际是 校验+复制+写元数据
+          //   一整段（60MB 级要十几秒），原来只写"校验"两个字，看着像卡死 ——
+          //   文案如实说清楚，并把文件大小带出来。
+          const _szT = file.size ? fmtSize(file.size) + " · " : "";
+          setProgress(tag + "正在校验并写入字体库：" + file.name + "（" + _szT + "这一步最久，别退出）", k / files.length);
           await nextPaint();
           out = await ksuExec(`sh ${MODDIR}/fontctl.sh import ${shq(file.path)} ${shq(stripExt(file.name))}`);
         } else {
@@ -10359,7 +10570,18 @@ async function impDoImport() {
           }
           out = await ksuExec(`sh ${MODDIR}/fontctl.sh upload-finish ${file.file.size} ${shq(stripExt(file.name))}`);
         }
-        if (out.indexOf("OK:") === 0) { ok++; lastMeta = await probeAndSave(out.trim().slice(3)); }
+        if (out.indexOf("OK:") === 0) {
+          ok++;
+          const _nid = out.trim().slice(3);
+          lastMeta = await probeAndSave(_nid);
+          // ★ 2026-10-31：导入完成 → 触发预生成（计划+中文合集落永久缓存），
+          //   轮询状态文件把「现在在干嘛」显示在进度条上；
+          //   预热在后台跑（prewarm-bg 立即返回），这里只等结果，界面不冻。
+          try {
+            await ksuExec(`sh ${MODDIR}/fontctl.sh prewarm-bg ${shq(_nid)}`);
+            await waitPrewarm(_nid, file.name, k / files.length, files.length);
+          } catch (e) {}
+        }
         else fails.push(file.name + "：" + out.replace(/^ERROR:/, ""));
       } catch (e) {
         fails.push(file.name + "：" + errText(e));
@@ -10371,6 +10593,36 @@ async function impDoImport() {
     busy = false; setImporting(false);
     await refreshAll();
   }
+}
+
+// ★ 2026-10-31：等单个字体的后台预热完成（轮询 $LIB/.pw.<id>.state）。
+//   后端在 prewarm-bg 里以"排队的文件名"原子落状态，阶段：
+//     queued（排队）→ plan（生成切换计划）→ ttc（合成中文合集 xxx）→ done
+//   超时 3 分钟：预热还在后台继续，不阻塞导入流程（完成后第一次切换就是秒级）。
+async function waitPrewarm(id, label, idx, total) {
+  const T0 = Date.now();
+  const sf = LIB + "/.pw." + id + ".state";
+  while (Date.now() - T0 < 180000) {
+    let st = "";
+    try { st = String(await ksuExec(`cat ${shq(sf)} 2>/dev/null`) || ""); } catch (e) {}
+    const sid = (st.match(/^id=(.*)$/m) || [])[1] || "";
+    const stage = (st.match(/^stage=(.*)$/m) || [])[1] || "";
+    const rel = (st.match(/^rel=(.*)$/m) || [])[1] || "";
+    if (sid === id && stage === "done") {
+      setProgress("「" + label + "」已就绪：第一次切换就是秒级", (idx + 1) / total);
+      return true;
+    }
+    if (sid === id) {
+      const what = stage === "queued" ? "排队中…"
+        : stage === "plan" ? "生成切换计划…"
+        : stage === "ttc" ? "合成中文合集（" + rel + "）…"
+        : "处理中…";
+      setProgress("正在为「" + label + "」准备秒级切换：" + what, Math.min(0.95, (idx + 0.5) / total));
+    }
+    await new Promise(r => setTimeout(r, 700));
+  }
+  setProgress("「" + label + "」的预热还在后台继续（完成后第一次切换就是秒级）", (idx + 1) / total);
+  return false;
 }
 
 async function onFilePicked(input) {
@@ -10400,7 +10652,16 @@ async function _onFilePickedLegacy(input) {
           setProgress(tag + "传输 " + file.name + " " + fmtSize(done) + "/" + fmtSize(file.size), done / file.size);
         }
         const out = await ksuExec(`sh ${MODDIR}/fontctl.sh upload-finish ${file.size} ${shq(stripExt(file.name))}`);
-        if (out.indexOf("OK:") === 0) { ok++; lastMeta = await probeAndSave(out.trim().slice(3)); }
+        if (out.indexOf("OK:") === 0) {
+          ok++;
+          const _nid = out.trim().slice(3);
+          lastMeta = await probeAndSave(_nid);
+          // ★ 2026-10-31：导入完成 → 触发预生成 + 进度（同 impDoImport）
+          try {
+            await ksuExec(`sh ${MODDIR}/fontctl.sh prewarm-bg ${shq(_nid)}`);
+            await waitPrewarm(_nid, file.name, k / list.length, list.length);
+          } catch (e) {}
+        }
         else fails.push(file.name + "：" + out.replace(/^ERROR:/, ""));
       } catch (e) {
         fails.push(file.name + "：" + errText(e));
@@ -10415,7 +10676,7 @@ async function _onFilePickedLegacy(input) {
 }
 
 /* ---------- 替换范围设置 / 诊断 ---------- */
-const settings = {mount_mode: "self", theme_fonts: "0", keep_lockscreen: "0"};   // 1.0.9：只剩这两个开关；v1.1.1 加了「保留锁屏时钟字体」
+const settings = {mount_mode: "self", theme_fonts: "0", keep_lockscreen: "0", symlink_payload: "0"};   // 1.0.9：只剩这两个开关；v1.1.1 加了「保留锁屏时钟字体」；v1.4.9.8 加了「符号链接 payload」（默认关，实验）
 /* ★ 2026-10-25：开关状态本地缓存 —— 打开页面先用它渲染，之后再用 shell 校验覆盖 */
 const SET_CACHE_KEY = "cfs_settings_cache";
 let SET_VERIFIED = "0";   // "1" = 本次已从模块读到；"0" = 显示的是上次记录
@@ -10450,7 +10711,7 @@ async function loadSettings() {
     const out = await ksuExec(`sh ${MODDIR}/fontctl.sh settings`);
     (out.match(/(\w+)=(\S+)/g) || []).forEach(kv => { const i = kv.indexOf("="); settings[kv.slice(0, i)] = kv.slice(i + 1); });
   } catch (e) {}
-  ["theme_fonts", "keep_lockscreen"].forEach(k => {
+  ["theme_fonts", "keep_lockscreen", "symlink_payload"].forEach(k => {
     const el = document.getElementById("sw_" + k);
     if (el) el.classList.toggle("on", settings[k] === "1");
   });
@@ -10503,6 +10764,9 @@ const ADV_TREE = [
       { id: "ui_title", cycle: "titleSize", name: "标题字号", desc: "点一下切小 / 中 / 大。", hint: "看着费劲就选大。" },
       { id: "sw_anim", type: "switch", key: "__anim", uiOnly: 1,
         name: "保留动画效果", desc: "关掉后所有过渡动画消失（老机器更顺）。", hint: "默认开。" },
+      { id: "sw_ab", type: "switch", key: "__ab", uiOnly: 1,
+        name: "切换前先弹 A/B 对比", desc: "开：应用前并排预览两份字体再确认（要先加载字体，慢好几秒）。",
+        hint: "默认关 = 点「应用」直接切换，最快。" },
       { id: "sw_hide_update", type: "switch", key: "__hideUpdate", uiOnly: 1,
         name: "隐藏「模块更新」整块", desc: "不想看到更新提示就打开。", hint: "还能在管理器里手动更新。" },
       { id: "sw_no_update_check", type: "switch", key: "__noUpdateCheck", uiOnly: 1,
@@ -10690,6 +10954,10 @@ const ADV_TREE = [
             name: "等开机完成后再挂",
             desc: "有些机器开机太早挂字体，字体服务还没准备好。打开后改成开机完成再挂。",
             hint: "开机后前几秒可能还是原字体，之后才变。" },
+          { id: "sw_symlink", type: "switch", key: "symlink_payload", el: "sw_symlink_payload",
+            name: "符号链接 payload（实验，默认关）",
+            desc: "manager 挂载实验特性：槽位文件改用符号链接 + 稳定间接文件，切字体只翻转 1~3 个文件（约 0.1 秒）。真机结论：部分挂载链路（Hybrid Mount）不跟随符号链接，会卡开机——所以默认关。",
+            hint: "仅在愿意承担卡开机风险（救援机制可自动恢复）时开启；出问题关掉它再应用一次即回硬链接方式。" },
           { id: "sw_dry", type: "switch", key: "dry_run", el: "sw_dry_run",
             name: "演练：只算不挂",
             desc: "只把「准备挂哪些」写进日志，不真的挂。用来确认计划对不对。",
@@ -10740,6 +11008,10 @@ const ADV_TREE = [
           desc: "清单是空的时候、或者明显不对的时候，重新算一遍。",
           hint: "算完看「一眼看概况」：准备换的数量不是 0 就说明好了，重启生效。",
           safe: 3, cmd: "replan" },
+        { id: "prewarm_all", name: "预生成切换计划 + 中文合集（秒切准备）",
+          desc: "把字体库里每份字体的切换计划和中文合集产物提前做好并永久保存（每字体几秒到几十秒）。",
+          hint: "做完之后切任何字体都是秒级。升级模块 / 改开关 / 导入新字体后点一次即可（平时会自动做）。",
+          safe: 2, cmd: "prewarm-all" },
       ]},
     ]
   },
@@ -10978,6 +11250,7 @@ const UI_DEF = {
   accent: "", theme: "", titleSize: "", radius: "", density: "", listStyle: "",
   anim: "1", hideUpdate: "0", hideGoogle: "0", hideFeedback: "0", hideDebug: "0",
   simple: "0", longPress: "1", dblclick: "1", noUpdateCheck: "0",
+  ab: "0",
   names: {}, bg: "", bgDim: "35", bgBlur: "6",
 };
 let UI = Object.assign({}, UI_DEF);
@@ -11310,6 +11583,17 @@ function uiApplyBackground() {
   img.style.filter = parts.join(" ");
   img.style.transform = blur > 0 ? "scale(1.06)" : "";
   body.classList.add("cfs-hasbg");
+  // ★ 2026-10-31：壁纸文件读不到（模块刚更新、还原还没跑到）→ 自动退回无壁纸状态。
+  //   不做这一步：半透明卡片设置还在而背景没了 → 二级界面卡片直接重叠（真机踩过）。
+  //   等 service.sh / customize.sh 把 $LIB/bg.jpg 还原回 webroot 后，重进页面即恢复。
+  img.onerror = () => {
+    if (String(UI.bg || "").indexOf("data:") === 0) return;   // dataURL 不经文件，不会有 404
+    try { UI.bg = ""; uiSave(); } catch (e) {}
+    try { uiApplyTextMode(); } catch (e) {}
+    try { body.classList.remove("cfs-hasbg"); } catch (e) {}
+    try { document.documentElement.style.removeProperty("--bg-img"); } catch (e) {}
+    try { img.remove(); } catch (e) {}
+  };
 }
 function advAccentHelp() {
   showToast("强调色 = 按钮/开关/进度条的颜色；在上面输入框填色号，或点下面「预设强调色」");
@@ -11345,6 +11629,14 @@ async function cfsCheckInstallId() {
 
 function uiSave() {
   try { localStorage.setItem(UI_KEY, JSON.stringify(UI)); } catch (e) {}
+  // ★ 2026-10-31：界面设置同步落盘 $LIB/ui.json（永久目录）——
+  //   更新模块 / 管理器清了 WebView 数据 / 换管理器，设置都不丢。
+  //   JSON 里含中文 → 先 encodeURIComponent 再 btoa，得到纯 ASCII 的 base64，
+  //   shell 参数里没有引号/特殊字符，单条 printf 就能写（体积才 1~2KB）。
+  try {
+    const _b = btoa(unescape(encodeURIComponent(JSON.stringify(UI))));
+    ksuExec("printf '%s' '" + _b + "' | base64 -d > " + LIB + "/ui.json 2>/dev/null").catch(() => {});
+  } catch (e) {}
   uiApply();
 }
 function uiSet(k, v) { UI[k] = v; uiSave(); }
@@ -11454,18 +11746,9 @@ async function uiPickBg() {
     } catch (e) { showToast("读不出这张图：" + errText(e)); return; }
     if (!b64) { showToast("读不出这张图（空数据）"); return; }
 
-    // 小图：直接存成 data URL，纯前端、立刻生效
-    if (f.size <= 1200 * 1024) {
-      UI.bg = dataUrl;
-      UI.bgT = Date.now();
-      uiSave();
-      try { advRender(); } catch (e) {}
-      try { refreshAll(); } catch (e) {}
-      showToast("背景已设置（" + Math.round(f.size / 1024) + " KB）");
-      return;
-    }
-
-    // 大图：分块写文件
+    // ★ 2026-10-31（永久目录）：壁纸统一写**文件双份**（webroot 给 WebView 取用、
+    //   $LIB/bg.jpg 是正本），UI.bg 永远指向 ./bg.jpg —— 不再存 dataURL（会被
+    //   "重装判定"清掉），模块更新后由 customize.sh / service.sh 从 $LIB 还原。
     const CH = 120000;
     let ok = true, sz = 0;
     try {
@@ -11476,13 +11759,15 @@ async function uiPickBg() {
       await ksuExec("base64 -d " + MODDIR + "/webroot/bg.b64 > " + MODDIR + "/webroot/bg.jpg 2>/dev/null; rm -f " + MODDIR + "/webroot/bg.b64; chmod 644 " + MODDIR + "/webroot/bg.jpg");
       sz = parseInt(String(await ksuExec("wc -c < " + MODDIR + "/webroot/bg.jpg")).trim(), 10) || 0;
       if (sz < 1000) ok = false;
+      // 正本落永久目录
+      if (ok) await ksuExec("cp -f " + MODDIR + "/webroot/bg.jpg " + LIB + "/bg.jpg 2>/dev/null; chmod 644 " + LIB + "/bg.jpg 2>/dev/null");
     } catch (e) { ok = false; }
-    if (!ok) { showToast("大图写不进去（" + sz + " 字节），换 1MB 以内的图"); return; }
+    if (!ok) { showToast("壁纸写不进去（" + sz + " 字节），换一张试试"); return; }
     UI.bg = "./bg.jpg";
     UI.bgT = Date.now();
     try { if (!UI.bgBlur || UI.bgBlur === "0") UI.bgBlur = "12"; if (!UI.bgDim || UI.bgDim === "35") UI.bgDim = "45"; if (!UI.cardAlpha || UI.cardAlpha === "100") UI.cardAlpha = "78"; } catch (e) {}
     uiSave();
-    showToast("背景已设置（" + Math.round(sz / 1024) + " KB）");
+    showToast("背景已设置（" + Math.round(sz / 1024) + " KB，更新模块不会丢）");
   };
   inp.click();
 }
@@ -11491,7 +11776,8 @@ async function uiPickBg() {
 async function uiClearBg() {
   try { setTimeout(() => { if (window.advRender) advRender(); }, 60); } catch (e) {}
   UI.bg = ""; uiSave();
-  try { await ksuExec("rm -f " + MODDIR + "/webroot/bg.jpg"); } catch (e) {}
+  // ★ 2026-10-31：正本（$LIB）与副本（webroot）一起删
+  try { await ksuExec("rm -f " + MODDIR + "/webroot/bg.jpg " + LIB + "/bg.jpg"); } catch (e) {}
   showToast("背景已清除");
 }
 
@@ -11763,7 +12049,7 @@ function advRender() {
   //   现在进页面时读一次，之后 all 用内存里的 settings。
   // 界面自定义的开关初态
   try {
-    const UIMAP = { "__anim": "anim", "__hideUpdate": "hideUpdate", "__noUpdateCheck": "noUpdateCheck",
+    const UIMAP = { "__anim": "anim", "__ab": "ab", "__hideUpdate": "hideUpdate", "__noUpdateCheck": "noUpdateCheck",
                     "__hideGoogle": "hideGoogle", "__hideFeedback": "hideFeedback",
                     "__simple": "simple", "__longPress": "longPress", "__dblclick": "dblclick" };
     Object.keys(UIMAP).forEach(k => {
@@ -11884,6 +12170,8 @@ function advApplyEntry() {
 }
 function advUnlock() {
   try { localStorage.setItem("cfs_adv_unlocked", "1"); } catch (e) {}
+  // ★ 2026-10-31：解锁标记同步落盘 $LIB（localStorage 丢了也能恢复，见 init）
+  ksuExec("echo unlocked > " + LIB + "/.adv_unlocked 2>/dev/null").catch(() => {});
   advApplyEntry();
 }
 /* ★ 2026-10-25 锁定前先确认，并提示怎么重新打开 */
@@ -11898,6 +12186,7 @@ async function advLockConfirm() {
 
 function advRelock() {
   try { localStorage.removeItem("cfs_adv_unlocked"); } catch (e) {}
+  ksuExec("rm -f " + LIB + "/.adv_unlocked 2>/dev/null").catch(() => {});
   advApplyEntry();
   try { advClose(); } catch (e) {}
   showToast("已锁定高级设置（主界面入口已隐藏）");
@@ -11959,7 +12248,7 @@ async function advTap() {
 async function toggleSetting(key) {
   if (busy) return;
   if (key.indexOf("__") === 0) {
-    const map = { "__anim": "anim", "__hideUpdate": "hideUpdate", "__noUpdateCheck": "noUpdateCheck",
+    const map = { "__anim": "anim", "__ab": "ab", "__hideUpdate": "hideUpdate", "__noUpdateCheck": "noUpdateCheck",
                   "__hideGoogle": "hideGoogle", "__hideFeedback": "hideFeedback",
                   "__simple": "simple", "__longPress": "longPress", "__dblclick": "dblclick" };
     const k2 = map[key];
@@ -12007,6 +12296,7 @@ async function toggleSetting(key) {
   }
   busy = true;
   let success = false;
+  let _resultMsg = "";   // ★ 2026-11-01：结果提示攒到 refresh 序列结束后再弹（避免被顶掉）
   try {
     // ★ 2026-10-17 修：这两步的后端返回必须**真的检查**。
     //   以前只要 ksuExec 不抛异常就算成功 —— 而后端出错时是返回 "ERROR:..." 文本，
@@ -12017,18 +12307,34 @@ async function toggleSetting(key) {
       throw new Error("settings set failed");
     }
     if (pendingId !== "none") {
-      const out = await ksuExec(`sh ${MODDIR}/fontctl.sh reapply`);
-      const m = out.match(/^OK:(.*):(\d+):(\w+)(?::(kl=\d))?\s*$/m);
+      // ★ 2026-11-02：改异步（同 selectFont）—— 后台 reapply + 轮询，界面不冻
+      await ksuExec(`sh ${MODDIR}/fontctl.sh apply-bg`);
+      const out = await pollApplyResult();
+      // ★ 2026-11-01：正则跟 selectFont 同款（尾部带 kl=N,t=X.XXs）——
+      //   旧版要求第四段必须是 kl=\d，reapply 带上耗时后匹配失败 → 误报"处理失败"
+      const m = out.match(/^OK:(.*?):(\d+):(\w+)(?::([^\n]*))?\s*$/m);
       if (!m) {
         showToast("处理失败：" + String(out).replace(/^\s*ERROR:?/, "").trim());
         throw new Error("reapply failed");
       }
       // ★ 2026-10-17：把模块**实际读到的开关值**显示出来。
       //   用户反馈"切了开关没反应"时，这能直接分辨是"设置没写进去"还是"过滤没生效"。
-      const klTag = m[4] ? "（时钟开关=" + m[4].slice(3) + "）" : "";
-      showToast("已重新生成：" + m[2] + " 个槽位" + klTag + "，重启后生效");
+      // ★ 2026-11-01：同切字体，显示应用耗时
+      const _klM = (m[4] || "").match(/kl=(\d)/);
+      const _tM = (m[4] || "").match(/t=([0-9.]+)s/);
+      const klTag = _klM ? "（时钟开关=" + _klM[1] + "）" : "";
+      const tTag = _tM ? " · 应用耗时 " + _tM[1] + " 秒" : "";
+      // ★ 2026-11-01：结果提示带耗时数字，延长到 8 秒（作者反馈 2.8 秒读不完）
+      // ★ 2026-11-01：结果提示带耗时数字。★ 不在这里弹 —— 前面 refresh 序列里
+      //   render/applyStatus 一路跑，提示会被顶掉（作者反馈"一瞬间就消失"）；
+      //   攒到函数末尾、refresh 全部结束后再弹（见下）。
+      _resultMsg = "已重新生成：" + m[2] + " 个槽位" + klTag + tTag + "，重启后生效";
+      // ★ 2026-11-01（作者反馈"开关之后切字体 3 秒变 8 秒"）：开关改了设置指纹，
+      //   其他字体的计划要按新钥匙重算 —— 后台 prewarm-all 提前做掉（一次几秒），
+      //   之后切任何字体都是命中，不再出现 8 秒的首次生成。
+      try { ksuExec(`sh -c 'sh ${MODDIR}/fontctl.sh prewarm-all >/dev/null 2>&1 &'`); } catch (_) {}
     } else {
-      showToast("已修改");
+      _resultMsg = "已修改";
     }
     success = true;
     // ★ 2026-10-17 修（用户反复反馈"切开关交替成功"的真根因）：
@@ -12048,7 +12354,11 @@ async function toggleSetting(key) {
   //   于是用户看到的就是"开关点了、数字没变"。
   //   用 refreshAll() 会连发 list+status 两条命令，但这两条现在都很快（有缓存）。
   try { await refreshStatusOnly(); } catch (e) {}
+  // ★ 2026-11-01：恢复 refreshAll —— 之前当冗余删掉后，开关流程结束列表区
+  //   会短暂空白（真机反馈）；多一次 quick 换列表稳定。
   try { await refreshAll(); } catch (e) {}
+  // ★ 2026-11-02：结果提示最后弹（refresh 都结束了没人顶它），统一 3 秒（作者定稿）
+  if (_resultMsg) showToast(_resultMsg, false, 3000);
   setTimeout(() => { try { refreshStatusOnly(); } catch (e) {} }, 1200);
 }
 /* ---------- 诊断报告 ---------- */
@@ -14693,6 +15003,27 @@ async function resumeRunningUpdate() {
   setCacheLoad();   // 先用上次记录渲染（同步、秒出）
   loadSettings();  // 再从模块读真值覆盖
   try { uiApply(); } catch (e) {}
+  // ★ 2026-10-31（永久目录）：界面设置与高级解锁标记以 $LIB 里的文件为正本——
+  //   localStorage 在更新模块 / 清 WebView 数据后会丢，$LIB 里的不会。
+  //   ui.json 恢复后再调一次 uiApply，壁纸（bg=./bg.jpg）也会跟着回来。
+  try {
+    const _uiRaw = String(await ksuExec(`cat ${LIB}/ui.json 2>/dev/null`) || "").trim();
+    if (_uiRaw) {
+      const _o = JSON.parse(_uiRaw);
+      if (_o && typeof _o === "object") {
+        Object.assign(UI, _o);
+        try { uiApply(); } catch (e) {}
+        try { advRender(); } catch (e) {}
+      }
+    }
+  } catch (e) {}
+  try {
+    const _adv = String(await ksuExec(`cat ${LIB}/.adv_unlocked 2>/dev/null`) || "").trim();
+    if (_adv) {
+      try { localStorage.setItem("cfs_adv_unlocked", "1"); } catch (e) {}
+      try { advApplyEntry(); } catch (e) {}
+    }
+  } catch (e) {}
   // ★ 2026-10-17 提速：refreshGoogle 原来跟首屏的 list/status 一起发。
   //   而 google_font.sh 在缓存失效时会跑 `dumpsys package com.google.android.gms`，
   //   在 HyperOS / Android 17 上可能要跑几分钟（代码注释里写着实测结论）。
