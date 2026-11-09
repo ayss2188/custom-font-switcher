@@ -1,14 +1,19 @@
-// cfs-verify —— 校验字体工具箱插件包的 Ed25519 签名
+// cfs-verify —— 校验字体工具箱插件包的 Ed25519 签名（标准 Ed25519 / SHA-512）
 //
 // 用法：cfs-verify MANIFEST.sha256 <base64签名> <公钥hex>
 // 退出码：0 通过，1 失败
 //
-// 依赖 Monocypher（CC0/BSD 双许可），编译时一起链接。
+// 依赖 TweetNaCl（public domain），编译时一起链接。
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "monocypher.h"
+#include "tweetnacl.h"
+
+// TweetNaCl 的签名接口需要它，但验签路径不会调用
+void randombytes(unsigned char *p, unsigned long long n) {
+    for (unsigned long long i = 0; i < n; i++) p[i] = 0;
+}
 
 static int b64val(int c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
@@ -70,8 +75,19 @@ int main(int argc, char **argv) {
     if (b64decode(argv[2], sig, sizeof sig) != 64) { fprintf(stderr, "bad signature\n"); free(msg); return 2; }
     if (hexdecode(argv[3], pub, sizeof pub) != 32) { fprintf(stderr, "bad public key\n"); free(msg); return 2; }
 
-    int ok = crypto_eddsa_check(sig, pub, msg, (size_t)len) == 0;
-    free(msg);
+    // TweetNaCl 的 crypto_sign_open 期望 sig || message
+    unsigned long long smlen = 64 + (unsigned long long)len;
+    unsigned char *sm = malloc(smlen ? smlen : 1);
+    unsigned char *out = malloc(smlen ? smlen : 1);
+    if (!sm || !out) { free(sm); free(out); free(msg); return 2; }
+    memcpy(sm, sig, 64);
+    if (len) memcpy(sm + 64, msg, (size_t)len);
+
+    unsigned long long outlen = 0;
+    int rc = crypto_sign_open(out, &outlen, sm, smlen, pub);
+    int ok = (rc == 0 && outlen == (unsigned long long)len &&
+              (len == 0 || memcmp(out, msg, (size_t)len) == 0));
+    free(sm); free(out); free(msg);
     if (!ok) { fprintf(stderr, "signature mismatch\n"); return 1; }
     return 0;
 }
