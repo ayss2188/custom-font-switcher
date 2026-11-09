@@ -1,0 +1,21 @@
+name: build-cfs-verify
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: sdkmanager "ndk;26.1.10909125" > /dev/null
+      - name: Build arm64 verifier
+        run: |
+          NDK=$ANDROID_HOME/ndk/26.1.10909125
+          CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+          $CC -O2 -fPIE -pie -Wl,--gc-sections -s -I tools/cfs-verify \
+            -o cfs-verify tools/cfs-verify/verify.c tools/cfs-verify/monocypher.c
+          ls -l cfs-verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfs-verify-arm64
+          path: cfs-verify
