@@ -40,7 +40,17 @@ static int b64decode(const char *in, uint8_t *out, size_t outsz) {
             qn = 0;
         }
     }
-    if (qn != 0) return -1;
+    // 处理结尾不足 4 个字符的情况（base64 的 = 填充被跳过）
+    if (qn == 2) {
+        if (o + 1 > outsz) return -1;
+        out[o++] = (uint8_t)((quad[0] << 2) | (quad[1] >> 4));
+    } else if (qn == 3) {
+        if (o + 2 > outsz) return -1;
+        out[o++] = (uint8_t)((quad[0] << 2) | (quad[1] >> 4));
+        out[o++] = (uint8_t)(((quad[1] & 15) << 4) | (quad[2] >> 2));
+    } else if (qn == 1) {
+        return -1;
+    }
     return (int)o;
 }
 
