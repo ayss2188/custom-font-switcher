@@ -4,6 +4,7 @@
 # ★ 2026-10-26 开机时无条件清掉上一轮的更新状态
 #   开机意味着"上一轮更新流程已经结束"（装好或失败），状态留着只会让界面误报"待重启"。
 LIB="${LIB:-/data/adb/custom_font_lib}"
+chmod 755 "$MODDIR/bin/cfs-verify" 2>/dev/null
 
 # ★ 2026-11-07：开机清掉「重启生效」标记（必须放在最前面，manager 分支会 exit）
 ( tr -d '[:space:]' 2>/dev/null < "$MODDIR/current_rom" > "$LIB/.rom_active" ) 2>/dev/null
