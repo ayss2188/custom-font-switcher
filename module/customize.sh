@@ -6,6 +6,9 @@
 
 LIB=/data/adb/custom_font_lib
 
+# 字体工具箱签名校验器
+chmod 755 "$MODPATH/bin/cfs-verify" 2>/dev/null
+
 # ★ 2026-10-31：把用户壁纸从永久目录还原到 webroot（更新模块 = webroot 整个被换掉）
 if [ -s "$LIB/bg.jpg" ]; then
   cp -f "$LIB/bg.jpg" "$MODPATH/webroot/bg.jpg" 2>/dev/null
