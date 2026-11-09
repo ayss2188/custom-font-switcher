@@ -1988,7 +1988,25 @@ try {
 
   <div class="divider"></div>
 
-  <div class="section-title fade"><span>模块更新（GitHub）</span></div>
+  
+  <div class="divider"></div>
+  <div class="section-title fade"><span>字体工具箱（可选）</span></div>
+  <div class="status-box fade">
+    <div class="status-row">
+      <span class="label">状态</span>
+      <span class="value off" id="engineLabel">正在读取…</span>
+    </div>
+  </div>
+  <div class="g-hint fade" id="engineHint">
+    把多个静态字重合成可变字体、拆 TTC、转换格式等。约 30MB，按需安装。
+  </div>
+  <div class="btn-row fade">
+    <button class="g-btn" id="engineInstallBtn" onclick="engineAction('install')">下载安装</button>
+    <button class="g-btn" onclick="engineAction('local')">从本地安装</button>
+    <button class="g-btn" id="engineRemoveBtn" onclick="engineAction('uninstall')">卸载</button>
+  </div>
+
+<div class="section-title fade"><span>模块更新（GitHub）</span></div>
   <div class="g-hint vpn-tip fade" style="margin:-2px 0 10px">
     <b>更新包在 GitHub 上，国内直连大多不通</b> ——
     点「检查更新」没反应、或「下载并安装」失败，<b>先连上 VPN 再试</b>。
@@ -12639,6 +12657,58 @@ function advApplyEntry() {
   if (b) b.style.display = show ? "" : "none";
   if (d) d.style.display = show ? "" : "none";
 }
+
+async function engineRefresh() {
+  const el = document.getElementById("engineLabel");
+  if (!el) return;
+  let out = "";
+  try { out = String(await ksuExec(`sh ${MODDIR}/engine.sh status`) || ""); } catch (e) { out = ""; }
+  const ins = /INSTALLED=1/.test(out);
+  const ver = (out.match(/^VERSION=(.*)$/m) || [])[1] || "";
+  el.textContent = ins ? ("已安装 " + (ver || "")) : "未安装";
+  el.className = "value " + (ins ? "ok" : "off");
+  const ib = document.getElementById("engineInstallBtn");
+  const rb = document.getElementById("engineRemoveBtn");
+  if (ib) ib.style.display = ins ? "none" : "";
+  if (rb) rb.style.display = ins ? "" : "none";
+}
+async function engineAction(kind) {
+  if (window.__engineBusy) { showToast("还有操作在进行中"); return; }
+  window.__engineBusy = true;
+  if (kind === "install") {
+    const ok = await dialog({
+      title: "下载字体工具箱？",
+      msg: "从 GitHub 下载约 30MB，国内可能需要 VPN。\n下载失败可以用「从本地安装」。",
+      okText: "下载安装", danger: false
+    });
+    if (!ok) return;
+  }
+  if (kind === "uninstall") {
+    const ok = await dialog({ title: "卸载字体工具箱？", msg: "只删除引擎文件，字体库和设置不受影响。", okText: "卸载", danger: true });
+    if (!ok) return;
+  }
+  busy = true;
+  try {
+    let out = "";
+    if (kind === "local") {
+      showToast("请先把 zip 放到 Download（文件名 cfs-fontlab*.zip）", false, 6000);
+      out = String(await ksuExec(`sh ${MODDIR}/engine.sh install-local`) || "");
+    } else {
+      out = String(await ksuExec(`sh ${MODDIR}/engine.sh ${kind}`) || "");
+    }
+    if (/^\s*ERROR/.test(out)) {
+      showToast(String(out).replace(/^\s*ERROR:?/, "").trim(), false, 7000);
+    } else {
+      showToast((out.trim().split("\n").pop() || "完成"), false, 5000);
+    }
+    await engineRefresh();
+  } catch (e) {
+    showToast("操作失败：" + errText(e), false, 7000);
+  } finally {
+    window.__engineBusy = false;
+  }
+}
+
 function advUnlock() {
   try { localStorage.setItem("cfs_adv_unlocked", "1"); } catch (e) {}
   // ★ 2026-10-31：解锁标记同步落盘 $LIB（localStorage 丢了也能恢复，见 init）
