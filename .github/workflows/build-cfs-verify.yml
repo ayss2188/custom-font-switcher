@@ -14,7 +14,7 @@ jobs:
           CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
           ls -l "$CC"
           "$CC" -O2 -fPIE -pie -Wl,--gc-sections -s -I tools/cfs-verify \
-            -o cfs-verify tools/cfs-verify/verify.c tools/cfs-verify/monocypher.c
+            -o cfs-verify tools/cfs-verify/verify.c tools/cfs-verify/tweetnacl.c
           ls -l cfs-verify
       - uses: actions/upload-artifact@v4
         with:
