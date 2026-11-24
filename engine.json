@@ -1,10 +1,9 @@
 {
-  "version": "1.0",
-  "code": 10000,
+  "version": "1.1",
+  "code": 10100,
   "arch": "arm64",
-  "file": "fontlab-engine-arm64-v1.zip",
-  "url": "https://github.com/ayss2188/custom-font-switcher/releases/download/engine-v1.0/fontlab-engine-arm64-v1.zip",
-  "sha256": "f0b590bd2a2a234a118a574bc74c5b64661680b6d7ec58e8376b42e82af7eb2c",
-  "size": 63239779,
-  "changelog": "https://raw.githubusercontent.com/ayss2188/custom-font-switcher/main/ENGINE-CHANGELOG.md"
+  "file": "fontlab-engine-arm64-v1.1.zip",
+  "url": "https://github.com/ayss2188/custom-font-switcher/releases/download/engine-v1.1/fontlab-engine-arm64-v1.1.zip",
+  "sha256": "39607e9b4d455bb5c9f44580cfb6a8e8cff9230d17ed9175ebba80358f632e9d",
+  "size": 64032144
 }
