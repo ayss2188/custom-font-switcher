@@ -4,6 +4,7 @@
   "arch": "arm64",
   "file": "fontlab-engine-arm64-v1.1.1.zip",
   "url": "https://github.com/ayss2188/custom-font-switcher/releases/download/engine-v1.1.1/fontlab-engine-arm64-v1.1.1.zip",
-  "sha256": "ea43e5f86ffaf5be77f215cc020cedc92ea23218aff3535eb80ef33946f7dd9f",
-  "size": 24838580
+  "sha256": "9e0ead24e65b8f18a2b8947eef00e59529e60831fa08a863045f2c2a02d6d17f",
+  "size": 24837816,
+  "changelog": "https://raw.githubusercontent.com/ayss2188/custom-font-switcher/main/ENGINE-CHANGELOG.md"
 }
