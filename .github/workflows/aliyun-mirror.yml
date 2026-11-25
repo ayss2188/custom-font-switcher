@@ -9,8 +9,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要同步的已有 Release tag，例如 v1.5.4.1"
-        required: true
+        description: "要同步的已有 Release tag，例如 v1.5.4.1；留空则同步最新 Release"
+        required: false
+  schedule:
+    # 每 6 小时兜底同步一次最新 Release；正常发版由 release published 立即触发
+    - cron: "17 */6 * * *"
 
 permissions:
   contents: read
@@ -30,8 +33,11 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
+          elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName')
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download release assets
@@ -43,8 +49,10 @@ jobs:
         run: |
           curl -fsSL -o ossutil.zip https://gosspublic.alicdn.com/ossutil/v2/2.4.1/ossutil-2.4.1-linux-amd64.zip
           unzip -q ossutil.zip -d ossutil
-          chmod +x ossutil/ossutil
-          ./ossutil/ossutil version
+          BIN=$(find ossutil -type f -name ossutil | head -n1)
+          chmod +x "$BIN"
+          echo "OSSUTIL=$BIN" >> "$GITHUB_ENV"
+          "$BIN" version
 
       - name: Prepare mirror files
         run: |
@@ -72,6 +80,17 @@ jobs:
           EOF
           cat dist/update.json
 
+          cat > dist/manager-update.json <<EOF
+          {
+            "version": "$VER",
+            "versionCode": $CODE,
+            "zipUrl": "https://$OSS_BUCKET.oss-cn-hangzhou.aliyuncs.com/module/$NAME",
+            "changelog": "https://$OSS_BUCKET.oss-cn-hangzhou.aliyuncs.com/CHANGELOG.md",
+            "sha256": "$SHA"
+          }
+          EOF
+          cat dist/manager-update.json
+
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
           echo "NAME=$NAME" >> "$GITHUB_ENV"
 
@@ -79,8 +98,9 @@ jobs:
         run: |
           set -e
           CFG="$RUNNER_TEMP/ossutilconfig"
-          ./ossutil/ossutil config -e "https://$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -L CH --config-file "$CFG"
-          ./ossutil/ossutil cp -f "$ASSET" "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
-          ./ossutil/ossutil cp -f dist/update.json "oss://$OSS_BUCKET/update.json" --config-file "$CFG"
-          ./ossutil/ossutil cp -f dist/CHANGELOG.md "oss://$OSS_BUCKET/CHANGELOG.md" --config-file "$CFG"
-          ./ossutil/ossutil ls "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
+          "$OSSUTIL" config -e "https://$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -L CH --config-file "$CFG"
+          "$OSSUTIL" cp -f "$ASSET" "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
+          "$OSSUTIL" cp -f dist/update.json "oss://$OSS_BUCKET/update.json" --config-file "$CFG"
+          "$OSSUTIL" cp -f dist/manager-update.json "oss://$OSS_BUCKET/manager-update.json" --config-file "$CFG"
+          "$OSSUTIL" cp -f dist/CHANGELOG.md "oss://$OSS_BUCKET/CHANGELOG.md" --config-file "$CFG"
+          "$OSSUTIL" ls "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
