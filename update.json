@@ -1,8 +1,8 @@
 {
-  "version": "v1.5.4.1",
-  "versionCode": 150401,
-  "zipUrl": "https://github.com/ayss2188/custom-font-switcher/releases/download/v1.5.4.1/custom-font-switcher-v1.5.4.1.zip",
-  "aliyunZipUrl": "https://cfs-downloads-q2188366745.oss-cn-hangzhou.aliyuncs.com/module/custom-font-switcher-v1.5.4.1.zip",
+  "version": "v1.5.4.2",
+  "versionCode": 150402,
+  "zipUrl": "https://github.com/ayss2188/custom-font-switcher/releases/download/v1.5.4.2/custom-font-switcher-v1.5.4.2.zip",
+  "aliyunZipUrl": "https://cfs-downloads-q2188366745.oss-cn-hangzhou.aliyuncs.com/module/custom-font-switcher-v1.5.4.2.zip",
   "changelog": "https://raw.githubusercontent.com/ayss2188/custom-font-switcher/main/CHANGELOG.md",
-  "sha256": "a251eab8cd318dc79b5b0982abed2eeecf2c26baecd643aaa4dcc192d6d15a38"
+  "sha256": "b521f928d1a7546677110d22f3476f77a328e8789f88e5ae987fa8fd2da6b60f"
 }
