@@ -98,7 +98,13 @@ jobs:
         run: |
           set -e
           CFG="$RUNNER_TEMP/ossutilconfig"
-          "$OSSUTIL" config -e "https://$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -L CH --config-file "$CFG"
+          cat > "$CFG" <<EOF
+          [default]
+          accessKeyID=$OSS_ACCESS_KEY_ID
+          accessKeySecret=$OSS_ACCESS_KEY_SECRET
+          region=cn-hangzhou
+          endpoint=https://$OSS_ENDPOINT
+          EOF
           "$OSSUTIL" cp -f "$ASSET" "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
           "$OSSUTIL" cp -f dist/update.json "oss://$OSS_BUCKET/update.json" --config-file "$CFG"
           "$OSSUTIL" cp -f dist/manager-update.json "oss://$OSS_BUCKET/manager-update.json" --config-file "$CFG"
