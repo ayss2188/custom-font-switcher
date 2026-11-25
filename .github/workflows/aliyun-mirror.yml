@@ -1,0 +1,86 @@
+name: Aliyun Mirror
+
+# GitHub Release 发布后，把附件和给 UI 用的 update.json / CHANGELOG.md 同步到阿里云 OSS。
+# GitHub 仍是主发布源；阿里云只做国内检查更新和下载镜像。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步的已有 Release tag，例如 v1.5.4.1"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+      OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download release assets
+        run: |
+          mkdir -p dist
+          gh release download "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" --pattern '*.zip' --dir dist --clobber
+
+      - name: Install ossutil
+        run: |
+          curl -fsSL -o ossutil.zip https://gosspublic.alicdn.com/ossutil/v2/2.4.1/ossutil-2.4.1-linux-amd64.zip
+          unzip -q ossutil.zip -d ossutil
+          chmod +x ossutil/ossutil
+          ./ossutil/ossutil version
+
+      - name: Prepare mirror files
+        run: |
+          set -e
+          TAG="${{ steps.tag.outputs.tag }}"
+          ASSET=$(ls dist/*.zip | head -n1)
+          NAME=$(basename "$ASSET")
+          SHA=$(sha256sum "$ASSET" | awk '{print $1}')
+          TMP=$(mktemp -d)
+          unzip -q "$ASSET" module.prop -d "$TMP"
+          VER=$(sed -n 's/^version=//p' "$TMP/module.prop" | head -n1 | tr -d '\r')
+          CODE=$(sed -n 's/^versionCode=//p' "$TMP/module.prop" | head -n1 | tr -d '\r')
+          unzip -q "$ASSET" changelog.md -d "$TMP"
+          cp -f "$TMP/changelog.md" dist/CHANGELOG.md
+
+          cat > dist/update.json <<EOF
+          {
+            "version": "$VER",
+            "versionCode": $CODE,
+            "zipUrl": "https://github.com/${{ github.repository }}/releases/download/$TAG/$NAME",
+            "aliyunZipUrl": "https://$OSS_BUCKET.oss-cn-hangzhou.aliyuncs.com/module/$NAME",
+            "changelog": "https://$OSS_BUCKET.oss-cn-hangzhou.aliyuncs.com/CHANGELOG.md",
+            "sha256": "$SHA"
+          }
+          EOF
+          cat dist/update.json
+
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+
+      - name: Upload to Aliyun OSS
+        run: |
+          set -e
+          CFG="$RUNNER_TEMP/ossutilconfig"
+          ./ossutil/ossutil config -e "https://$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -L CH --config-file "$CFG"
+          ./ossutil/ossutil cp -f "$ASSET" "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
+          ./ossutil/ossutil cp -f dist/update.json "oss://$OSS_BUCKET/update.json" --config-file "$CFG"
+          ./ossutil/ossutil cp -f dist/CHANGELOG.md "oss://$OSS_BUCKET/CHANGELOG.md" --config-file "$CFG"
+          ./ossutil/ossutil ls "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
