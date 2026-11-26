@@ -112,5 +112,6 @@ jobs:
           "$OSSUTIL" cp -f dist/update.json "oss://$OSS_BUCKET/update.json" --config-file "$CFG"
           "$OSSUTIL" cp -f dist/manager-update.json "oss://$OSS_BUCKET/manager-update.json" --config-file "$CFG"
           "$OSSUTIL" cp -f dist/CHANGELOG.md "oss://$OSS_BUCKET/CHANGELOG.md" --config-file "$CFG"
+          [ ! -f ENGINE-CHANGELOG.md ] || "$OSSUTIL" cp -f ENGINE-CHANGELOG.md "oss://$OSS_BUCKET/ENGINE-CHANGELOG.md" --config-file "$CFG"
           [ ! -f dist/engine.json ] || "$OSSUTIL" cp -f dist/engine.json "oss://$OSS_BUCKET/engine.json" --config-file "$CFG"
           "$OSSUTIL" ls "oss://$OSS_BUCKET/module/$NAME" --config-file "$CFG"
