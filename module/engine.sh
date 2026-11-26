@@ -1,4 +1,15 @@
 #!/system/bin/sh
+LIBROOT="${LIBROOT:-${LIB:-/data/adb/custom_font_lib}}"
+LIBROOT="${LIBROOT:-/data/adb/custom_font_lib}"
+LIB="$LIBROOT/fonts"
+FONTDIR="$LIBROOT/fonts"
+BUILTINDIR="$LIBROOT/builtin"
+CLOCKDIR="$LIBROOT/clock"
+CACHEDIR="$LIBROOT/cache"
+STATEDIR="$LIBROOT/state"
+BACKUPDIR="$LIBROOT/backup"
+WORKDIR="$LIBROOT/work"
+LOGDIR="$STATEDIR/logs"
 # engine.sh —— 字体工具箱（插件引擎）的安装 / 卸载 / 调用入口
 #
 # 用法：
@@ -22,12 +33,10 @@
 #   zip 内所有文件都在根目录（不是套一层文件夹）
 
 MODDIR=${0%/*}
-[ -f "$MODDIR/common.sh" ] && . "$MODDIR/common.sh"
-LIB=${LIB:-/data/adb/custom_font_lib}
-ENG="$LIB/engine"
-STATE="$LIB/.engine.state"
+ENG="$STATEDIR/engine"
+STATE="$STATEDIR/engine.state"
 META="$MODDIR/engine.json"
-# 作者公钥（Ed25519）：只认这把私钥签出来的插件包
+# 开发者公钥（Ed25519）：只认这把私钥签出来的插件包
 KEYS_FILE="$MODDIR/engine_keys.conf"
 TMP="${TMPDIR:-/data/local/tmp}"
 
@@ -112,14 +121,14 @@ verify_signature() { # $1=解压目录
   [ -n "$_keyid" ] || { err "签名格式不对（缺 keyid）"; return 1; }
   _pub=$(sed -n "s/^${_keyid}=//p" "$KEYS_FILE" 2>/dev/null | head -n1 | tr -d '\r')
   [ -n "$_pub" ] || { err "不认识的签名密钥（keyid=$_keyid）"; return 1; }
-  "$_v" "$_d/MANIFEST.sha256" "$_sig" "$_pub" || { err "插件签名无效（不是作者发布的包）"; return 1; }
+  "$_v" "$_d/MANIFEST.sha256" "$_sig" "$_pub" || { err "插件签名无效（不是开发者发布的包）"; return 1; }
   return 0
 }
 
 install_zip() { # $1=zip
   need_tools
   verify_zip "$1" || exit 1
-  _stage="$LIB/.engine.stage.$$"
+  _stage="$STATEDIR/engine.stage.$$"
   rm -rf "$_stage" 2>/dev/null
   mkdir -p "$_stage" 2>/dev/null || { err "无法创建临时目录"; exit 1; }
   unzip -q -o "$1" -d "$_stage" 2>/dev/null || { rm -rf "$_stage"; err "解压失败"; exit 1; }
@@ -131,6 +140,7 @@ install_zip() { # $1=zip
   fi
   chmod 755 "$_stage/bin/run" 2>/dev/null
   chmod -R 755 "$_stage/bin" 2>/dev/null
+  chmod 755 "$_stage/usr/bin/"* 2>/dev/null
   # 先跑一次 info，确认能执行
   _info=$("$_stage/bin/run" info --json 2>/dev/null)
   case "$_info" in
@@ -140,22 +150,28 @@ install_zip() { # $1=zip
   rm -rf "$ENG" 2>/dev/null
   mv -f "$_stage" "$ENG" 2>/dev/null || { rm -rf "$_stage"; err "安装失败（移动目录出错）"; exit 1; }
   _ver=$(read_prop "$ENG/plugin.prop" version)
-  printf 'version=%s\ninstalled=%s\n' "${_ver:-?}" "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" > "$STATE"
+  printf 'version=%s\nsize_kb=%s\ninstalled=%s\n' "${_ver:-?}" "$(du -sk "$ENG" 2>/dev/null | awk '{print $1}')" "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" > "$STATE"
   say "OK:字体工具箱 ${_ver:-?} 已安装"
 }
 
 uninstall_engine() {
   rm -rf "$ENG" 2>/dev/null
-  rm -f "$STATE" 2>/dev/null
+  rm -rf "$WORKDIR" 2>/dev/null
+  rm -f "$STATE" "$STATEDIR/engine.progress" "$STATEDIR/engine.dl" "$STATEDIR/engine.done" 2>/dev/null
+  rm -rf "$LIB"/.engine.stage.* 2>/dev/null
   say "OK:字体工具箱已卸载"
 }
 
 status() {
   if [ -x "$ENG/bin/run" ]; then
     _v=$(read_prop "$ENG/plugin.prop" version)
-    _sz=$(du -sk "$ENG" 2>/dev/null | awk '{print $1}')
+    _sz=$(sed -n "s/^size_kb=//p" "$STATE" 2>/dev/null | head -n1)
     say "INSTALLED=1"
     say "VERSION=${_v:-?}"
+    say "CODE=$(read_prop "$ENG/plugin.prop" code)"
+    say "SIGNED=$([ -s "$ENG/SIGNATURE" ] && echo 1 || echo 0)"
+    say "BUILD=$(read_prop "$ENG/plugin.prop" build)"
+    say "AUTHOR=$(read_prop "$ENG/plugin.prop" author)"
     say "SIZE_KB=${_sz:-0}"
     say "DIR=$ENG"
   else
@@ -178,6 +194,20 @@ fetch_url() { # $1=url $2=out
   if command -v wget >/dev/null 2>&1; then
     wget -q -T 20 -O "$2" "$1" 2>/dev/null && return 0
   fi
+  return 1
+}
+
+
+ENGINE_META_URLS="https://cfs-downloads-q2188366745.oss-cn-hangzhou.aliyuncs.com/engine.json https://raw.githubusercontent.com/ayss2188/custom-font-switcher/main/engine.json https://cdn.jsdelivr.net/gh/ayss2188/custom-font-switcher@main/engine.json"
+
+fetch_meta() { # $1=输出文件；阿里云镜像优先，GitHub raw / jsDelivr 兜底
+  for _mu in $ENGINE_META_URLS; do
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL -m 8 -o "$1" "$_mu" 2>/dev/null && [ -s "$1" ] && return 0
+    else
+      fetch_url "$_mu" "$1" && [ -s "$1" ] && return 0
+    fi
+  done
   return 1
 }
 
@@ -206,10 +236,24 @@ install_remote() {
 
 find_local_zip() {
   for _f in /sdcard/Download/cfs-fontlab*.zip /sdcard/Download/fontlab*.zip \
-            /sdcard/Download/字体工具箱*.zip "$LIB"/*.zip; do
+            /storage/emulated/0/Download/cfs-fontlab*.zip /storage/emulated/0/Download/fontlab*.zip \
+            /sdcard/Download/字体工具箱*.zip /sdcard/*.zip "$LIB"/*.zip; do
     [ -f "$_f" ] && { printf '%s' "$_f"; return 0; }
   done
   return 1
+}
+
+_engine_ver_gt() { # $1 是否大于 $2
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n=split(a,A,"."); m=split(b,B,"."); L=(n>m?n:m);
+    for (i=1;i<=L;i++) {
+      x=(i<=n && A[i] ~ /^[0-9]+$/ ? A[i]+0 : 0);
+      y=(i<=m && B[i] ~ /^[0-9]+$/ ? B[i]+0 : 0);
+      if (x>y) exit 0;
+      if (x<y) exit 1;
+    }
+    exit 1;
+  }'
 }
 
 case "${1:-status}" in
@@ -223,13 +267,91 @@ case "${1:-status}" in
     [ -f "$_f" ] || { err "文件不存在：$_f"; exit 1; }
     install_zip "$_f" ;;
   uninstall) uninstall_engine ;;
+
+  latest)
+    _j="$TMP/.eng.latest.$$"
+    fetch_meta "$_j" || { err "获取最新版本失败（网络不通）"; rm -f "$_j"; exit 1; }
+    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/VERSION=\1/p' "$_j" | head -n1
+    sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/URL=\1/p' "$_j" | head -n1
+    sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/SHA256=\1/p' "$_j" | head -n1
+    rm -f "$_j" ;;
+  install-latest)
+    _j="$TMP/.eng.latest.$$"
+    fetch_meta "$_j" || { err "获取最新版本失败（网络不通）"; rm -f "$_j"; exit 1; }
+    _url=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_j" | head -n1)
+    _sha=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_j" | head -n1)
+    rm -f "$_j"
+    [ -n "$_url" ] || { err "最新包没有下载地址"; exit 1; }
+    _z="$TMP/.eng.dl.$$.zip"; rm -f "$_z"
+    fetch_url "$_url" "$_z" || { rm -f "$_z"; err "下载失败（网络不通，或用「从本地安装」）"; exit 1; }
+    if [ -n "$_sha" ]; then
+      _g=$(sha256sum "$_z" 2>/dev/null | awk '{print $1}')
+      [ "$_g" = "$_sha" ] || { rm -f "$_z"; err "下载校验失败"; exit 1; }
+    fi
+    install_zip "$_z"; _rc=$?
+    rm -f "$_z"
+    exit $_rc ;;
+  install-latest-bg)
+    rm -f "$STATEDIR/engine.dl" "$STATEDIR/engine.done" 2>/dev/null
+    ( _j="$TMP/.eng.latest.$$"
+      fetch_meta "$_j" || true
+      [ -s "$_j" ] || { echo "ERROR:获取最新版本失败" > "$STATEDIR/engine.done"; exit 1; }
+      _url=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_j" | head -n1)
+      _sha=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_j" | head -n1)
+      rm -f "$_j"
+      [ -n "$_url" ] || { echo "ERROR:最新包没有下载地址" > "$STATEDIR/engine.done"; exit 1; }
+      _z="$TMP/.eng.dl.$$.zip"; rm -f "$_z"
+      _total=$(command -v curl >/dev/null 2>&1 && curl -sIL "$_url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v}')
+      [ -n "$_total" ] || _total=0
+      if command -v curl >/dev/null 2>&1; then
+        curl -fL --connect-timeout 15 -m 900 -o "$_z" "$_url" 2>/dev/null &
+        _cpid=$!
+        _n=0
+        while kill -0 "$_cpid" 2>/dev/null && [ "$_n" -lt 3600 ]; do
+          _n=$((_n + 1))
+          _sz=$(stat -c %s "$_z" 2>/dev/null || wc -c < "$_z" 2>/dev/null)
+          [ -n "$_sz" ] && printf '%s|%s\n' "$_sz" "$_total" > "$STATEDIR/engine.dl"
+          sleep 0.3
+        done
+        wait "$_cpid" 2>/dev/null
+        _sz=$(stat -c %s "$_z" 2>/dev/null || wc -c < "$_z" 2>/dev/null)
+        if [ -z "$_sz" ] || { [ "$_total" -gt 0 ] && [ "$_sz" -lt "$_total" ]; }; then
+          curl -fL --connect-timeout 15 -m 900 -o "$_z" "$_url" 2>/dev/null
+          _sz=$(stat -c %s "$_z" 2>/dev/null || wc -c < "$_z" 2>/dev/null)
+        fi
+        if [ -z "$_sz" ] || { [ "$_total" -gt 0 ] && [ "$_sz" -lt "$_total" ]; }; then
+          rm -f "$_z"; echo "ERROR:下载不完整（${_sz:-0}/$_total）" > "$STATEDIR/engine.done"; exit 1
+        fi
+        printf '%s|%s\n' "$_sz" "$_total" > "$STATEDIR/engine.dl"
+      else
+        fetch_url "$_url" "$_z" || { echo "ERROR:下载失败" > "$STATEDIR/engine.done"; exit 1; }
+      fi
+      if [ -n "$_sha" ]; then
+        _g=$(sha256sum "$_z" 2>/dev/null | awk '{print $1}')
+        [ "$_g" = "$_sha" ] || { rm -f "$_z"; echo "ERROR:下载校验失败" > "$STATEDIR/engine.done"; exit 1; }
+      fi
+      ( install_zip "$_z" ) >/dev/null 2>&1
+      _irc=$?
+      if [ "$_irc" = "0" ]; then echo "OK" > "$STATEDIR/engine.done"; else echo "ERROR:安装失败（rc=$_irc）" > "$STATEDIR/engine.done"; fi
+      rm -f "$_z"
+    ) >/dev/null 2>&1 &
+    echo "STARTED" ;;
   check-update)
     status
-    [ -s "$META" ] && say "LATEST=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$META" | head -n1)" ;;
+    _j="$TMP/.eng.latest.$$"
+    if fetch_meta "$_j"; then
+      _lv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_j" | head -n1)
+      say "LATEST=${_lv:-?}"
+      _iv=$(read_prop "$ENG/plugin.prop" version)
+      [ -n "$_lv" ] && [ "$_lv" != "$_iv" ] && _engine_ver_gt "$_lv" "$_iv" && say "HAS_UPDATE=1"
+    else
+      say "ERROR:检查更新失败（网络不通）"
+    fi
+    rm -f "$_j" ;;
   run)
     shift
     [ -x "$ENG/bin/run" ] || { err "字体工具箱还没安装"; exit 1; }
-    exec "$ENG/bin/run" "$@" ;;
+    CFS_MOD="$MODDIR" CFS_LIB="$LIBROOT" CFS_WORKROOT="$WORKDIR" exec "$ENG/bin/run" "$@" ;;
   *)
     err "用法：status|install|install-local|uninstall|check-update|run" ;;
 esac
